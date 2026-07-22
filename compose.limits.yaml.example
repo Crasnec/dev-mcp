@@ -1,0 +1,15 @@
+services:
+  runner:
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 8G
+          pids: 512
+  gateway:
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+          pids: 128

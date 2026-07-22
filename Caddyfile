@@ -1,0 +1,13 @@
+{
+	email {$ACME_EMAIL}
+	acme_ca {$ACME_CA}
+}
+
+{$MCP_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy gateway:3000
+	log {
+		output stdout
+		format json
+	}
+}

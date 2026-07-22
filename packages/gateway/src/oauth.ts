@@ -12,6 +12,7 @@ export function installOAuthRoutes(
   audit: AuditLogger,
 ): void {
   const resource = `${config.publicBaseUrl}/mcp`;
+  const authorizationEndpoint = `${config.publicBaseUrl}/oauth/authorize`;
   const loginLimiter = new LoginLimiter();
   app.get("/.well-known/oauth-protected-resource", (_req, res) => {
     res.json({
@@ -33,7 +34,7 @@ export function installOAuthRoutes(
   app.get("/.well-known/oauth-authorization-server", (_req, res) => {
     res.json({
       issuer: config.publicBaseUrl,
-      authorization_endpoint: `${config.publicBaseUrl}/oauth/authorize`,
+      authorization_endpoint: authorizationEndpoint,
       token_endpoint: `${config.publicBaseUrl}/oauth/token`,
       registration_endpoint: `${config.publicBaseUrl}/oauth/register`,
       revocation_endpoint: `${config.publicBaseUrl}/oauth/revoke`,
@@ -159,14 +160,17 @@ export function installOAuthRoutes(
         ...(requestedResource ? { resource: requestedResource } : {}),
         expiresAt: Date.now() + 10 * 60_000,
       });
-      res.setHeader(
-        "Content-Security-Policy",
-        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
-      );
-      res.setHeader("Cache-Control", "no-store");
+      setAuthorizationPageHeaders(res, authorizationEndpoint);
       return res
         .type("html")
-        .send(authorizePage(transaction, client.clientName, scopes));
+        .send(
+          authorizePage(
+            transaction,
+            client.clientName,
+            scopes,
+            authorizationEndpoint,
+          ),
+        );
     } catch (error) {
       const oauth =
         error instanceof OAuthRequestError
@@ -223,7 +227,7 @@ export function installOAuthRoutes(
           clientId: pending.clientId,
           remote: req.ip,
         });
-        res.setHeader("Cache-Control", "no-store");
+        setAuthorizationPageHeaders(res, authorizationEndpoint);
         return res
           .status(401)
           .type("html")
@@ -232,6 +236,7 @@ export function installOAuthRoutes(
               transaction,
               "ChatGPT",
               pending.scopes,
+              authorizationEndpoint,
               "Password is incorrect",
             ),
           );
@@ -508,7 +513,19 @@ function authorizePage(
   transaction: string,
   clientName: string,
   scopes: Scope[],
+  authorizationEndpoint: string,
   error = "",
 ): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Authorize workspace access</title><style>body{font:16px system-ui;max-width:38rem;margin:4rem auto;padding:0 1rem;color:#18212b}form{border:1px solid #ccd3da;border-radius:12px;padding:1.5rem}input{box-sizing:border-box;width:100%;padding:.7rem;margin:.4rem 0 1rem}button{padding:.65rem 1rem;margin-right:.5rem}.error{color:#b42318}</style></head><body><h1>Authorize MCP access</h1><p><strong>${escapeHtml(clientName)}</strong> is requesting access to this workspace runner.</p><ul>${scopes.map((scope) => `<li>${escapeHtml(scope)}</li>`).join("")}</ul>${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}<form method="post" action="/oauth/authorize"><input type="hidden" name="transaction" value="${escapeHtml(transaction)}"><label>Administrator password<input type="password" name="password" required autocomplete="current-password"></label><button name="decision" value="allow" type="submit">Allow</button><button name="decision" value="deny" type="submit" formnovalidate>Deny</button></form></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Authorize workspace access</title><style>body{font:16px system-ui;max-width:38rem;margin:4rem auto;padding:0 1rem;color:#18212b}form{border:1px solid #ccd3da;border-radius:12px;padding:1.5rem}input{box-sizing:border-box;width:100%;padding:.7rem;margin:.4rem 0 1rem}button{padding:.65rem 1rem;margin-right:.5rem}.error{color:#b42318}</style></head><body><h1>Authorize MCP access</h1><p><strong>${escapeHtml(clientName)}</strong> is requesting access to this workspace runner.</p><ul>${scopes.map((scope) => `<li>${escapeHtml(scope)}</li>`).join("")}</ul>${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}<form method="post" action="${escapeHtml(authorizationEndpoint)}"><input type="hidden" name="transaction" value="${escapeHtml(transaction)}"><label>Administrator password<input type="password" name="password" required autocomplete="current-password"></label><button name="decision" value="allow" type="submit">Allow</button><button name="decision" value="deny" type="submit" formnovalidate>Deny</button></form></body></html>`;
+}
+
+function setAuthorizationPageHeaders(
+  res: Response,
+  authorizationEndpoint: string,
+): void {
+  res.setHeader(
+    "Content-Security-Policy",
+    `default-src 'none'; style-src 'unsafe-inline'; form-action ${authorizationEndpoint}; base-uri 'none'; frame-ancestors 'none'`,
+  );
+  res.setHeader("Cache-Control", "no-store");
 }

@@ -81,6 +81,10 @@ describe("OAuth HTTP endpoints", () => {
       url: `/oauth/authorize?${new URLSearchParams(authorizeQuery).toString()}`,
     });
     expect(page.statusCode).toBe(200);
+    expect(page.headers["content-security-policy"]).toContain(
+      "form-action http://127.0.0.1/oauth/authorize",
+    );
+    expect(page.payload).toContain('action="http://127.0.0.1/oauth/authorize"');
     const transaction = /name="transaction" value="([^"]+)"/.exec(
       page.payload,
     )?.[1];

@@ -1,6 +1,6 @@
 # dev-mcp
 
-ChatGPT가 원격 MCP 도구를 반복 호출해 호스트 워크스페이스의 파일, 셸, 백그라운드 프로세스와 Git을 다루게 하는 독립 Docker Compose 배포입니다. OpenAI API 키, Codex CLI 실행, Docker socket 전달을 사용하지 않습니다.
+`dev-mcp` is a self-contained Docker Compose deployment that lets ChatGPT use MCP tools to work with files, shell commands, background processes, and Git in one host directory. It does not use an OpenAI API key, run Codex CLI, or expose the Docker socket to the MCP services.
 
 ```text
 Internet / ChatGPT
@@ -12,67 +12,102 @@ Internet / ChatGPT
                               (OAuth only)               runner-data
 ```
 
-gateway에는 `/workspace`가 없고 runner에는 OAuth 상태와 관리자 해시가 없습니다. 두 서비스는 서로 다른 Docker network에 배치되며 공유되는 것은 `runner-ipc` 볼륨의 Unix socket뿐입니다.
+The gateway cannot see `/workspace`. The runner cannot see OAuth state or the administrator password hash. The services use separate Docker networks and share only the runner's Unix socket volume.
 
-## 요구 사항
+## Requirements
 
-- Docker Engine과 Docker Compose v2
-- 공개 DNS A/AAAA 레코드와 호스트로 연결되는 TCP 80/443(HTTP/3을 쓸 경우 UDP 443도 권장)
-- Node.js 22 이상(로컬 테스트와 관리자 해시 생성용)
-- 기존 [`Crasnec/dev-containers`](https://github.com/Crasnec/dev-containers)에서 빌드한 `local/dev-fedora:44`
+- A Linux host with Docker Engine and Docker Compose v2
+- Git, for cloning this repository
+- A public DNS A/AAAA record pointing to the host
+- Inbound TCP 80/443; UDP 443 is recommended for HTTP/3
 
-## 실행
+The runner builds directly from the official `fedora:44` image. No local base image, dev container repository, host Node.js installation, Codex installation, Docker socket, SSH key, or host home mount is required.
 
-1. 기존 dev-containers 저장소에서 이미지를 빌드합니다. 그 저장소는 수정할 필요가 없습니다.
+## Quick setup
 
-   ```bash
-   git clone https://github.com/Crasnec/dev-containers.git
-   cd dev-containers
-   cp .env.example .env
-   # 해당 저장소 문서에 따라 절대 경로와 UID/GID를 설정
-   docker compose build dev-fedora
-   docker image inspect local/dev-fedora:44 >/dev/null
-   ```
+On a new host:
 
-2. 이 저장소를 설정합니다.
+```bash
+git clone https://github.com/Crasnec/dev-mcp.git
+cd dev-mcp
+./scripts/setup.sh
+```
 
-   ```bash
-   npm ci
-   npm run password-hash
-   cp .env.example .env
-   chmod 600 .env
-   ```
+The interactive setup command:
 
-   출력된 `scrypt:...` 해시를 `.env`의 `ADMIN_PASSWORD_HASH`에 넣습니다. `WORKSPACE_DIR`, `DEV_UID`, `DEV_GID`, `MCP_DOMAIN`, `ACME_EMAIL`도 설정합니다. Docker daemon이 현재 셸과 다른 host namespace에서 실행된다면 `CADDYFILE_PATH`도 daemon 기준 절대 경로로 설정합니다. 원문 비밀번호는 파일이나 명령 인자에 기록되지 않습니다.
+- creates the host workspace directory;
+- detects the host UID and GID;
+- asks for the public domain and ACME email;
+- generates the administrator scrypt hash without storing the password;
+- writes a mode-`0600` `.env` file with absolute host paths;
+- builds the Fedora runner, gateway, and Caddy stack;
+- starts the services with Docker Compose.
 
-3. 먼저 Let's Encrypt staging으로 기동합니다. `.env.example`의 staging `ACME_CA`가 기본값입니다.
+Host Node.js is optional. If Node.js 22 is unavailable, setup uses a temporary `node:22-alpine` container only for password hashing.
 
-   ```bash
-   docker compose up -d --build
-   docker compose ps
-   docker compose logs caddy gateway runner
-   ./scripts/verify-deployment.sh
-   ```
+Setup uses Let's Encrypt staging by default. Once DNS, HTTPS, OAuth, and MCP tool calls work, switch to production certificates:
 
-4. OAuth 로그인, MCP 도구 검색, 읽기/쓰기 확인 흐름까지 성공하면 `.env`의 `ACME_CA`를 production URL로 바꾸고 Caddy를 재생성합니다.
+```bash
+./scripts/setup.sh --force --production
+./scripts/verify-deployment.sh
+```
 
-   ```bash
-   docker compose up -d --force-recreate caddy
-   ```
+`--force` intentionally replaces the host-specific `.env`; the OAuth and runner named volumes are preserved. Use `--no-start` to create and validate `.env` without starting containers.
 
-   인증서 자동 발급에는 올바른 DNS와 외부 80/443 연결이 필요합니다. 자세한 조건은 [Caddy HTTPS quick-start](https://caddyserver.com/docs/quick-starts/https)를 참고하십시오.
+Certificate issuance requires correct DNS and public access to ports 80 and 443. See the [Caddy HTTPS quick-start](https://caddyserver.com/docs/quick-starts/https) for the external requirements.
 
-5. ChatGPT의 개발자 모드에서 connector/app을 만들고 MCP URL로 `https://<MCP_DOMAIN>/mcp`를 등록합니다. DCR 후 Authorization Code + PKCE 로그인 화면이 열립니다. 연결 절차는 [OpenAI의 ChatGPT 연결 문서](https://developers.openai.com/apps-sdk/deploy/connect-chatgpt)를 따릅니다.
+## Connect ChatGPT
 
-리소스 제한을 원하는 배포에서는 예시 override를 명시적으로 추가합니다.
+Enable developer mode, create a developer-mode app, and use this MCP endpoint:
+
+```text
+https://<MCP_DOMAIN>/mcp
+```
+
+The gateway supports Dynamic Client Registration and opens an Authorization Code + PKCE login page. Follow the [OpenAI ChatGPT connection guide](https://developers.openai.com/apps-sdk/deploy/connect-chatgpt).
+
+After any deployment that changes tool names, descriptions, annotations, or OAuth schemes, open the app in **Settings → Plugins**, choose **Refresh**, and test it in a new conversation. Existing ChatGPT conversations may retain an older tool snapshot.
+
+## Moving to another host
+
+The repository contains everything needed to rebuild the service. On the new host, clone it and run `./scripts/setup.sh`; do not copy `node_modules`, build output, a local development image, SSH credentials, or Codex state.
+
+Host-specific configuration stays in the ignored `.env` file. OAuth clients/tokens, the project registry, process logs, and Caddy certificates live in Docker named volumes and are not part of Git. A fresh host therefore starts with fresh OAuth state; refresh or recreate the ChatGPT app after DNS points to the new deployment.
+
+To migrate state instead of starting clean, back up and restore these volumes using your normal Docker volume procedure:
+
+- `dev-mcp_gateway-data`
+- `dev-mcp_runner-data`
+- `dev-mcp_caddy-data`
+- `dev-mcp_caddy-config`
+
+Do not copy the transient `runner-ipc` volume.
+
+## Manual configuration
+
+If you do not want the setup script:
+
+```bash
+cp .env.example .env
+chmod 600 .env
+npm run password-hash  # requires local Node.js 22 and a TTY
+$EDITOR .env
+docker compose config --quiet
+docker compose up -d --build
+./scripts/verify-deployment.sh
+```
+
+Set `WORKSPACE_DIR` and `CADDYFILE_PATH` to absolute paths visible to the Docker daemon. Set `DEV_UID` and `DEV_GID` to the owner of the workspace files.
+
+For optional resource limits, add the example override explicitly:
 
 ```bash
 docker compose -f compose.yaml -f compose.limits.yaml.example up -d --build
 ```
 
-## MCP 도구
+## MCP tools
 
-모든 도구는 짧은 텍스트 요약과 함께 다음 형태의 `structuredContent`를 반환합니다.
+Every tool returns a short text summary and structured content in this form:
 
 ```json
 {
@@ -83,53 +118,54 @@ docker compose -f compose.yaml -f compose.limits.yaml.example up -d --build
 }
 ```
 
-오류에는 `error.code`, `error.message`, 선택적 `error.details`가 포함됩니다.
+Errors include `error.code`, `error.message`, and optional `error.details`.
 
-| 영역 | 도구 |
+| Area | Tools |
 |---|---|
-| 프로젝트 | `project_list`, `project_register`, `project_clone`, `project_unregister`, `project_delete` |
-| 파일 | `file_list`, `file_read`, `file_search`, `file_apply_patch` |
-| 명령 | `command_run`, `command_output` |
-| 프로세스 | `process_start`, `process_list`, `process_status`, `process_logs`, `process_stop` |
+| Projects | `project_list`, `project_register`, `project_clone`, `project_unregister`, `project_delete` |
+| Files | `file_list`, `file_read`, `file_search`, `file_apply_patch` |
+| Commands | `command_run`, `command_output` |
+| Processes | `process_start`, `process_list`, `process_status`, `process_logs`, `process_stop` |
 | Git | `git_status`, `git_diff`, `git_log`, `git_commit` |
 
-`command_run`과 `process_start`는 `network_intent`를 `none`, `read`, `write` 중 하나로 반드시 선언합니다. 실제 runner 네트워크를 기술적으로 차단하는 값은 아니며 OAuth 승인, ChatGPT 확인 정책과 감사 기록에 사용됩니다. 64 KiB를 넘는 명령/Git 출력은 runner-data에 저장되고 `command_output`으로 이어 읽습니다. 프로세스 로그는 `process_logs` cursor를 사용합니다.
+`command_run` and `process_start` require `network_intent` to be `none`, `read`, or `write`. This value is used for OAuth authorization, ChatGPT confirmation policy, and auditing; it is not a runner-side network firewall. Command and Git output over 64 KiB is saved in runner data and paginated through `command_output`. Process logs use the `process_logs` cursor.
 
-도구 annotation은 읽기, 쓰기, 파괴적 작업, 외부 통신을 구분합니다. 셸 호출은 항상 `destructiveHint: true`, `openWorldHint: true`입니다. 도구 설계 기준은 [OpenAI 도구 지침](https://developers.openai.com/apps-sdk/plan/tools)을 따릅니다.
+Tool annotations distinguish reads, writes, destructive actions, and external communication. Shell calls always advertise `destructiveHint: true` and `openWorldHint: true`. The design follows the [OpenAI tool guidance](https://developers.openai.com/apps-sdk/plan/tools).
 
-## OAuth와 scope
+## OAuth scopes
 
-gateway는 다음 endpoint를 제공합니다.
+The gateway provides:
 
-- `/.well-known/oauth-protected-resource`와 `/mcp` 경로형 metadata
-- `/.well-known/oauth-authorization-server`
-- `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke`
+- `/.well-known/oauth-protected-resource` and path-specific `/mcp` metadata;
+- `/.well-known/oauth-authorization-server`;
+- `/oauth/register`, `/oauth/authorize`, `/oauth/token`, and `/oauth/revoke`.
 
-단일 관리자 Authorization Code + PKCE(S256), 공개 클라이언트 DCR만 지원합니다. authorization code는 5분/일회용, access token은 15분, refresh token은 30일이며 토큰과 code는 SHA-256 해시로만 `gateway-data`에 저장됩니다. refresh token은 사용할 때마다 회전합니다.
+It supports a single administrator using Authorization Code + PKCE (S256) and public-client DCR. Authorization codes are one-time and valid for five minutes. Access tokens last 15 minutes, refresh tokens last 30 days, and refresh tokens rotate on use. Codes and tokens are stored only as SHA-256 hashes in `gateway-data`.
 
-| scope | 허용 작업 |
+| Scope | Operations |
 |---|---|
-| `workspace:read` | 프로젝트/파일/Git 읽기 |
-| `workspace:write` | 등록, patch, 삭제, commit |
-| `command:run` | 동기 명령, 프로세스와 로그 |
-| `command:network` | clone 또는 `network_intent != none`인 명령/프로세스 |
+| `workspace:read` | Project, file, and Git reads |
+| `workspace:write` | Registration, patching, deletion, and commits |
+| `command:run` | Synchronous commands, processes, and logs |
+| `command:network` | Cloning or commands/processes with non-`none` network intent |
 
-인증 구현은 [OpenAI Apps SDK 인증 요구사항](https://developers.openai.com/apps-sdk/build/auth)과 MCP OAuth 2.1 protected-resource 규약을 전제로 합니다.
+Each tool publishes its OAuth policy. Insufficient-scope results include an MCP authentication challenge so ChatGPT can request additional authorization. The implementation follows the [OpenAI Apps SDK authentication requirements](https://developers.openai.com/apps-sdk/build/auth) and the MCP OAuth protected-resource model.
 
-## 보안 경계
+## Security boundary
 
-- runner만 `${WORKSPACE_DIR}`를 `/workspace:rw`로 받습니다. 프로젝트 등록 경로는 workspace 자체가 될 수 없습니다.
-- 모든 파일 경로는 lexical 검사 후 `realpath`로 다시 확인합니다. 절대 경로, `..`, symlink 탈출과 patch 경로 탈출을 거부합니다.
-- public clone은 자격 증명이 없는 `https://github.com`, `https://gitlab.com`, `https://bitbucket.org` URL만 허용합니다. SSH, loopback/private 호스트와 URL credential은 거부됩니다.
-- runner에는 Docker socket, SSH 키, 호스트 홈, `~/.codex`, `gateway-data`가 마운트되지 않습니다.
-- 자식 프로세스 환경은 고정된 `PATH`, runner 전용 `HOME`, locale과 선택적 Git 작성자 값으로 새로 만듭니다. gateway 환경과 OAuth token은 전달되지 않습니다.
-- gateway와 runner는 read-only root filesystem, `cap_drop: ALL`, `no-new-privileges`로 실행합니다. runner 기반 이미지의 passwordless sudo도 이 설정 아래에서는 권한 상승에 사용할 수 없습니다.
-- Compose는 기본 CPU/메모리/명령 timeout을 강제하지 않습니다. 동기 명령 4개와 백그라운드 프로세스 8개의 기본 동시성 한도만 있으며 `.env`에서 바꿀 수 있습니다.
-- 감사 로그는 `gateway-data/audit.jsonl`에 저장됩니다. patch 본문과 continuation/token은 기록하지 않으며 명령 문자열은 2,000자로 제한합니다.
+- Only the runner receives `${WORKSPACE_DIR}` as `/workspace:rw`. The workspace root itself cannot be registered as a project.
+- File paths receive lexical checks followed by `realpath` checks. Absolute paths, parent traversal, symlink escapes, and patch escapes are rejected.
+- Public cloning accepts credential-free HTTPS URLs from GitHub, GitLab, and Bitbucket. SSH, URL credentials, loopback, and private targets are rejected.
+- Neither service receives the Docker socket, SSH keys, host home, `~/.codex`, or Codex credentials.
+- Child processes receive a clean `PATH`, runner-only `HOME`, locale, and optional Git author values. Gateway variables and OAuth tokens are not inherited.
+- Gateway and runner use read-only root filesystems, dropped capabilities, non-root users, and `no-new-privileges`.
+- The runner image includes Bash, Git, ripgrep, Node.js, Python, Rust, and common native build tools, but no Docker CLI, Codex CLI, or `sudo`.
+- Compose applies no default CPU, memory, or command-duration limit. It limits synchronous commands to four and background processes to eight by default; `.env` can change these values.
+- Audit records are stored in `gateway-data/audit.jsonl`. Patch bodies and continuation/token values are omitted; command strings are limited to 2,000 characters.
 
-임의 셸과 파일 삭제를 공개 인터넷에 노출하는 서비스이므로 관리자 비밀번호 재사용을 피하고, firewall/rate limiting 또는 별도 접근 제어 계층을 추가하는 것을 권장합니다. push, PR 생성, 비공개 저장소 credential은 v1 범위가 아닙니다.
+This service deliberately exposes arbitrary shell execution and destructive file operations to an OAuth-authorized client. Use a unique administrator password and consider firewall, rate limiting, or an additional access-control layer.
 
-## 개발과 검증
+## Development and verification
 
 ```bash
 npm ci
@@ -140,4 +176,4 @@ npm run build
 docker compose config --quiet
 ```
 
-테스트는 PKCE·code 재사용·refresh 회전·revoke, 경로와 symlink 탈출, 등록→검색→patch→명령→diff→commit, 긴 출력 continuation, 백그라운드 로그와 종료를 검증합니다. 실제 배포 뒤 `scripts/verify-deployment.sh`는 HTTPS metadata, 인증 challenge, mount 격리, read-only root를 추가로 확인합니다. 최종 수동 확인은 staging 인증서 → production 인증서 → ChatGPT 도구 검색 → 읽기/쓰기 승인 흐름 순서로 수행합니다.
+Tests cover PKCE, one-time codes, refresh rotation, revocation, path and symlink escapes, project registration through commit, long-output pagination, and background process lifecycle. After deployment, `scripts/verify-deployment.sh` checks public HTTPS metadata, the authentication challenge, mount isolation, network separation, and read-only roots.

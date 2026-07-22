@@ -1,5 +1,13 @@
 #!/usr/bin/env node
 import { randomBytes, scrypt } from "node:crypto";
+import { writeFileSync } from "node:fs";
+
+const outputIndex = process.argv.indexOf("--output");
+const outputPath = outputIndex >= 0 ? process.argv[outputIndex + 1] : undefined;
+if (outputIndex >= 0 && !outputPath) {
+  console.error("--output requires a file path");
+  process.exit(2);
+}
 
 if (!process.stdin.isTTY || !process.stdout.isTTY) {
   console.error(
@@ -21,17 +29,23 @@ async function readHidden(prompt) {
       process.stdin.pause();
       process.stdout.write("\n");
     };
-    const onData = (character) => {
-      if (character === "\u0003") {
-        cleanup();
-        reject(new Error("Cancelled"));
-      } else if (character === "\r" || character === "\n") {
-        cleanup();
-        resolve(value);
-      } else if (character === "\u007f" || character === "\b") {
-        value = value.slice(0, -1);
-      } else if (character >= " ") {
-        value += character;
+    const onData = (input) => {
+      for (const character of input) {
+        if (character === "\u0003") {
+          cleanup();
+          reject(new Error("Cancelled"));
+          return;
+        }
+        if (character === "\r" || character === "\n") {
+          cleanup();
+          resolve(value);
+          return;
+        }
+        if (character === "\u007f" || character === "\b") {
+          value = value.slice(0, -1);
+        } else if (character >= " ") {
+          value += character;
+        }
       }
     };
     process.stdin.on("data", onData);
@@ -60,9 +74,13 @@ try {
       (error, derived) => (error ? reject(error) : resolve(derived)),
     );
   });
-  process.stdout.write(
-    `scrypt:${N}:${r}:${p}:${salt.toString("base64url")}:${key.toString("base64url")}\n`,
-  );
+  const encoded = `scrypt:${N}:${r}:${p}:${salt.toString("base64url")}:${key.toString("base64url")}`;
+  if (outputPath) {
+    writeFileSync(outputPath, `${encoded}\n`, { mode: 0o600 });
+    console.log("Administrator password hash generated.");
+  } else {
+    process.stdout.write(`${encoded}\n`);
+  }
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);

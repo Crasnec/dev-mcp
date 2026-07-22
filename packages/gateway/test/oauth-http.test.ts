@@ -82,7 +82,7 @@ describe("OAuth HTTP endpoints", () => {
     });
     expect(page.statusCode).toBe(200);
     expect(page.headers["content-security-policy"]).toContain(
-      "form-action http://127.0.0.1/oauth/authorize",
+      "form-action http://127.0.0.1/oauth/authorize https://chat.example.test",
     );
     expect(page.payload).toContain('action="http://127.0.0.1/oauth/authorize"');
     const transaction = /name="transaction" value="([^"]+)"/.exec(

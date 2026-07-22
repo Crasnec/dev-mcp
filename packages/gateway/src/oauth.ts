@@ -160,7 +160,11 @@ export function installOAuthRoutes(
         ...(requestedResource ? { resource: requestedResource } : {}),
         expiresAt: Date.now() + 10 * 60_000,
       });
-      setAuthorizationPageHeaders(res, authorizationEndpoint);
+      setAuthorizationPageHeaders(
+        res,
+        authorizationEndpoint,
+        new URL(redirectUri).origin,
+      );
       return res
         .type("html")
         .send(
@@ -227,7 +231,11 @@ export function installOAuthRoutes(
           clientId: pending.clientId,
           remote: req.ip,
         });
-        setAuthorizationPageHeaders(res, authorizationEndpoint);
+        setAuthorizationPageHeaders(
+          res,
+          authorizationEndpoint,
+          new URL(pending.redirectUri).origin,
+        );
         return res
           .status(401)
           .type("html")
@@ -522,10 +530,11 @@ function authorizePage(
 function setAuthorizationPageHeaders(
   res: Response,
   authorizationEndpoint: string,
+  redirectOrigin: string,
 ): void {
   res.setHeader(
     "Content-Security-Policy",
-    `default-src 'none'; style-src 'unsafe-inline'; form-action ${authorizationEndpoint}; base-uri 'none'; frame-ancestors 'none'`,
+    `default-src 'none'; style-src 'unsafe-inline'; form-action ${authorizationEndpoint} ${redirectOrigin}; base-uri 'none'; frame-ancestors 'none'`,
   );
   res.setHeader("Cache-Control", "no-store");
 }

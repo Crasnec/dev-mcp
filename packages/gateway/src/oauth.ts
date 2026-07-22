@@ -4,6 +4,7 @@ import { ALL_SCOPES, type GatewayConfig, type Scope } from "./config.ts";
 import { AuthStore } from "./auth-store.ts";
 import { verifyPassword } from "./crypto.ts";
 import type { AuditLogger } from "./audit.ts";
+import { authorizationPage, errorPage, sendPage } from "./pages.ts";
 
 export function installOAuthRoutes(
   app: Express,
@@ -160,21 +161,17 @@ export function installOAuthRoutes(
         ...(requestedResource ? { resource: requestedResource } : {}),
         expiresAt: Date.now() + 10 * 60_000,
       });
-      setAuthorizationPageHeaders(
+      return sendPage(
         res,
-        authorizationEndpoint,
-        new URL(redirectUri).origin,
+        200,
+        authorizationPage({
+          transaction,
+          clientName: client.clientName,
+          scopes,
+          authorizationEndpoint,
+        }),
+        [authorizationEndpoint, new URL(redirectUri).origin],
       );
-      return res
-        .type("html")
-        .send(
-          authorizePage(
-            transaction,
-            client.clientName,
-            scopes,
-            authorizationEndpoint,
-          ),
-        );
     } catch (error) {
       const oauth =
         error instanceof OAuthRequestError
@@ -183,10 +180,16 @@ export function installOAuthRoutes(
               "invalid_request",
               error instanceof Error ? error.message : String(error),
             );
-      return res
-        .status(400)
-        .type("text")
-        .send(`${oauth.code}: ${oauth.message}`);
+      return sendPage(
+        res,
+        400,
+        errorPage({
+          status: 400,
+          title: "Authorization request rejected",
+          message: oauth.message,
+          code: oauth.code,
+        }),
+      );
     }
   });
 
@@ -196,19 +199,30 @@ export function installOAuthRoutes(
     async (req, res) => {
       if (loginLimiter.blocked(req.ip ?? "unknown")) {
         res.setHeader("Retry-After", "900");
-        return res
-          .status(429)
-          .type("text")
-          .send("Too many failed login attempts; try again later");
+        return sendPage(
+          res,
+          429,
+          errorPage({
+            status: 429,
+            title: "Too many attempts",
+            message: "Wait 15 minutes before trying to authorize again.",
+          }),
+        );
       }
       const transaction =
         typeof req.body.transaction === "string" ? req.body.transaction : "";
       const pending = await store.pendingAuthorization(transaction);
       if (!pending) {
-        return res
-          .status(400)
-          .type("text")
-          .send("Authorization transaction is invalid or expired");
+        return sendPage(
+          res,
+          400,
+          errorPage({
+            status: 400,
+            title: "Authorization expired",
+            message:
+              "Return to the requesting client and start a new connection.",
+          }),
+        );
       }
       if (req.body.decision === "deny") {
         await store.consumePending(transaction);
@@ -231,31 +245,32 @@ export function installOAuthRoutes(
           clientId: pending.clientId,
           remote: req.ip,
         });
-        setAuthorizationPageHeaders(
+        return sendPage(
           res,
-          authorizationEndpoint,
-          new URL(pending.redirectUri).origin,
+          401,
+          authorizationPage({
+            transaction,
+            clientName: "ChatGPT",
+            scopes: pending.scopes,
+            authorizationEndpoint,
+            error: "The administrator password is incorrect.",
+          }),
+          [authorizationEndpoint, new URL(pending.redirectUri).origin],
         );
-        return res
-          .status(401)
-          .type("html")
-          .send(
-            authorizePage(
-              transaction,
-              "ChatGPT",
-              pending.scopes,
-              authorizationEndpoint,
-              "Password is incorrect",
-            ),
-          );
       }
       loginLimiter.succeeded(req.ip ?? "unknown");
       const consumed = await store.consumePending(transaction);
       if (!consumed) {
-        return res
-          .status(400)
-          .type("text")
-          .send("Authorization transaction is invalid or expired");
+        return sendPage(
+          res,
+          400,
+          errorPage({
+            status: 400,
+            title: "Authorization expired",
+            message:
+              "Return to the requesting client and start a new connection.",
+          }),
+        );
       }
       const code = await store.createCode(consumed);
       await audit.write({
@@ -507,34 +522,4 @@ function redirectOAuth(
       url.searchParams.set(key, value);
     }
   res.redirect(302, url.toString());
-}
-function escapeHtml(value: string): string {
-  return value.replace(
-    /[&<>"']/g,
-    (character) =>
-      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
-        character
-      ]!,
-  );
-}
-function authorizePage(
-  transaction: string,
-  clientName: string,
-  scopes: Scope[],
-  authorizationEndpoint: string,
-  error = "",
-): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Authorize workspace access</title><style>body{font:16px system-ui;max-width:38rem;margin:4rem auto;padding:0 1rem;color:#18212b}form{border:1px solid #ccd3da;border-radius:12px;padding:1.5rem}input{box-sizing:border-box;width:100%;padding:.7rem;margin:.4rem 0 1rem}button{padding:.65rem 1rem;margin-right:.5rem}.error{color:#b42318}</style></head><body><h1>Authorize MCP access</h1><p><strong>${escapeHtml(clientName)}</strong> is requesting access to this workspace runner.</p><ul>${scopes.map((scope) => `<li>${escapeHtml(scope)}</li>`).join("")}</ul>${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}<form method="post" action="${escapeHtml(authorizationEndpoint)}"><input type="hidden" name="transaction" value="${escapeHtml(transaction)}"><label>Administrator password<input type="password" name="password" required autocomplete="current-password"></label><button name="decision" value="allow" type="submit">Allow</button><button name="decision" value="deny" type="submit" formnovalidate>Deny</button></form></body></html>`;
-}
-
-function setAuthorizationPageHeaders(
-  res: Response,
-  authorizationEndpoint: string,
-  redirectOrigin: string,
-): void {
-  res.setHeader(
-    "Content-Security-Policy",
-    `default-src 'none'; style-src 'unsafe-inline'; form-action ${authorizationEndpoint} ${redirectOrigin}; base-uri 'none'; frame-ancestors 'none'`,
-  );
-  res.setHeader("Cache-Control", "no-store");
 }

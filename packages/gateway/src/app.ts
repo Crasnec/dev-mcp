@@ -6,6 +6,7 @@ import { AuditLogger } from "./audit.ts";
 import { installOAuthRoutes } from "./oauth.ts";
 import { IpcClient } from "./ipc-client.ts";
 import { createMcpServer } from "./mcp-tools.ts";
+import { errorPage, landingPage, securityPage, sendPage } from "./pages.ts";
 
 export function createApp(config: GatewayConfig): Express {
   const app = express();
@@ -16,6 +17,12 @@ export function createApp(config: GatewayConfig): Express {
   const ipc = new IpcClient(config.runnerSocket);
   installOAuthRoutes(app, config, auth, audit);
 
+  app.get("/", (_req, res) => {
+    return sendPage(res, 200, landingPage(config.publicBaseUrl));
+  });
+  app.get("/security", (_req, res) => {
+    return sendPage(res, 200, securityPage());
+  });
   app.get("/healthz", (_req, res) => res.json({ ok: true }));
   app.post("/mcp", express.json({ limit: "2mb" }), async (req, res) => {
     const token = await authenticate(req, res, auth, config);
@@ -69,7 +76,20 @@ export function createApp(config: GatewayConfig): Express {
       });
     });
   }
-  app.use((_req, res) => res.status(404).json({ error: "not_found" }));
+  app.use((req, res) => {
+    if (req.accepts(["html", "json"]) === "html") {
+      return sendPage(
+        res,
+        404,
+        errorPage({
+          status: 404,
+          title: "Page not found",
+          message: "The requested page does not exist on this gateway.",
+        }),
+      );
+    }
+    return res.status(404).json({ error: "not_found" });
+  });
   return app;
 }
 

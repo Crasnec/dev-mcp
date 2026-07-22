@@ -43,7 +43,7 @@ gateway에는 `/workspace`가 없고 runner에는 OAuth 상태와 관리자 해�
    chmod 600 .env
    ```
 
-   출력된 `scrypt:...` 해시를 `.env`의 `ADMIN_PASSWORD_HASH`에 넣습니다. `WORKSPACE_DIR`, `DEV_UID`, `DEV_GID`, `MCP_DOMAIN`, `ACME_EMAIL`도 설정합니다. 원문 비밀번호는 파일이나 명령 인자에 기록되지 않습니다.
+   출력된 `scrypt:...` 해시를 `.env`의 `ADMIN_PASSWORD_HASH`에 넣습니다. `WORKSPACE_DIR`, `DEV_UID`, `DEV_GID`, `MCP_DOMAIN`, `ACME_EMAIL`도 설정합니다. Docker daemon이 현재 셸과 다른 host namespace에서 실행된다면 `CADDYFILE_PATH`도 daemon 기준 절대 경로로 설정합니다. 원문 비밀번호는 파일이나 명령 인자에 기록되지 않습니다.
 
 3. 먼저 Let's Encrypt staging으로 기동합니다. `.env.example`의 staging `ACME_CA`가 기본값입니다.
 

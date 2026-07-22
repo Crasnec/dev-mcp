@@ -10,7 +10,6 @@ export async function startIpcServer(
   runtime: RunnerRuntime,
 ): Promise<net.Server> {
   await mkdir(path.dirname(socketPath), { recursive: true, mode: 0o777 });
-  await chmod(path.dirname(socketPath), 0o777);
   await rm(socketPath, { force: true });
   const server = net.createServer((socket) => {
     let buffered = Buffer.alloc(0);

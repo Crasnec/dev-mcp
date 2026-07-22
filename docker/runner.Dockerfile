@@ -1,3 +1,5 @@
+ARG DEV_IMAGE=local/dev-fedora:44
+
 FROM node:22-alpine AS build
 WORKDIR /src
 COPY package.json package-lock.json tsconfig.json tsconfig.base.json ./
@@ -7,7 +9,6 @@ RUN npm ci
 COPY packages/runner/src packages/runner/src
 RUN npx tsc -b packages/runner
 
-ARG DEV_IMAGE=local/dev-fedora:44
 FROM ${DEV_IMAGE}
 ARG DEV_UID=1000
 ARG DEV_GID=1000

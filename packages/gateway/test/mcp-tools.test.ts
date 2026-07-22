@@ -26,6 +26,8 @@ describe("MCP tool catalog", () => {
       actor: "test-client",
       ipc: new IpcClient(path.join(data, "missing.sock")),
       audit: new AuditLogger(data),
+      resourceMetadataUrl:
+        "https://dev.example.test/.well-known/oauth-protected-resource",
     });
     const client = new Client({ name: "catalog-test", version: "1.0.0" });
     const [clientTransport, serverTransport] =
@@ -39,6 +41,33 @@ describe("MCP tool catalog", () => {
     expect(command.annotations?.openWorldHint).toBe(true);
     expect(command.inputSchema.required).toContain("network_intent");
     expect(command.outputSchema?.properties).toHaveProperty("ok");
+    expect(command._meta?.securitySchemes).toEqual([
+      {
+        type: "oauth2",
+        scopes: ["command:run", "command:network"],
+      },
+    ]);
+    for (const name of [
+      "command_output",
+      "process_list",
+      "process_status",
+      "process_logs",
+      "process_stop",
+    ]) {
+      const tool = catalog.tools.find((entry) => entry.name === name)!;
+      expect(tool._meta?.securitySchemes).toEqual([
+        { type: "oauth2", scopes: ["command:run"] },
+      ]);
+    }
+    const processStart = catalog.tools.find(
+      (tool) => tool.name === "process_start",
+    )!;
+    expect(processStart._meta?.securitySchemes).toEqual([
+      {
+        type: "oauth2",
+        scopes: ["command:run", "command:network"],
+      },
+    ]);
     const deletion = catalog.tools.find(
       (tool) => tool.name === "project_delete",
     )!;
@@ -51,6 +80,24 @@ describe("MCP tool catalog", () => {
     expect(
       (denied.structuredContent as { error: { code: string } }).error.code,
     ).toBe("INSUFFICIENT_SCOPE");
+    expect(denied._meta?.["mcp/www_authenticate"]).toEqual([
+      expect.stringContaining('scope="workspace:write"'),
+    ]);
+    const processDenied = await client.callTool({
+      name: "process_list",
+      arguments: {},
+    });
+    expect(processDenied._meta?.["mcp/www_authenticate"]).toEqual([
+      expect.stringContaining('error="insufficient_scope"'),
+    ]);
+    expect(processDenied._meta?.["mcp/www_authenticate"]).toEqual([
+      expect.stringContaining('scope="command:run"'),
+    ]);
+    expect(processDenied._meta?.["mcp/www_authenticate"]).toEqual([
+      expect.stringContaining(
+        'resource_metadata="https://dev.example.test/.well-known/oauth-protected-resource"',
+      ),
+    ]);
     const networkDenied = await client.callTool({
       name: "command_run",
       arguments: {
@@ -66,6 +113,20 @@ describe("MCP tool catalog", () => {
         }
       ).error.details.required,
     ).toEqual(["command:run", "command:network"]);
+    expect(networkDenied._meta?.["mcp/www_authenticate"]).toEqual([
+      expect.stringContaining('scope="command:run command:network"'),
+    ]);
+    const localCommandDenied = await client.callTool({
+      name: "command_run",
+      arguments: {
+        project_id: "00000000-0000-4000-8000-000000000000",
+        command: "true",
+        network_intent: "none",
+      },
+    });
+    expect(localCommandDenied._meta?.["mcp/www_authenticate"]).toEqual([
+      expect.stringContaining('scope="command:run"'),
+    ]);
     await client.close();
     await server.close();
   });

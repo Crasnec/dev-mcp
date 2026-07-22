@@ -66,6 +66,15 @@ describe("OAuth HTTP endpoints", () => {
     });
     expect(registration.statusCode).toBe(201);
     const client = registration.json() as { client_id: string };
+    const resourceMetadata = await inject(app, {
+      method: "GET",
+      url: "/.well-known/oauth-protected-resource",
+    });
+    expect(resourceMetadata.statusCode).toBe(200);
+    expect(
+      (resourceMetadata.json() as { scopes_supported: string[] })
+        .scopes_supported,
+    ).toContain("command:run");
     const verifier = "p".repeat(64);
     const authorizeQuery = {
       response_type: "code",
@@ -73,7 +82,7 @@ describe("OAuth HTTP endpoints", () => {
       redirect_uri: callback,
       code_challenge: pkceChallenge(verifier),
       code_challenge_method: "S256",
-      scope: "workspace:read workspace:write",
+      scope: "workspace:read workspace:write command:run",
       state: "state-123",
     };
     const page = await inject(app, {
@@ -126,6 +135,7 @@ describe("OAuth HTTP endpoints", () => {
     };
     expect(issued.expires_in).toBe(900);
     expect(issued.scope).toContain("workspace:write");
+    expect(issued.scope).toContain("command:run");
 
     const challenge = await inject(app, { method: "GET", url: "/mcp" });
     expect(challenge.statusCode).toBe(401);

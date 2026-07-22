@@ -34,6 +34,7 @@ export function createApp(config: GatewayConfig): Express {
       actor: token.clientId,
       ipc,
       audit,
+      resourceMetadataUrl: `${config.publicBaseUrl}/.well-known/oauth-protected-resource`,
     });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,

@@ -66,6 +66,7 @@ export function createMcpServer(options: {
   actor: string;
   ipc: IpcClient;
   audit: AuditLogger;
+  resourceMetadataUrl: string;
 }): McpServer {
   const server = new McpServer({ name: "dev-mcp", version: "0.1.0" });
   const add = <Shape extends z.ZodRawShape>(definition: {
@@ -74,6 +75,7 @@ export function createMcpServer(options: {
     description: string;
     inputSchema: Shape;
     scopes: Scope[] | ((params: Record<string, unknown>) => Scope[]);
+    securityScopes?: Scope[];
     annotations: ToolAnnotations;
   }): void => {
     const handler = async (
@@ -88,12 +90,18 @@ export function createMcpServer(options: {
         (scope) => !options.scopes.includes(scope),
       );
       let result: ToolResult;
+      let authenticationMeta: Record<string, unknown> | undefined;
       if (missing.length) {
         result = fail(
           "INSUFFICIENT_SCOPE",
           `Missing required OAuth scope: ${missing.join(" ")}`,
           { required },
         );
+        authenticationMeta = {
+          "mcp/www_authenticate": [
+            createScopeChallenge(options.resourceMetadataUrl, missing),
+          ],
+        };
       } else {
         result = await options.ipc.call(definition.name, params, options.actor);
       }
@@ -113,8 +121,18 @@ export function createMcpServer(options: {
         content: [{ type: "text" as const, text: summary }],
         structuredContent: result as StructuredToolResult,
         isError: !result.ok,
+        _meta: authenticationMeta,
       };
     };
+    const securityScopes =
+      typeof definition.scopes === "function"
+        ? definition.securityScopes
+        : definition.scopes;
+    if (!securityScopes) {
+      throw new Error(
+        `Dynamic scope tool ${definition.name} must declare securityScopes`,
+      );
+    }
     server.registerTool<typeof resultShape, Shape>(
       definition.name,
       {
@@ -123,6 +141,9 @@ export function createMcpServer(options: {
         inputSchema: definition.inputSchema,
         outputSchema: resultShape,
         annotations: definition.annotations,
+        _meta: {
+          securitySchemes: [{ type: "oauth2", scopes: securityScopes }],
+        },
       },
       handler as never,
     );
@@ -262,6 +283,7 @@ export function createMcpServer(options: {
       "command:run",
       ...(p.network_intent === "none" ? [] : ["command:network" as const]),
     ],
+    securityScopes: ["command:run", "command:network"],
     annotations: shell,
   });
   add({
@@ -300,6 +322,7 @@ export function createMcpServer(options: {
       "command:run",
       ...(p.network_intent === "none" ? [] : ["command:network" as const]),
     ],
+    securityScopes: ["command:run", "command:network"],
     annotations: shell,
   });
   add({
@@ -389,6 +412,22 @@ export function createMcpServer(options: {
     annotations: write,
   });
   return server;
+}
+
+function createScopeChallenge(
+  resourceMetadataUrl: string,
+  scopes: Scope[],
+): string {
+  const metadata = escapeQuotedString(resourceMetadataUrl);
+  const scope = escapeQuotedString(scopes.join(" "));
+  const description = escapeQuotedString(
+    `Additional authorization is required for: ${scopes.join(" ")}`,
+  );
+  return `Bearer resource_metadata="${metadata}", error="insufficient_scope", error_description="${description}", scope="${scope}"`;
+}
+
+function escapeQuotedString(value: string): string {
+  return value.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
 }
 
 function auditParams(params: Record<string, unknown>): Record<string, unknown> {

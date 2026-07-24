@@ -1,12 +1,24 @@
+import { randomUUID } from "node:crypto";
 import express, { type Express, type Request, type Response } from "express";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import type { GatewayConfig } from "./config.ts";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import type { GatewayConfig, Scope } from "./config.ts";
 import { AuthStore, type TokenInfo } from "./auth-store.ts";
 import { AuditLogger } from "./audit.ts";
 import { installOAuthRoutes } from "./oauth.ts";
 import { IpcClient } from "./ipc-client.ts";
 import { createMcpServer } from "./mcp-tools.ts";
 import { errorPage, landingPage, securityPage, sendPage } from "./pages.ts";
+
+const SESSION_IDLE_TIMEOUT_MS = 24 * 60 * 60_000;
+
+interface McpSession {
+  actor: string;
+  scopeKey: string;
+  server: ReturnType<typeof createMcpServer>;
+  transport: StreamableHTTPServerTransport;
+  idleTimer?: NodeJS.Timeout;
+}
 
 export function createApp(config: GatewayConfig): Express {
   const app = express();
@@ -15,6 +27,37 @@ export function createApp(config: GatewayConfig): Express {
   const auth = new AuthStore(config.dataDir);
   const audit = new AuditLogger(config.dataDir);
   const ipc = new IpcClient(config.runnerSocket);
+  const sessions = new Map<string, McpSession>();
+
+  const forgetSession = (sessionId: string, session: McpSession): void => {
+    if (sessions.get(sessionId) !== session) {
+      return;
+    }
+    sessions.delete(sessionId);
+    if (session.idleTimer) {
+      clearTimeout(session.idleTimer);
+      session.idleTimer = undefined;
+    }
+  };
+
+  const closeSession = async (
+    sessionId: string,
+    session: McpSession,
+  ): Promise<void> => {
+    forgetSession(sessionId, session);
+    await session.server.close();
+  };
+
+  const touchSession = (sessionId: string, session: McpSession): void => {
+    if (session.idleTimer) {
+      clearTimeout(session.idleTimer);
+    }
+    session.idleTimer = setTimeout(() => {
+      void closeSession(sessionId, session);
+    }, SESSION_IDLE_TIMEOUT_MS);
+    session.idleTimer.unref();
+  };
+
   installOAuthRoutes(app, config, auth, audit);
 
   app.get("/", (_req, res) => {
@@ -29,24 +72,68 @@ export function createApp(config: GatewayConfig): Express {
     if (!token) {
       return;
     }
-    const server = createMcpServer({
-      scopes: token.scopes,
-      actor: token.clientId,
-      ipc,
-      audit,
-      resourceMetadataUrl: `${config.publicBaseUrl}/.well-known/oauth-protected-resource`,
-    });
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
-      enableJsonResponse: true,
-    });
     try {
-      await server.connect(transport);
-      res.on("close", () => {
-        void transport.close();
-        void server.close();
+      const sessionId = sessionHeader(req);
+      if (sessionId) {
+        const session = authorizedSession(sessions, sessionId, token, res);
+        if (!session) {
+          return;
+        }
+        touchSession(sessionId, session);
+        await session.transport.handleRequest(req, res, req.body);
+        return;
+      }
+      if (!isInitializeRequest(req.body)) {
+        sendMcpError(
+          res,
+          400,
+          -32000,
+          "Mcp-Session-Id is required for non-initialization requests",
+        );
+        return;
+      }
+
+      let session: McpSession;
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: randomUUID,
+        enableJsonResponse: true,
+        onsessioninitialized: (createdSessionId) => {
+          sessions.set(createdSessionId, session);
+          touchSession(createdSessionId, session);
+        },
+        onsessionclosed: (closedSessionId) => {
+          forgetSession(closedSessionId, session);
+        },
       });
-      await transport.handleRequest(req, res, req.body);
+      const server = createMcpServer({
+        scopes: token.scopes,
+        actor: token.clientId,
+        ipc,
+        audit,
+        resourceMetadataUrl: `${config.publicBaseUrl}/.well-known/oauth-protected-resource`,
+      });
+      session = {
+        actor: token.clientId,
+        scopeKey: scopeKey(token.scopes),
+        server,
+        transport,
+      };
+      transport.onclose = () => {
+        const closedSessionId = transport.sessionId;
+        if (closedSessionId) {
+          forgetSession(closedSessionId, session);
+        }
+      };
+      try {
+        await server.connect(transport);
+        await transport.handleRequest(req, res, req.body);
+      } catch (error) {
+        await server.close();
+        throw error;
+      }
+      if (!transport.sessionId) {
+        await server.close();
+      }
     } catch (error) {
       await audit.write({
         event: "mcp_error",
@@ -54,27 +141,38 @@ export function createApp(config: GatewayConfig): Express {
         message: error instanceof Error ? error.message : String(error),
       });
       if (!res.headersSent) {
-        res.status(500).json({
-          jsonrpc: "2.0",
-          error: { code: -32603, message: "Internal server error" },
-          id: null,
-        });
+        sendMcpError(res, 500, -32603, "Internal server error");
       }
     }
   });
   for (const method of ["get", "delete"] as const) {
     app[method]("/mcp", async (req: Request, res: Response) => {
-      if (!(await authenticate(req, res, auth, config))) {
+      const token = await authenticate(req, res, auth, config);
+      if (!token) {
         return;
       }
-      res.status(405).json({
-        jsonrpc: "2.0",
-        error: {
-          code: -32000,
-          message: "Method not allowed for stateless MCP",
-        },
-        id: null,
-      });
+      const sessionId = sessionHeader(req);
+      if (!sessionId) {
+        sendMcpError(res, 400, -32000, "Mcp-Session-Id header is required");
+        return;
+      }
+      const session = authorizedSession(sessions, sessionId, token, res);
+      if (!session) {
+        return;
+      }
+      touchSession(sessionId, session);
+      try {
+        await session.transport.handleRequest(req, res);
+      } catch (error) {
+        await audit.write({
+          event: "mcp_error",
+          actor: token.clientId,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        if (!res.headersSent) {
+          sendMcpError(res, 500, -32603, "Internal server error");
+        }
+      }
     });
   }
   app.use((req, res) => {
@@ -92,6 +190,55 @@ export function createApp(config: GatewayConfig): Express {
     return res.status(404).json({ error: "not_found" });
   });
   return app;
+}
+
+function sessionHeader(req: Request): string | undefined {
+  const value = req.header("mcp-session-id")?.trim();
+  return value || undefined;
+}
+
+function scopeKey(scopes: Scope[]): string {
+  return [...new Set(scopes)].sort().join(" ");
+}
+
+function authorizedSession(
+  sessions: Map<string, McpSession>,
+  sessionId: string,
+  token: TokenInfo,
+  res: Response,
+): McpSession | undefined {
+  const session = sessions.get(sessionId);
+  if (!session) {
+    sendMcpError(res, 404, -32001, "Session not found");
+    return undefined;
+  }
+  if (session.actor !== token.clientId) {
+    sendMcpError(res, 404, -32001, "Session not found");
+    return undefined;
+  }
+  if (session.scopeKey !== scopeKey(token.scopes)) {
+    sendMcpError(
+      res,
+      403,
+      -32003,
+      "Session authorization changed; initialize a new session",
+    );
+    return undefined;
+  }
+  return session;
+}
+
+function sendMcpError(
+  res: Response,
+  status: number,
+  code: number,
+  message: string,
+): Response {
+  return res.status(status).json({
+    jsonrpc: "2.0",
+    error: { code, message },
+    id: null,
+  });
 }
 
 async function authenticate(

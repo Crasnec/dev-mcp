@@ -33,6 +33,12 @@ interface RefreshToken {
   expiresAt: number;
   createdAt: number;
 }
+interface RefreshedTokens {
+  accessToken: string;
+  refreshToken: string;
+  expiresIn: number;
+  scopes: Scope[];
+}
 interface Database {
   clients: OAuthClient[];
   pending: Record<string, PendingAuthorization>;
@@ -48,8 +54,21 @@ export interface TokenInfo {
   expiresAt: number;
 }
 
+const ACCESS_TOKEN_TTL_MS = 15 * 60_000;
+const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60_000;
+const REFRESH_RETRY_GRACE_MS = 5_000;
+
 export class AuthStore {
   private readonly store: JsonStore<Database>;
+  private readonly refreshInFlight = new Map<
+    string,
+    Promise<RefreshedTokens | undefined>
+  >();
+  private readonly recentRefreshes = new Map<
+    string,
+    { value: RefreshedTokens; expiresAt: number }
+  >();
+
   constructor(dataDir: string) {
     this.store = new JsonStore(path.join(dataDir, "oauth.json"), () => ({
       clients: [],
@@ -165,33 +184,62 @@ export class AuthStore {
         clientId,
         scopes,
         createdAt: now,
-        expiresAt: now + 15 * 60_000,
+        expiresAt: now + ACCESS_TOKEN_TTL_MS,
       };
       db.refreshTokens[tokenHash(refreshToken)] = {
         clientId,
         scopes,
         createdAt: now,
-        expiresAt: now + 30 * 24 * 60 * 60_000,
+        expiresAt: now + REFRESH_TOKEN_TTL_MS,
       };
     });
-    return { accessToken, refreshToken, expiresIn: 15 * 60 };
+    return {
+      accessToken,
+      refreshToken,
+      expiresIn: ACCESS_TOKEN_TTL_MS / 1_000,
+    };
   }
 
   async refresh(input: {
     refreshToken: string;
     clientId: string;
     requestedScopes?: Scope[];
-  }): Promise<
-    | {
-        accessToken: string;
-        refreshToken: string;
-        expiresIn: number;
-        scopes: Scope[];
+  }): Promise<RefreshedTokens | undefined> {
+    const requestKey = refreshRequestKey(input);
+    const cached = this.recentRefreshes.get(requestKey);
+    if (cached) {
+      if (cached.expiresAt > Date.now()) {
+        return cached.value;
       }
-    | undefined
-  > {
-    let scopes: Scope[] | undefined;
-    const valid = await this.store.update((db) => {
+      this.recentRefreshes.delete(requestKey);
+    }
+
+    const existing = this.refreshInFlight.get(requestKey);
+    if (existing) {
+      return existing;
+    }
+
+    const operation = this.rotateRefresh(input);
+    this.refreshInFlight.set(requestKey, operation);
+    try {
+      const refreshed = await operation;
+      if (refreshed) {
+        this.rememberRefresh(requestKey, refreshed);
+      }
+      return refreshed;
+    } finally {
+      if (this.refreshInFlight.get(requestKey) === operation) {
+        this.refreshInFlight.delete(requestKey);
+      }
+    }
+  }
+
+  private rotateRefresh(input: {
+    refreshToken: string;
+    clientId: string;
+    requestedScopes?: Scope[];
+  }): Promise<RefreshedTokens | undefined> {
+    return this.store.update((db) => {
       cleanup(db);
       const key = tokenHash(input.refreshToken);
       const token = db.refreshTokens[key];
@@ -200,23 +248,53 @@ export class AuthStore {
         token.clientId !== input.clientId ||
         token.expiresAt <= Date.now()
       ) {
-        return false;
+        return undefined;
       }
       if (
         input.requestedScopes &&
         input.requestedScopes.some((scope) => !token.scopes.includes(scope))
       ) {
-        return false;
+        return undefined;
       }
-      scopes = input.requestedScopes ?? token.scopes;
+
+      const scopes = input.requestedScopes ?? token.scopes;
+      const accessToken = randomToken();
+      const refreshToken = randomToken(48);
+      const now = Date.now();
+
       delete db.refreshTokens[key];
-      return true;
+      db.accessTokens[tokenHash(accessToken)] = {
+        clientId: input.clientId,
+        scopes,
+        createdAt: now,
+        expiresAt: now + ACCESS_TOKEN_TTL_MS,
+      };
+      db.refreshTokens[tokenHash(refreshToken)] = {
+        clientId: input.clientId,
+        scopes,
+        createdAt: now,
+        expiresAt: now + REFRESH_TOKEN_TTL_MS,
+      };
+
+      return {
+        accessToken,
+        refreshToken,
+        expiresIn: ACCESS_TOKEN_TTL_MS / 1_000,
+        scopes,
+      };
     });
-    if (!valid || !scopes) {
-      return undefined;
-    }
-    const issued = await this.issueTokens(input.clientId, scopes);
-    return { ...issued, scopes };
+  }
+
+  private rememberRefresh(requestKey: string, value: RefreshedTokens): void {
+    const expiresAt = Date.now() + REFRESH_RETRY_GRACE_MS;
+    this.recentRefreshes.set(requestKey, { value, expiresAt });
+    const timer = setTimeout(() => {
+      const current = this.recentRefreshes.get(requestKey);
+      if (current?.expiresAt === expiresAt) {
+        this.recentRefreshes.delete(requestKey);
+      }
+    }, REFRESH_RETRY_GRACE_MS);
+    timer.unref();
   }
 
   async access(rawToken: string): Promise<TokenInfo | undefined> {
@@ -241,6 +319,17 @@ export class AuthStore {
       cleanup(db);
     });
   }
+}
+
+function refreshRequestKey(input: {
+  refreshToken: string;
+  clientId: string;
+  requestedScopes?: Scope[];
+}): string {
+  const scopes = input.requestedScopes
+    ? [...new Set(input.requestedScopes)].sort().join(" ")
+    : "*";
+  return `${tokenHash(input.refreshToken)}:${input.clientId}:${scopes}`;
 }
 
 function cleanup(db: Database): void {

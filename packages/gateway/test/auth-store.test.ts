@@ -78,6 +78,46 @@ describe("OAuth token lifecycle", () => {
     expect(await store.access(refreshed!.accessToken)).toBeUndefined();
   });
 
+  it("deduplicates concurrent refreshes and tolerates a short retry window", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const data = await mkdtemp(path.join(os.tmpdir(), "mcp-auth-refresh-"));
+    temporary.push(data);
+    const store = new AuthStore(data);
+    const client = await store.registerClient("refresh-race", [
+      "https://chat.example/callback",
+    ]);
+    const tokens = await store.issueTokens(client.clientId, [
+      "workspace:read",
+      "workspace:write",
+    ]);
+    const input = {
+      refreshToken: tokens.refreshToken,
+      clientId: client.clientId,
+      requestedScopes: ["workspace:read"] as const,
+    };
+
+    const [first, second] = await Promise.all([
+      store.refresh(input),
+      store.refresh(input),
+    ]);
+    expect(first).toBeTruthy();
+    expect(second).toEqual(first);
+
+    const retry = await store.refresh(input);
+    expect(retry).toEqual(first);
+
+    vi.advanceTimersByTime(5_001);
+    expect(await store.refresh(input)).toBeUndefined();
+
+    const rotatedAgain = await store.refresh({
+      refreshToken: first!.refreshToken,
+      clientId: client.clientId,
+      requestedScopes: ["workspace:read"],
+    });
+    expect(rotatedAgain).toBeTruthy();
+  });
+
   it("expires authorization codes, access tokens, and refresh tokens at their configured TTLs", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));

@@ -2,6 +2,7 @@ import path from "node:path";
 import type { Scope } from "./config.ts";
 import { JsonStore } from "./json-store.ts";
 import { pkceChallenge, randomToken, tokenHash } from "./crypto.ts";
+import type { Principal } from "./user-store.ts";
 
 export interface OAuthClient {
   clientId: string;
@@ -10,6 +11,7 @@ export interface OAuthClient {
   createdAt: number;
 }
 interface PendingAuthorization {
+  browserBinding?: string;
   clientId: string;
   redirectUri: string;
   state?: string;
@@ -20,20 +22,21 @@ interface PendingAuthorization {
 }
 interface AuthorizationCode extends PendingAuthorization {
   used: boolean;
+  principal: Principal;
 }
-interface AccessToken {
+interface AccessToken extends Principal {
   clientId: string;
   scopes: Scope[];
   expiresAt: number;
   createdAt: number;
 }
-interface RefreshToken {
+interface RefreshToken extends Principal {
   clientId: string;
   scopes: Scope[];
   expiresAt: number;
   createdAt: number;
 }
-interface RefreshedTokens {
+interface RefreshedTokens extends Principal {
   accessToken: string;
   refreshToken: string;
   expiresIn: number;
@@ -47,7 +50,7 @@ interface Database {
   refreshTokens: Record<string, RefreshToken>;
 }
 
-export interface TokenInfo {
+export interface TokenInfo extends Principal {
   tokenHash: string;
   clientId: string;
   scopes: Scope[];
@@ -130,12 +133,16 @@ export class AuthStore {
     return value && value.expiresAt > Date.now() ? value : undefined;
   }
 
-  async createCode(pending: PendingAuthorization): Promise<string> {
+  async createCode(
+    pending: PendingAuthorization,
+    principal: Principal,
+  ): Promise<string> {
     const code = randomToken();
     await this.store.update((db) => {
       cleanup(db);
       db.codes[tokenHash(code)] = {
         ...pending,
+        principal,
         expiresAt: Date.now() + 5 * 60_000,
         used: false,
       };
@@ -148,13 +155,14 @@ export class AuthStore {
     clientId: string;
     redirectUri: string;
     verifier: string;
-  }): Promise<{ scopes: Scope[] } | undefined> {
+  }): Promise<({ scopes: Scope[] } & Principal) | undefined> {
     return this.store.update((db) => {
       cleanup(db);
       const key = tokenHash(input.code);
       const code = db.codes[key];
       if (
         !code ||
+        !code.principal ||
         code.used ||
         code.expiresAt <= Date.now() ||
         code.clientId !== input.clientId ||
@@ -167,13 +175,14 @@ export class AuthStore {
       }
       code.used = true;
       delete db.codes[key];
-      return { scopes: code.scopes };
+      return { scopes: code.scopes, ...code.principal };
     });
   }
 
   async issueTokens(
     clientId: string,
     scopes: Scope[],
+    principal: Principal,
   ): Promise<{ accessToken: string; refreshToken: string; expiresIn: number }> {
     const accessToken = randomToken();
     const refreshToken = randomToken(48);
@@ -181,12 +190,14 @@ export class AuthStore {
     await this.store.update((db) => {
       cleanup(db);
       db.accessTokens[tokenHash(accessToken)] = {
+        ...principal,
         clientId,
         scopes,
         createdAt: now,
         expiresAt: now + ACCESS_TOKEN_TTL_MS,
       };
       db.refreshTokens[tokenHash(refreshToken)] = {
+        ...principal,
         clientId,
         scopes,
         createdAt: now,
@@ -209,7 +220,9 @@ export class AuthStore {
     const cached = this.recentRefreshes.get(requestKey);
     if (cached) {
       if (cached.expiresAt > Date.now()) {
-        return cached.value;
+        return (await this.access(cached.value.accessToken))
+          ? cached.value
+          : undefined;
       }
       this.recentRefreshes.delete(requestKey);
     }
@@ -245,6 +258,8 @@ export class AuthStore {
       const token = db.refreshTokens[key];
       if (
         !token ||
+        !token.userId ||
+        !Number.isSafeInteger(token.authVersion) ||
         token.clientId !== input.clientId ||
         token.expiresAt <= Date.now()
       ) {
@@ -264,12 +279,16 @@ export class AuthStore {
 
       delete db.refreshTokens[key];
       db.accessTokens[tokenHash(accessToken)] = {
+        userId: token.userId,
+        authVersion: token.authVersion,
         clientId: input.clientId,
         scopes,
         createdAt: now,
         expiresAt: now + ACCESS_TOKEN_TTL_MS,
       };
       db.refreshTokens[tokenHash(refreshToken)] = {
+        userId: token.userId,
+        authVersion: token.authVersion,
         clientId: input.clientId,
         scopes,
         createdAt: now,
@@ -277,6 +296,8 @@ export class AuthStore {
       };
 
       return {
+        userId: token.userId,
+        authVersion: token.authVersion,
         accessToken,
         refreshToken,
         expiresIn: ACCESS_TOKEN_TTL_MS / 1_000,
@@ -299,11 +320,20 @@ export class AuthStore {
 
   async access(rawToken: string): Promise<TokenInfo | undefined> {
     const hash = tokenHash(rawToken);
-    const token = (await this.store.read()).accessTokens[hash];
-    if (!token || token.expiresAt <= Date.now()) {
+    const db = await this.store.read();
+    const token = db.accessTokens[hash];
+    if (
+      !token ||
+      !db.clients.some((client) => client.clientId === token.clientId) ||
+      !token.userId ||
+      !Number.isSafeInteger(token.authVersion) ||
+      token.expiresAt <= Date.now()
+    ) {
       return undefined;
     }
     return {
+      userId: token.userId,
+      authVersion: token.authVersion,
       tokenHash: hash,
       clientId: token.clientId,
       scopes: token.scopes,
@@ -318,6 +348,83 @@ export class AuthStore {
       delete db.refreshTokens[hash];
       cleanup(db);
     });
+  }
+
+  async clients(): Promise<OAuthClient[]> {
+    return (await this.store.read()).clients;
+  }
+
+  async connectionSummary(principals: Principal[]): Promise<
+    Array<{
+      clientId: string;
+      userId: string;
+      accessCount: number;
+      refreshCount: number;
+    }>
+  > {
+    const db = await this.store.read();
+    const versions = new Map(
+      principals.map((principal) => [principal.userId, principal.authVersion]),
+    );
+    const groups = new Map<
+      string,
+      {
+        clientId: string;
+        userId: string;
+        accessCount: number;
+        refreshCount: number;
+      }
+    >();
+    for (const [tokens, kind] of [
+      [db.accessTokens, "accessCount"],
+      [db.refreshTokens, "refreshCount"],
+    ] as const) {
+      for (const token of Object.values(tokens)) {
+        if (
+          token.expiresAt <= Date.now() ||
+          !token.userId ||
+          versions.get(token.userId) !== token.authVersion
+        ) {
+          continue;
+        }
+        const key = token.userId + ":" + token.clientId;
+        const group = groups.get(key) ?? {
+          clientId: token.clientId,
+          userId: token.userId,
+          accessCount: 0,
+          refreshCount: 0,
+        };
+        group[kind] += 1;
+        groups.set(key, group);
+      }
+    }
+    return [...groups.values()];
+  }
+
+  async removeClient(clientId: string): Promise<void> {
+    await this.store.update((db) => {
+      if (!db.clients.some((client) => client.clientId === clientId)) {
+        throw new Error("클라이언트를 찾을 수 없습니다.");
+      }
+      db.clients = db.clients.filter((client) => client.clientId !== clientId);
+      for (const records of [
+        db.pending,
+        db.codes,
+        db.accessTokens,
+        db.refreshTokens,
+      ]) {
+        for (const [key, entry] of Object.entries(records)) {
+          if (entry.clientId === clientId) {
+            delete records[key];
+          }
+        }
+      }
+    });
+    for (const [key, value] of this.recentRefreshes) {
+      if (!(await this.access(value.value.accessToken))) {
+        this.recentRefreshes.delete(key);
+      }
+    }
   }
 }
 

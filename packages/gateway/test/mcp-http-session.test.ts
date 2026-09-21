@@ -5,6 +5,8 @@ import os from "node:os";
 import inject from "light-my-request";
 import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
 import { createApp } from "../src/app.ts";
+import { UserStore } from "../src/user-store.ts";
+import { legacyUser } from "./legacy-user.ts";
 import { AuthStore } from "../src/auth-store.ts";
 
 const temporary: string[] = [];
@@ -21,10 +23,17 @@ describe("MCP HTTP sessions", () => {
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "mcp-http-session-"));
     temporary.push(dataDir);
     const store = new AuthStore(dataDir);
+    const users = new UserStore(dataDir, "unused-in-this-test");
+    const admin = (await users.list())[0]!;
+    const principal = { userId: admin.id, authVersion: admin.authVersion };
     const client = await store.registerClient("session-test", [
       "https://chat.example.test/oauth/callback",
     ]);
-    const issued = await store.issueTokens(client.clientId, ["workspace:read"]);
+    const issued = await store.issueTokens(
+      client.clientId,
+      ["workspace:read"],
+      principal,
+    );
     const app = createApp({
       port: 3000,
       publicBaseUrl: "https://dev.example.test",
@@ -78,9 +87,11 @@ describe("MCP HTTP sessions", () => {
       ]),
     );
 
-    const refreshed = await store.issueTokens(client.clientId, [
-      "workspace:read",
-    ]);
+    const refreshed = await store.issueTokens(
+      client.clientId,
+      ["workspace:read"],
+      principal,
+    );
     const afterRefresh = await mcpPost(
       app,
       refreshed.accessToken,
@@ -89,10 +100,37 @@ describe("MCP HTTP sessions", () => {
     );
     expect(afterRefresh.statusCode).toBe(200);
 
-    const broadened = await store.issueTokens(client.clientId, [
-      "workspace:read",
-      "workspace:write",
-    ]);
+    const other = await legacyUser(
+      users,
+      dataDir,
+      "another-user",
+      "another-long-password",
+    );
+    const activeOther = await users.update(admin.id, other.id, {
+      status: "active",
+      role: "user",
+    });
+    const otherTokens = await store.issueTokens(
+      client.clientId,
+      ["workspace:read"],
+      {
+        userId: other.id,
+        authVersion: activeOther.authVersion,
+      },
+    );
+    const crossUser = await mcpPost(
+      app,
+      otherTokens.accessToken,
+      { jsonrpc: "2.0", id: 20, method: "tools/list", params: {} },
+      sessionId as string,
+    );
+    expect(crossUser.statusCode).toBe(404);
+
+    const broadened = await store.issueTokens(
+      client.clientId,
+      ["workspace:read", "workspace:write"],
+      principal,
+    );
     const changedAuthorization = await mcpPost(
       app,
       broadened.accessToken,

@@ -65,6 +65,8 @@ export class RunnerRuntime {
             optionalInt(p, "start_line") ?? 1,
             optionalInt(p, "line_count") ?? 200,
           );
+        case "image_read":
+          return this.files.readImage(str(p, "project_id"), str(p, "path"));
         case "file_search":
           return this.files.search(
             str(p, "project_id"),
@@ -96,8 +98,6 @@ export class RunnerRuntime {
           );
         case "process_list":
           return this.processes.list(optionalStr(p, "project_id"));
-        case "process_status":
-          return this.processes.status(str(p, "process_id"));
         case "process_logs":
           return this.processes.logs(
             str(p, "process_id"),
@@ -106,16 +106,11 @@ export class RunnerRuntime {
           );
         case "process_stop":
           return this.processes.stop(str(p, "process_id"));
-        case "git_status":
-          return this.git.status(str(p, "project_id"));
-        case "git_diff":
-          return this.git.diff(
+        case "git_read":
+          return this.git.read(
             str(p, "project_id"),
+            str(p, "operation"),
             optionalBool(p, "staged") ?? false,
-          );
-        case "git_log":
-          return this.git.log(
-            str(p, "project_id"),
             optionalInt(p, "limit") ?? 20,
           );
         case "git_commit":

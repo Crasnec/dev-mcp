@@ -1,0 +1,6 @@
+<div class="detail-heading"><div><a href="/admin/projects?owner={{owner.id}}" class="back-link">← {{owner.username}}님의 프로젝트</a><h2>{{project.name}}</h2><code>{{project.relativePath}}</code></div></div>
+<section class="panel padded"><h2>Git 상태</h2><pre class="log-output">{{gitOutput}}</pre></section>
+<div class="two-column">
+  <section class="panel padded"><h2>프로젝트 등록 해제</h2><p class="help">목록에서만 제거합니다. 디렉토리와 파일은 그대로 남습니다.</p><form method="post" action="/admin/projects/{{owner.id}}/{{project.id}}/unregister">{{> partials/csrf}}<button type="submit">등록 해제</button></form></section>
+  <section class="panel padded danger-zone"><h2>프로젝트 영구 삭제</h2><p class="help">디렉토리와 파일을 삭제하고 등록을 해제합니다. 복구할 수 없습니다. 실행 중인 관련 작업을 먼저 종료해 주세요.</p><form method="post" action="/admin/projects/{{owner.id}}/{{project.id}}/delete">{{> partials/csrf}}<label>확인을 위해 프로젝트 이름 입력: <strong>{{project.name}}</strong><input name="confirmation" required autocomplete="off"></label><button class="danger" type="submit">파일과 프로젝트 영구 삭제</button></form></section>
+</div>

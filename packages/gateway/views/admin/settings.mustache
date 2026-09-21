@@ -1,0 +1,5 @@
+<p class="notice">신규 가입은 Google 로그인으로만 받습니다. Google 클라이언트의 콜백 주소: <code>{{publicBaseUrl}}/auth/google/callback</code></p>
+<div class="two-column">
+  <section class="panel padded"><h2>회원가입 정책</h2><form method="post" action="/admin/settings">{{> partials/csrf}}<label class="checkbox-label"><input type="checkbox" name="registrationOpen" {{#settings.registrationOpen}}checked{{/settings.registrationOpen}}> 신규 회원가입 접수</label><p class="help">접수를 닫아도 기존 사용자의 로그인은 유지됩니다. 신규 계정은 항상 관리자 승인이 필요합니다.</p><label>가입 안내 문구<textarea name="registrationMessage" rows="5" maxlength="1000" placeholder="가입 화면에 표시할 안내를 입력하세요.">{{settings.registrationMessage}}</textarea></label><button class="primary" type="submit">설정 저장</button></form></section>
+  <section class="panel padded"><h2>서비스 정보</h2><dl class="properties"><div><dt>공개 주소</dt><dd><code>{{publicBaseUrl}}</code></dd></div><div><dt>MCP 주소</dt><dd><code>{{publicBaseUrl}}/mcp</code></dd></div><div><dt>계정 승인</dt><dd>관리자 승인 필수</dd></div><div><dt>작업 공간</dt><dd>사용자별 전용 실행 환경</dd></div></dl><p class="help">도메인과 컨테이너 구성은 호스트의 배포 설정에서 변경합니다. 비밀번호와 인증 키는 이 화면에 표시하지 않습니다.</p></section>
+</div>

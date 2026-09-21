@@ -1,4 +1,4 @@
-import { rm } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { loadConfig } from "./config.ts";
 import { startIpcServer } from "./ipc-server.ts";
 import { RunnerRuntime } from "./runtime.ts";
@@ -6,7 +6,13 @@ import { RunnerRuntime } from "./runtime.ts";
 const config = loadConfig();
 const runtime = new RunnerRuntime(config);
 await runtime.initialize();
-const server = await startIpcServer(config.socketPath, runtime);
+const secret = config.ipcSecretFile
+  ? (await readFile(config.ipcSecretFile, "utf8")).trim()
+  : undefined;
+if (secret !== undefined && !/^[a-f0-9]{64}$/.test(secret)) {
+  throw new Error("Invalid runner IPC key");
+}
+const server = await startIpcServer(config.socketPath, runtime, secret);
 console.log(
   JSON.stringify({ event: "runner_ready", socket: config.socketPath }),
 );

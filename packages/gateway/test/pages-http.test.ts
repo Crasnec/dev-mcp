@@ -16,7 +16,7 @@ afterEach(async () => {
 });
 
 describe("browser pages", () => {
-  it("serves the landing, security, and HTML not-found pages", async () => {
+  it("serves connection instructions and HTML or JSON not-found responses", async () => {
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "mcp-pages-http-"));
     temporary.push(dataDir);
     const app = createApp({
@@ -37,7 +37,7 @@ describe("browser pages", () => {
     expect(home.headers["content-security-policy"]).toContain(
       "form-action 'none'",
     );
-    expect(home.payload).toContain("Your workspace, within reach.");
+    expect(home.payload).toContain("내 작업 공간을");
     expect(home.payload).toContain("https://dev.example.test/mcp");
 
     const security = await inject(app, {
@@ -45,9 +45,7 @@ describe("browser pages", () => {
       url: "/security",
       headers: { accept: "text/html" },
     });
-    expect(security.statusCode).toBe(200);
-    expect(security.payload).toContain("Small surface.");
-    expect(security.payload).toContain("One controlled mount");
+    expect(security.statusCode).toBe(404);
 
     const missingPage = await inject(app, {
       method: "GET",

@@ -4,6 +4,7 @@ export interface RunnerConfig {
   workspaceRoot: string;
   dataDir: string;
   socketPath: string;
+  ipcSecretFile?: string;
   maxConcurrentCommands: number;
   maxConcurrentProcesses: number;
   defaultCommandTimeoutMs: number;
@@ -28,6 +29,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RunnerConfig {
     workspaceRoot: path.resolve(env.WORKSPACE_ROOT ?? "/workspace"),
     dataDir: path.resolve(env.RUNNER_DATA_DIR ?? "/var/lib/dev-mcp"),
     socketPath: path.resolve(env.RUNNER_SOCKET ?? "/ipc/runner.sock"),
+    ipcSecretFile: env.RUNNER_IPC_SECRET_FILE,
     maxConcurrentCommands: nonNegativeInt(env.MAX_CONCURRENT_COMMANDS, 4) || 1,
     maxConcurrentProcesses:
       nonNegativeInt(env.MAX_CONCURRENT_PROCESSES, 8) || 1,

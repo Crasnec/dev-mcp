@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f6f7f3">
+  <meta name="robots" content="noindex,nofollow">
+  <title>{{title}} · Dev MCP 관리</title>
+  <link rel="stylesheet" href="/assets/admin.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">본문 바로가기</a>
+  <div class="admin-shell">
+    <aside class="sidebar">
+      {{> partials/brand}}
+      <span class="workspace-label">관리 워크스페이스</span>
+      <nav aria-label="관리자 메뉴">
+        {{#navigation}}<a href="{{href}}" {{#active}}class="active" aria-current="page"{{/active}}><span class="nav-mark" aria-hidden="true">{{mark}}</span>{{label}}</a>{{/navigation}}
+      </nav>
+      <div class="sidebar-bottom"><span class="avatar">{{actor.username}}</span><strong>{{actor.username}}</strong><small>서비스 관리자</small><a href="/account">내 계정 설정 ↗</a></div>
+    </aside>
+    <div class="workspace">
+      <header class="topbar"><div class="breadcrumb"><a href="/admin">관리자</a><span>/</span><a href="{{sectionHref}}">{{title}}</a></div><form method="post" action="/logout">{{> partials/csrf}}<button class="quiet" type="submit">로그아웃</button></form></header>
+      <main id="main">
+        <div class="page-heading"><div><span class="eyebrow">DEV MCP / OPERATIONS</span><h1>{{title}}</h1><p>{{description}}</p></div><a class="button" href="{{sectionHref}}">새로고침 ↻</a></div>
+        {{> partials/notice}}
+        {{{body}}}
+      </main>
+      <footer class="workspace-footer"><span>Dev MCP 관리</span><span>시간 표기: UTC</span></footer>
+    </div>
+  </div>
+</body>
+</html>

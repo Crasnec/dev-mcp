@@ -156,7 +156,7 @@ export class ProcessService {
     });
   }
 
-  async status(id: string): Promise<ToolResult> {
+  private async status(id: string): Promise<ToolResult> {
     await this.refresh();
     const record = (await this.store.read()).processes.find(
       (entry) => entry.id === id,

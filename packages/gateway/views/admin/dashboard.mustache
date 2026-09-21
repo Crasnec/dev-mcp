@@ -1,0 +1,19 @@
+<section class="metrics" aria-label="운영 요약">
+  {{#metrics}}<a class="metric" href="{{href}}"><span>{{label}}</span><strong>{{value}}</strong><small>상세 보기 ↗</small></a>{{/metrics}}
+</section>
+<div class="two-column">
+  <section class="panel">
+    <div class="panel-heading"><div><h2>승인을 기다리는 사용자</h2><p>계정을 확인하고 이용을 승인하세요.</p></div><a href="/admin/users?status=pending">전체 보기 →</a></div>
+    <ul class="activity-list">{{#pending}}<li><div><a href="{{href}}"><strong>{{username}}</strong></a><small>{{createdLabel}}</small></div><a class="button" href="{{href}}">검토</a></li>{{/pending}}</ul>
+    {{^pending}}<div class="empty-state"><strong>모든 요청을 확인했어요.</strong><p>새로운 가입 요청이 있으면 여기에 표시됩니다.</p></div>{{/pending}}
+  </section>
+  <section class="panel">
+    <div class="panel-heading"><div><h2>최근 활동</h2><p>계정과 작업 공간의 변경 기록입니다.</p></div><a href="/admin/audit">전체 보기 →</a></div>
+    <ul class="activity-list">{{#recent}}<li><div><strong>{{event}}</strong><small>{{actor}} · {{at}}</small></div><span class="event-dot" aria-hidden="true"></span></li>{{/recent}}</ul>
+    {{^recent}}<div class="empty-state"><strong>아직 기록이 없습니다.</strong><p>운영 작업이 발생하면 이곳에서 확인할 수 있습니다.</p></div>{{/recent}}
+  </section>
+</div>
+<section class="panel">
+  <div class="panel-heading"><h2>운영 바로가기</h2></div>
+  <div class="quick-links"><a href="/admin/projects"><strong>프로젝트 관리 ↗</strong><span>사용자별 등록 현황과 Git 상태</span></a><a href="/admin/processes"><strong>실행 중인 작업 ↗</strong><span>프로세스 로그 확인과 종료</span></a><a href="/admin/settings"><strong>가입 정책 ↗</strong><span>신규 가입 접수와 안내 문구 설정</span></a></div>
+</section>

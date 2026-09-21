@@ -60,9 +60,9 @@ RUN dnf -y --setopt=install_weak_deps=False install \
     && ! command -v sudo \
     && groupadd --non-unique --gid ${DEV_GID} runner \
     && useradd --non-unique --uid ${DEV_UID} --gid runner --home-dir /var/lib/dev-mcp --no-create-home --shell /bin/bash runner \
-    && mkdir -p /opt/dev-mcp/packages/runner /ipc /var/lib/dev-mcp \
+    && mkdir -p /opt/dev-mcp/packages/runner /ipc /var/lib/dev-mcp /workspace \
     && chmod 0777 /ipc \
-    && chown -R ${DEV_UID}:${DEV_GID} /opt/dev-mcp /var/lib/dev-mcp
+    && chown -R ${DEV_UID}:${DEV_GID} /opt/dev-mcp /var/lib/dev-mcp /workspace
 COPY --from=build --chown=${DEV_UID}:${DEV_GID} /src/packages/runner/package.json /opt/dev-mcp/packages/runner/package.json
 COPY --from=build --chown=${DEV_UID}:${DEV_GID} /src/packages/runner/dist /opt/dev-mcp/packages/runner/dist
 WORKDIR /opt/dev-mcp

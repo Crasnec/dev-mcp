@@ -1,5 +1,9 @@
 .git
 .env
+data
+compose.server.yaml
+oauth-id.txt
+oauth-secret.txt
 node_modules
 **/dist
 coverage

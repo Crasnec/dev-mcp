@@ -84,13 +84,64 @@ describe("workspace workflow", () => {
       "generated\n",
     );
 
-    const diff = await runtime.git.diff(projectId);
+    const diff = await runtime.dispatch({
+      id: "diff-test",
+      method: "git_read",
+      params: { project_id: projectId, operation: "diff" },
+    });
     expect((diff.data as { output: string }).output).toContain("hello world");
     const commit = await runtime.git.commit(projectId, "update fixture");
     expect(commit.ok).toBe(true);
     expect((commit.data as { commit: string }).commit).toMatch(
       /^[0-9a-f]{40}$/,
     );
+  });
+
+  it("dispatches Git reads, paginates output, and rejects removed methods", async () => {
+    const { runtime, root, projectId } = await runtimeFixture(128);
+    const read = (operation: string, extra = {}) =>
+      runtime.dispatch({
+        id: "git-read-test",
+        method: "git_read",
+        params: { project_id: projectId, operation, ...extra },
+      });
+    await writeFile(path.join(root, "hello.txt"), "changed\n");
+    expect((await read("status")).data).toMatchObject({
+      output: expect.stringContaining("hello.txt"),
+    });
+    await exec("git", ["add", "hello.txt"], { cwd: root });
+    expect((await read("diff")).data).toEqual({ output: "" });
+    expect((await read("diff", { staged: true })).data).toMatchObject({
+      output: expect.stringContaining("hello.txt"),
+    });
+    const log = await read("log", { limit: 1 });
+    expect(log.ok).toBe(true);
+    expect(log.data).toMatchObject({
+      output: expect.stringContaining("initial"),
+    });
+    expect((await read("log", { limit: 0 })).error?.code).toBe("INVALID_LIMIT");
+    expect((await read("push")).error?.code).toBe("INVALID_OPERATION");
+    await writeFile(
+      path.join(root, "hello.txt"),
+      "long changed line\n".repeat(100),
+    );
+    const diff = await read("diff");
+    expect(diff.truncated).toBe(true);
+    expect(diff.continuation).toBeTruthy();
+    expect((await runtime.outputs.read(diff.continuation!)).ok).toBe(true);
+    for (const method of [
+      "git_status",
+      "git_diff",
+      "git_log",
+      "process_status",
+    ]) {
+      const result = await runtime.dispatch({
+        id: "removed",
+        method,
+        params: {},
+      });
+      expect(result.error?.code).toBe("METHOD_NOT_FOUND");
+    }
   });
 
   it("paginates long command output", async () => {
@@ -118,6 +169,27 @@ describe("workspace workflow", () => {
     expect((timed.data as { timedOut: boolean }).timedOut).toBe(true);
   });
 
+  it("reads supported images as base64 with detected MIME type", async () => {
+    const { runtime, root, projectId } = await runtimeFixture();
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64",
+    );
+    await writeFile(path.join(root, "pixel.png"), png);
+    const result = await runtime.dispatch({
+      id: "image-test",
+      method: "image_read",
+      params: { project_id: projectId, path: "pixel.png" },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.data).toEqual({
+      path: "pixel.png",
+      mimeType: "image/png",
+      size: png.length,
+      base64: png.toString("base64"),
+    });
+  });
+
   it("tracks logs and stops background process groups", async () => {
     const { runtime, projectId } = await runtimeFixture();
     const started = await runtime.processes.start(
@@ -128,13 +200,30 @@ describe("workspace workflow", () => {
     );
     expect(started.ok).toBe(true);
     const id = (started.data as { process: { id: string } }).process.id;
-    await new Promise((resolve) => setTimeout(resolve, 150));
-    const logs = await runtime.processes.logs(id);
-    expect((logs.data as { output: string }).output).toContain("ready");
+    const listed = await runtime.dispatch({
+      id: "process-list-test",
+      method: "process_list",
+      params: { project_id: projectId },
+    });
+    expect(listed.data).toMatchObject({
+      processes: [expect.objectContaining({ id, status: "running" })],
+    });
+    await expect
+      .poll(
+        async () => {
+          const logs = await runtime.processes.logs(id);
+          return (logs.data as { output: string }).output;
+        },
+        { timeout: 5000 },
+      )
+      .toContain("ready");
     const stopped = await runtime.processes.stop(id);
     expect(stopped.ok).toBe(true);
     expect(
       (stopped.data as { process: { status: string } }).process.status,
     ).toBe("stopped");
+    expect((await runtime.processes.list(projectId)).data).toMatchObject({
+      processes: [expect.objectContaining({ id, status: "stopped" })],
+    });
   });
 });

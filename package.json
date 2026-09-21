@@ -11,8 +11,8 @@
     "clean": "tsc -b --clean",
     "test": "vitest run",
     "test:watch": "vitest",
-    "format": "node scripts/check-style.mjs --fix && prettier --write 'packages/**/*.{ts,json}' 'scripts/*.mjs' '*.{json,ts}'",
-    "style": "node scripts/check-style.mjs && prettier --check 'packages/**/*.{ts,json}' 'scripts/*.mjs' '*.{json,ts}'",
+    "format": "node scripts/check-style.mjs --fix && prettier --write 'packages/**/*.{ts,json,css}' 'scripts/*.mjs' '*.{json,ts}'",
+    "style": "node scripts/check-style.mjs && prettier --check 'packages/**/*.{ts,json,css}' 'scripts/*.mjs' '*.{json,ts}'",
     "typecheck": "tsc -b --pretty false",
     "start:gateway": "node packages/gateway/dist/index.js",
     "start:runner": "node packages/runner/dist/index.js",
@@ -26,6 +26,7 @@
   },
   "devDependencies": {
     "@types/express": "^5.0.3",
+    "@types/mustache": "^4.2.6",
     "@types/node": "^24.1.0",
     "light-my-request": "^6.6.0",
     "prettier": "^3.9.6",

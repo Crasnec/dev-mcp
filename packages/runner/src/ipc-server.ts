@@ -1,5 +1,6 @@
 import { chmod, mkdir, rm } from "node:fs/promises";
 import net from "node:net";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import path from "node:path";
 import type { RpcRequest, RpcResponse } from "./protocol.ts";
 import { MAX_IPC_MESSAGE_BYTES, fail } from "./protocol.ts";
@@ -8,6 +9,7 @@ import type { RunnerRuntime } from "./runtime.ts";
 export async function startIpcServer(
   socketPath: string,
   runtime: RunnerRuntime,
+  secret?: string,
 ): Promise<net.Server> {
   await mkdir(path.dirname(socketPath), { recursive: true, mode: 0o777 });
   await rm(socketPath, { force: true });
@@ -37,6 +39,7 @@ export async function startIpcServer(
       void handleLine(
         buffered.subarray(0, newline).toString("utf8"),
         runtime,
+        secret,
       ).then((response) => {
         socket.end(`${JSON.stringify(response)}\n`);
       });
@@ -56,10 +59,31 @@ export async function startIpcServer(
 async function handleLine(
   line: string,
   runtime: RunnerRuntime,
+  secret?: string,
 ): Promise<RpcResponse> {
   let request: RpcRequest;
   try {
     request = JSON.parse(line) as RpcRequest;
+    if (secret) {
+      const payload = request.params?.payload;
+      const signature = request.params?.signature;
+      if (
+        request.method !== "__authenticated_call" ||
+        typeof payload !== "string" ||
+        typeof signature !== "string"
+      ) {
+        throw new Error("Runner authentication required");
+      }
+      const expected = createHmac("sha256", secret).update(payload).digest();
+      const actual = Buffer.from(signature, "hex");
+      if (
+        actual.length !== expected.length ||
+        !timingSafeEqual(actual, expected)
+      ) {
+        throw new Error("Invalid runner authentication");
+      }
+      request = JSON.parse(payload) as RpcRequest;
+    }
     if (
       !request ||
       typeof request.id !== "string" ||

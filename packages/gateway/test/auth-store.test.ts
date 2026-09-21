@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { AuthStore } from "../src/auth-store.ts";
-import { pkceChallenge } from "../src/crypto.ts";
+import { pkceChallenge, tokenHash } from "../src/crypto.ts";
 
+const principal = { userId: "test-user", authVersion: 1 };
 const temporary: string[] = [];
 afterEach(async () => {
   vi.useRealTimers();
@@ -16,6 +17,65 @@ afterEach(async () => {
 });
 
 describe("OAuth token lifecycle", () => {
+  it("invalidates removed clients including refresh retries cached in another store instance", async () => {
+    const data = await mkdtemp(path.join(os.tmpdir(), "mcp-client-revoke-"));
+    temporary.push(data);
+    const store = new AuthStore(data);
+    const client = await store.registerClient("remove", [
+      "https://chat.example/callback",
+    ]);
+    const tokens = await store.issueTokens(
+      client.clientId,
+      ["workspace:read"],
+      principal,
+    );
+    const input = {
+      clientId: client.clientId,
+      refreshToken: tokens.refreshToken,
+    };
+    const refreshed = await store.refresh(input);
+    expect(refreshed).toBeTruthy();
+    expect(await store.refresh(input)).toEqual(refreshed);
+    await new AuthStore(data).removeClient(client.clientId);
+    expect(await store.access(tokens.accessToken)).toBeUndefined();
+    expect(await store.access(refreshed!.accessToken)).toBeUndefined();
+    expect(await store.refresh(input)).toBeUndefined();
+    expect(
+      await store.refresh({ ...input, refreshToken: refreshed!.refreshToken }),
+    ).toBeUndefined();
+    expect(await store.clients()).toEqual([]);
+    expect(await store.connectionSummary([principal])).toEqual([]);
+  });
+
+  it("rejects legacy credentials that have no user identity", async () => {
+    const data = await mkdtemp(path.join(os.tmpdir(), "mcp-auth-legacy-"));
+    temporary.push(data);
+    const legacy = {
+      clientId: "legacy-client",
+      scopes: ["workspace:read"],
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+    };
+    await writeFile(
+      path.join(data, "oauth.json"),
+      JSON.stringify({
+        clients: [],
+        pending: {},
+        codes: {},
+        accessTokens: { [tokenHash("legacy-access")]: legacy },
+        refreshTokens: { [tokenHash("legacy-refresh")]: legacy },
+      }),
+    );
+    const store = new AuthStore(data);
+    expect(await store.access("legacy-access")).toBeUndefined();
+    expect(
+      await store.refresh({
+        refreshToken: "legacy-refresh",
+        clientId: "legacy-client",
+      }),
+    ).toBeUndefined();
+  });
+
   it("enforces PKCE, one-time codes, refresh rotation, scope narrowing, and revoke", async () => {
     const data = await mkdtemp(path.join(os.tmpdir(), "mcp-auth-"));
     temporary.push(data);
@@ -33,7 +93,7 @@ describe("OAuth token lifecycle", () => {
     });
     const pending = await store.consumePending(transaction);
     expect(pending).toBeTruthy();
-    const code = await store.createCode(pending!);
+    const code = await store.createCode(pending!, principal);
     expect(
       await store.exchangeCode({
         code,
@@ -58,7 +118,11 @@ describe("OAuth token lifecycle", () => {
       }),
     ).toBeUndefined();
 
-    const tokens = await store.issueTokens(client.clientId, exchanged!.scopes);
+    const tokens = await store.issueTokens(
+      client.clientId,
+      exchanged!.scopes,
+      principal,
+    );
     expect((await store.access(tokens.accessToken))?.clientId).toBe(
       client.clientId,
     );
@@ -87,10 +151,11 @@ describe("OAuth token lifecycle", () => {
     const client = await store.registerClient("refresh-race", [
       "https://chat.example/callback",
     ]);
-    const tokens = await store.issueTokens(client.clientId, [
-      "workspace:read",
-      "workspace:write",
-    ]);
+    const tokens = await store.issueTokens(
+      client.clientId,
+      ["workspace:read", "workspace:write"],
+      principal,
+    );
     const input = {
       refreshToken: tokens.refreshToken,
       clientId: client.clientId,
@@ -128,13 +193,16 @@ describe("OAuth token lifecycle", () => {
       "https://chat.example/callback",
     ]);
     const verifier = "e".repeat(64);
-    const code = await store.createCode({
-      clientId: client.clientId,
-      redirectUri: client.redirectUris[0]!,
-      scopes: ["workspace:read"],
-      codeChallenge: pkceChallenge(verifier),
-      expiresAt: Date.now() + 60_000,
-    });
+    const code = await store.createCode(
+      {
+        clientId: client.clientId,
+        redirectUri: client.redirectUris[0]!,
+        scopes: ["workspace:read"],
+        codeChallenge: pkceChallenge(verifier),
+        expiresAt: Date.now() + 60_000,
+      },
+      principal,
+    );
     vi.advanceTimersByTime(5 * 60_000 + 1);
     expect(
       await store.exchangeCode({
@@ -145,7 +213,11 @@ describe("OAuth token lifecycle", () => {
       }),
     ).toBeUndefined();
 
-    const tokens = await store.issueTokens(client.clientId, ["workspace:read"]);
+    const tokens = await store.issueTokens(
+      client.clientId,
+      ["workspace:read"],
+      principal,
+    );
     vi.advanceTimersByTime(15 * 60_000 + 1);
     expect(await store.access(tokens.accessToken)).toBeUndefined();
     vi.advanceTimersByTime(30 * 24 * 60 * 60_000);

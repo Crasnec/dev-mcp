@@ -13,28 +13,40 @@ export class GitService {
     private readonly outputs: OutputStore,
   ) {}
 
-  async status(projectId: string): Promise<ToolResult> {
-    return this.readGit(projectId, ["status", "--short", "--branch"]);
-  }
-
-  async diff(projectId: string, staged = false): Promise<ToolResult> {
-    return this.readGit(projectId, [
-      "diff",
-      ...(staged ? ["--cached"] : []),
-      "--no-ext-diff",
-    ]);
-  }
-
-  async log(projectId: string, limit = 20): Promise<ToolResult> {
-    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
-      return fail("INVALID_LIMIT", "Git log limit must be between 1 and 200");
+  async read(
+    projectId: string,
+    operation: string,
+    staged = false,
+    limit = 20,
+  ): Promise<ToolResult> {
+    switch (operation) {
+      case "status":
+        return this.readGit(projectId, ["status", "--short", "--branch"]);
+      case "diff":
+        return this.readGit(projectId, [
+          "diff",
+          ...(staged ? ["--cached"] : []),
+          "--no-ext-diff",
+        ]);
+      case "log":
+        if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
+          return fail(
+            "INVALID_LIMIT",
+            "Git log limit must be between 1 and 200",
+          );
+        }
+        return this.readGit(projectId, [
+          "log",
+          `--max-count=${limit}`,
+          "--date=iso-strict",
+          "--pretty=format:%H%x09%ad%x09%an%x09%s",
+        ]);
+      default:
+        return fail(
+          "INVALID_OPERATION",
+          "Git operation must be status, diff, or log",
+        );
     }
-    return this.readGit(projectId, [
-      "log",
-      `--max-count=${limit}`,
-      "--date=iso-strict",
-      "--pretty=format:%H%x09%ad%x09%an%x09%s",
-    ]);
   }
 
   private async readGit(

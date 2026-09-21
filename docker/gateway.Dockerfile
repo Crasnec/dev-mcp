@@ -5,6 +5,8 @@ COPY packages/gateway/package.json packages/gateway/tsconfig.json packages/gatew
 COPY packages/runner/package.json packages/runner/tsconfig.json packages/runner/
 RUN npm ci
 COPY packages/gateway/src packages/gateway/src
+COPY packages/gateway/views packages/gateway/views
+COPY packages/gateway/public packages/gateway/public
 RUN npx tsc -b packages/gateway && npm prune --omit=dev
 
 FROM node:22-alpine

@@ -6,6 +6,8 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "express": "^5.2.1",
+    "jose": "^6.2.12",
+    "mustache": "^4.2.0",
     "zod": "^4.4.3"
   },
   "scripts": {

@@ -1,0 +1,14 @@
+services:
+  gateway:
+    environment:
+      GOOGLE_CLIENT_ID_FILE: /run/secrets/google_client_id
+      GOOGLE_CLIENT_SECRET_FILE: /run/secrets/google_client_secret
+    secrets:
+      - google_client_id
+      - google_client_secret
+
+secrets:
+  google_client_id:
+    file: ${GOOGLE_CLIENT_ID_SOURCE:-./data/google/oauth-id.txt}
+  google_client_secret:
+    file: ${GOOGLE_CLIENT_SECRET_SOURCE:-./data/google/oauth-secret.txt}

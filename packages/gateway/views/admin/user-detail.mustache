@@ -1,0 +1,19 @@
+<div class="detail-heading"><div><a href="/admin/users" class="back-link">← 사용자 목록</a><h2>{{target.username}}</h2><span class="badge {{target.status}}">{{target.statusLabel}}</span></div><a class="button" href="/admin/runners/{{target.id}}">실행 환경 →</a></div>
+<div class="two-column">
+  <section class="panel padded">
+    <h2>계정 정보</h2>
+    {{#target.googleLinked}}<p class="notice">Google 로그인 · {{target.email}}</p>{{/target.googleLinked}}
+    <dl class="properties"><div><dt>사용자 ID</dt><dd><code>{{target.id}}</code></dd></div><div><dt>가입일</dt><dd>{{target.createdLabel}}</dd></div><div><dt>로그인 세션</dt><dd>{{sessionCount}}개</dd></div></dl>
+    <form method="post" action="/admin/users/{{target.id}}">
+      {{> partials/csrf}}
+      <label>계정 상태<select name="status">{{#statuses}}<option value="{{value}}" {{#selected}}selected{{/selected}}>{{label}}</option>{{/statuses}}</select></label>
+      <label>역할<select name="role">{{#roles}}<option value="{{value}}" {{#selected}}selected{{/selected}}>{{label}}</option>{{/roles}}</select></label>
+      <p class="help">저장하면 이 사용자의 기존 로그인과 연결 인증이 만료됩니다. 관리자 역할은 다른 사용자도 관리할 수 있습니다.</p>
+      <button class="primary" type="submit">변경 사항 저장</button>
+    </form>
+  </section>
+  <div class="stack">
+    <section class="panel padded"><h2>작업 공간</h2><p class="help">사용자별로 분리된 프로젝트와 실행 중인 작업을 확인합니다.</p><div class="actions"><a class="button" href="/admin/projects?owner={{target.id}}">프로젝트 보기</a><a class="button" href="/admin/processes?owner={{target.id}}">프로세스 보기</a></div></section>
+    <section class="panel padded danger-zone"><h2>로그인·연결 해제</h2><p class="help">모든 브라우저 세션과 MCP 인증을 만료시킵니다. 사용자는 다시 로그인해야 합니다. 실행 중인 작업은 유지됩니다.</p><form method="post" action="/admin/users/{{target.id}}/revoke">{{> partials/csrf}}<button class="danger" type="submit">모든 로그인·연결 해제</button></form></section>
+  </div>
+</div>

@@ -2,19 +2,43 @@ import type { Express, Request, Response } from "express";
 import express from "express";
 import { ALL_SCOPES, type GatewayConfig, type Scope } from "./config.ts";
 import { AuthStore } from "./auth-store.ts";
-import { verifyPassword } from "./crypto.ts";
+import type { UserStore } from "./user-store.ts";
+import { LoginLimiter, credentialRateKey } from "./login-limiter.ts";
 import type { AuditLogger } from "./audit.ts";
 import { authorizationPage, errorPage, sendPage } from "./pages.ts";
+import { browserSession, cookie } from "./browser-session.ts";
+import { randomToken, tokenHash } from "./crypto.ts";
 
 export function installOAuthRoutes(
   app: Express,
   config: GatewayConfig,
   store: AuthStore,
   audit: AuditLogger,
+  users: UserStore,
+  loginLimiter: LoginLimiter,
+  googleEnabled = false,
 ): void {
   const resource = `${config.publicBaseUrl}/mcp`;
   const authorizationEndpoint = `${config.publicBaseUrl}/oauth/authorize`;
-  const loginLimiter = new LoginLimiter();
+  const browser = browserSession(config, users);
+  const consentCookie = config.publicBaseUrl.startsWith("https:")
+    ? "__Host-dev-mcp-consent"
+    : "dev-mcp-consent";
+  const context = async (req: Request, res: Response) => {
+    const session = await browser.current(req);
+    const csrf = session?.csrf ?? randomToken();
+    if (!session) {
+      res.cookie(browser.formCookie, csrf, {
+        ...browser.cookieOptions,
+        maxAge: 60 * 60_000,
+      });
+    }
+    return {
+      csrf,
+      signedInUsername: session?.user.email ?? session?.user.username,
+      googleEnabled,
+    };
+  };
   app.get("/.well-known/oauth-protected-resource", (_req, res) => {
     res.json({
       resource,
@@ -152,7 +176,13 @@ export function installOAuthRoutes(
       const scopes = parseScopes(
         optionalQuery(req, "scope") ?? "workspace:read",
       );
+      const binding = randomToken();
+      res.cookie(consentCookie, binding, {
+        ...browser.cookieOptions,
+        maxAge: 10 * 60_000,
+      });
       const transaction = await store.createPending({
+        browserBinding: tokenHash(binding),
         clientId,
         redirectUri,
         scopes,
@@ -169,8 +199,14 @@ export function installOAuthRoutes(
           clientName: client.clientName,
           scopes,
           authorizationEndpoint,
+          ...(await context(req, res)),
         }),
-        [authorizationEndpoint, new URL(redirectUri).origin],
+        [
+          authorizationEndpoint,
+          new URL(redirectUri).origin,
+          "'self'",
+          ...(googleEnabled ? ["https://accounts.google.com"] : []),
+        ],
       );
     } catch (error) {
       const oauth =
@@ -193,11 +229,67 @@ export function installOAuthRoutes(
     }
   });
 
+  app.get("/oauth/consent", async (req, res) => {
+    const transaction =
+      typeof req.query.transaction === "string" ? req.query.transaction : "";
+    const pending = await store.pendingAuthorization(transaction);
+    if (
+      !pending ||
+      !pending.browserBinding ||
+      pending.browserBinding !== tokenHash(cookie(req, consentCookie))
+    ) {
+      return sendPage(
+        res,
+        400,
+        errorPage({
+          status: 400,
+          title: "연결 요청이 만료되었습니다",
+          message: "MCP 클라이언트에서 연결을 다시 시작해 주세요.",
+        }),
+      );
+    }
+    const client = await store.client(pending.clientId);
+    if (!client) {
+      return sendPage(
+        res,
+        400,
+        errorPage({
+          status: 400,
+          title: "연결 요청이 취소되었습니다",
+          message: "클라이언트를 다시 등록해 주세요.",
+        }),
+      );
+    }
+    return sendPage(
+      res,
+      200,
+      authorizationPage({
+        transaction,
+        clientName: client.clientName,
+        scopes: pending.scopes,
+        authorizationEndpoint,
+        ...(await context(req, res)),
+      }),
+      [
+        authorizationEndpoint,
+        new URL(pending.redirectUri).origin,
+        "'self'",
+        ...(googleEnabled ? ["https://accounts.google.com"] : []),
+      ],
+    );
+  });
+
   app.post(
     "/oauth/authorize",
     express.urlencoded({ extended: false, limit: "16kb" }),
     async (req, res) => {
-      if (loginLimiter.blocked(req.ip ?? "unknown")) {
+      const username =
+        typeof req.body.username === "string" ? req.body.username : "";
+      const rateKey = credentialRateKey(req.ip, username);
+      if (
+        req.body.authentication !== "session" &&
+        loginLimiter.blocked(rateKey)
+      ) {
         res.setHeader("Retry-After", "900");
         return sendPage(
           res,
@@ -224,6 +316,25 @@ export function installOAuthRoutes(
           }),
         );
       }
+      const sessionMode = req.body.authentication === "session";
+      const session = sessionMode ? await browser.current(req) : undefined;
+      if (
+        sessionMode &&
+        (!session ||
+          !browser.validCsrf(req, session.csrf) ||
+          !pending.browserBinding ||
+          pending.browserBinding !== tokenHash(cookie(req, consentCookie)))
+      ) {
+        return sendPage(
+          res,
+          403,
+          errorPage({
+            status: 403,
+            title: "연결 승인을 확인할 수 없습니다",
+            message: "로그인과 연결 요청을 다시 시작해 주세요.",
+          }),
+        );
+      }
       if (req.body.decision === "deny") {
         await store.consumePending(transaction);
         await audit.write({
@@ -238,8 +349,15 @@ export function installOAuthRoutes(
       }
       const password =
         typeof req.body.password === "string" ? req.body.password : "";
-      if (!(await verifyPassword(password, config.adminPasswordHash))) {
-        loginLimiter.failed(req.ip ?? "unknown");
+      if (!sessionMode) {
+        loginLimiter.failed(rateKey);
+      }
+      const user =
+        session?.user ??
+        (password.length <= 256
+          ? await users.authenticate(username, password)
+          : undefined);
+      if (!user) {
         await audit.write({
           event: "oauth_login_failed",
           clientId: pending.clientId,
@@ -250,15 +368,23 @@ export function installOAuthRoutes(
           401,
           authorizationPage({
             transaction,
-            clientName: "ChatGPT",
+            clientName:
+              (await store.client(pending.clientId))?.clientName ?? "ChatGPT",
             scopes: pending.scopes,
+            username,
             authorizationEndpoint,
-            error: "The administrator password is incorrect.",
+            error:
+              "아이디·비밀번호를 확인해 주세요. 승인 대기 또는 중지된 계정은 연결할 수 없습니다.",
+            ...(await context(req, res)),
           }),
-          [authorizationEndpoint, new URL(pending.redirectUri).origin],
+          [
+            authorizationEndpoint,
+            new URL(pending.redirectUri).origin,
+            "'self'",
+          ],
         );
       }
-      loginLimiter.succeeded(req.ip ?? "unknown");
+      loginLimiter.succeeded(rateKey);
       const consumed = await store.consumePending(transaction);
       if (!consumed) {
         return sendPage(
@@ -272,9 +398,13 @@ export function installOAuthRoutes(
           }),
         );
       }
-      const code = await store.createCode(consumed);
+      const code = await store.createCode(consumed, {
+        userId: user.id,
+        authVersion: user.authVersion,
+      });
       await audit.write({
         event: "oauth_authorization_approved",
+        userId: user.id,
         clientId: consumed.clientId,
         scopes: consumed.scopes,
       });
@@ -321,7 +451,7 @@ export function installOAuthRoutes(
           redirectUri,
           verifier,
         });
-        if (!exchanged) {
+        if (!exchanged || !(await users.valid(exchanged))) {
           return oauthJsonError(
             res,
             400,
@@ -329,9 +459,14 @@ export function installOAuthRoutes(
             "Authorization code is invalid, expired, used, or PKCE verification failed",
           );
         }
-        const tokens = await store.issueTokens(clientId, exchanged.scopes);
+        const tokens = await store.issueTokens(
+          clientId,
+          exchanged.scopes,
+          exchanged,
+        );
         await audit.write({
           event: "oauth_token_issued",
+          userId: exchanged.userId,
           clientId,
           scopes: exchanged.scopes,
         });
@@ -360,7 +495,7 @@ export function installOAuthRoutes(
           clientId,
           ...(requestedScopes ? { requestedScopes } : {}),
         });
-        if (!refreshed) {
+        if (!refreshed || !(await users.valid(refreshed))) {
           return oauthJsonError(
             res,
             400,
@@ -370,6 +505,7 @@ export function installOAuthRoutes(
         }
         await audit.write({
           event: "oauth_token_refreshed",
+          userId: refreshed.userId,
           clientId,
           scopes: refreshed.scopes,
         });
@@ -395,36 +531,6 @@ export function installOAuthRoutes(
       return res.status(200).end();
     },
   );
-}
-
-class LoginLimiter {
-  private readonly failures = new Map<
-    string,
-    { count: number; firstAt: number }
-  >();
-  private readonly windowMs = 15 * 60_000;
-  private readonly maximum = 8;
-
-  blocked(key: string): boolean {
-    const entry = this.failures.get(key);
-    if (!entry) {
-      return false;
-    }
-    if (Date.now() - entry.firstAt >= this.windowMs) {
-      this.failures.delete(key);
-      return false;
-    }
-    return entry.count >= this.maximum;
-  }
-  failed(key: string): void {
-    const entry = this.failures.get(key);
-    if (!entry || Date.now() - entry.firstAt >= this.windowMs) {
-      this.failures.set(key, { count: 1, firstAt: Date.now() });
-    } else entry.count += 1;
-  }
-  succeeded(key: string): void {
-    this.failures.delete(key);
-  }
 }
 
 class OAuthRequestError extends Error {

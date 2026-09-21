@@ -5,6 +5,8 @@
 
 {$MCP_DOMAIN} {
 	encode zstd gzip
+	@authentication path /auth/google/callback /oauth/consent /oauth/authorize
+	log_skip @authentication
 	reverse_proxy gateway:3000
 	log {
 		output stdout

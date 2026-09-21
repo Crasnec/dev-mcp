@@ -1,0 +1,58 @@
+[
+  {
+    "key": "dashboard",
+    "href": "/admin",
+    "label": "대시보드",
+    "mark": "◫",
+    "description": "서비스 운영 현황과 처리할 요청을 확인합니다."
+  },
+  {
+    "key": "users",
+    "href": "/admin/users",
+    "label": "사용자",
+    "mark": "◉",
+    "description": "가입 승인, 역할과 계정 상태를 관리합니다."
+  },
+  {
+    "key": "projects",
+    "href": "/admin/projects",
+    "label": "프로젝트",
+    "mark": "▱",
+    "description": "사용자별 프로젝트를 조회하고 등록 정보를 관리합니다."
+  },
+  {
+    "key": "runners",
+    "href": "/admin/runners",
+    "label": "실행 환경",
+    "mark": "▣",
+    "description": "사용자별 runner의 연결 상태와 준비 절차를 확인합니다."
+  },
+  {
+    "key": "processes",
+    "href": "/admin/processes",
+    "label": "프로세스",
+    "mark": "▷",
+    "description": "백그라운드 작업의 상태와 로그를 확인하고 종료합니다."
+  },
+  {
+    "key": "connections",
+    "href": "/admin/connections",
+    "label": "연결·세션",
+    "mark": "⇄",
+    "description": "브라우저 세션과 MCP 클라이언트의 접근을 관리합니다."
+  },
+  {
+    "key": "audit",
+    "href": "/admin/audit",
+    "label": "감사 기록",
+    "mark": "≡",
+    "description": "계정 변경과 도구 실행 이력을 확인합니다."
+  },
+  {
+    "key": "settings",
+    "href": "/admin/settings",
+    "label": "운영 설정",
+    "mark": "⚙",
+    "description": "가입 정책과 사용자 안내를 관리합니다."
+  }
+]

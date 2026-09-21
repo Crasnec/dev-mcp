@@ -9,6 +9,8 @@ import { fail } from "./protocol.ts";
 import type { Scope } from "./config.ts";
 import type { IpcClient } from "./ipc-client.ts";
 import type { AuditLogger } from "./audit.ts";
+import { createMediaUrl } from "./media.ts";
+import type { Principal } from "./user-store.ts";
 
 const resultShape = {
   ok: z.boolean(),
@@ -64,9 +66,12 @@ const shell: ToolAnnotations = {
 export function createMcpServer(options: {
   scopes: Scope[];
   actor: string;
+  principal: Principal;
   ipc: IpcClient;
   audit: AuditLogger;
   resourceMetadataUrl: string;
+  mediaBaseUrl: string;
+  mediaSigningSecret: string;
 }): McpServer {
   const server = new McpServer({ name: "dev-mcp", version: "0.1.0" });
   const add = <Shape extends z.ZodRawShape>(definition: {
@@ -77,6 +82,7 @@ export function createMcpServer(options: {
     scopes: Scope[] | ((params: Record<string, unknown>) => Scope[]);
     securityScopes?: Scope[];
     annotations: ToolAnnotations;
+    invoke?: (params: Record<string, unknown>) => Promise<ToolResult>;
   }): void => {
     const handler = async (
       typedParams: Record<string, unknown>,
@@ -103,7 +109,9 @@ export function createMcpServer(options: {
           ],
         };
       } else {
-        result = await options.ipc.call(definition.name, params, options.actor);
+        result = definition.invoke
+          ? await definition.invoke(params)
+          : await options.ipc.call(definition.name, params, options.actor);
       }
       await options.audit.write({
         event: "tool_call",
@@ -117,8 +125,14 @@ export function createMcpServer(options: {
       const summary = result.ok
         ? `${definition.name} succeeded${result.truncated ? "; output truncated, use continuation" : ""}.`
         : `${definition.name} failed: ${result.error?.message ?? "unknown error"}`;
+      const contentText =
+        definition.name === "image_read" &&
+        result.ok &&
+        typeof (result.data as { url?: unknown } | undefined)?.url === "string"
+          ? `Image URL: ${(result.data as { url: string }).url}`
+          : summary;
       return {
-        content: [{ type: "text" as const, text: summary }],
+        content: [{ type: "text" as const, text: contentText }],
         structuredContent: result as StructuredToolResult,
         isError: !result.ok,
         _meta: authenticationMeta,
@@ -230,6 +244,64 @@ export function createMcpServer(options: {
     annotations: readOnly,
   });
   add({
+    name: "image_read",
+    title: "View image",
+    description:
+      "Create a short-lived web URL for a PNG, JPEG, GIF, or WebP image in a project. Open the returned URL in a browser to view the image.",
+    inputSchema: {
+      project_id: projectId,
+      path: relativePath,
+    },
+    scopes: ["workspace:read"],
+    annotations: readOnly,
+    invoke: async (params) => {
+      const result = await options.ipc.call(
+        "image_read",
+        params,
+        options.actor,
+      );
+      if (!result.ok) {
+        return result;
+      }
+      const image = result.data as {
+        path?: unknown;
+        mimeType?: unknown;
+        size?: unknown;
+      };
+      if (
+        typeof image.path !== "string" ||
+        typeof image.mimeType !== "string" ||
+        typeof image.size !== "number"
+      ) {
+        return fail(
+          "INVALID_IMAGE_RESPONSE",
+          "Runner returned invalid image metadata",
+        );
+      }
+      const media = createMediaUrl(
+        options.mediaBaseUrl,
+        options.mediaSigningSecret,
+        {
+          projectId: String(params.project_id),
+          path: image.path,
+          actor: options.actor,
+          ...options.principal,
+        },
+      );
+      return {
+        ok: true,
+        data: {
+          url: media.url,
+          expiresAt: media.expiresAt,
+          path: image.path,
+          mimeType: image.mimeType,
+          size: image.size,
+        },
+        truncated: false,
+      };
+    },
+  });
+  add({
     name: "file_search",
     title: "Search files",
     description:
@@ -329,16 +401,8 @@ export function createMcpServer(options: {
     name: "process_list",
     title: "List processes",
     description:
-      "List tracked background processes, optionally for one project.",
+      "List tracked background processes with their current state, optionally for one project.",
     inputSchema: { project_id: projectId.optional() },
-    scopes: ["command:run"],
-    annotations: readOnly,
-  });
-  add({
-    name: "process_status",
-    title: "Process status",
-    description: "Get the current state of a tracked background process.",
-    inputSchema: { process_id: z.string().uuid() },
     scopes: ["command:run"],
     annotations: readOnly,
   });
@@ -371,29 +435,21 @@ export function createMcpServer(options: {
   });
 
   add({
-    name: "git_status",
-    title: "Git status",
-    description: "Show concise Git working-tree status.",
-    inputSchema: { project_id: projectId },
-    scopes: ["workspace:read"],
-    annotations: readOnly,
-  });
-  add({
-    name: "git_diff",
-    title: "Git diff",
-    description: "Show unstaged or staged Git changes.",
-    inputSchema: { project_id: projectId, staged: z.boolean().optional() },
-    scopes: ["workspace:read"],
-    annotations: readOnly,
-  });
-  add({
-    name: "git_log",
-    title: "Git log",
+    name: "git_read",
+    title: "Read Git state",
     description:
-      "Show recent commits with hashes, timestamps, authors, and subjects.",
+      "Read Git status, diff, or recent commits. staged applies only to diff; limit applies only to log. Continue truncated output with command_output.",
     inputSchema: {
       project_id: projectId,
-      limit: z.number().int().min(1).max(200).optional(),
+      operation: z.enum(["status", "diff", "log"]),
+      staged: z.boolean().optional().describe("For diff: show staged changes"),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(200)
+        .optional()
+        .describe("For log: maximum commits (default 20)"),
     },
     scopes: ["workspace:read"],
     annotations: readOnly,

@@ -51,9 +51,14 @@ services:
       ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:?Generate ADMIN_PASSWORD_HASH with npm run password-hash}
       GATEWAY_DATA_DIR: /var/lib/dev-mcp
       RUNNER_SOCKET: /ipc/runner.sock
+      USER_RUNNER_SOCKET_DIR: /user-ipc
     volumes:
       - gateway-data:/var/lib/dev-mcp
       - runner-ipc:/ipc
+      - type: bind
+        source: ${USER_RUNNER_IPC_DIR:-./data/user-ipc}
+        target: /user-ipc
+        read_only: true
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,mode=1777

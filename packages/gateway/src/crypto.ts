@@ -15,6 +15,23 @@ export function pkceChallenge(verifier: string): string {
   return createHash("sha256").update(verifier).digest("base64url");
 }
 
+export async function hashPassword(password: string): Promise<string> {
+  if (password.length < 12 || password.length > 256) {
+    throw new Error("비밀번호는 12~256자로 입력해 주세요.");
+  }
+  const salt = randomBytes(16);
+  const key = await new Promise<Buffer>((resolve, reject) => {
+    nodeScrypt(
+      password,
+      salt,
+      32,
+      { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 },
+      (error, value) => (error ? reject(error) : resolve(value)),
+    );
+  });
+  return `scrypt:16384:8:1:${salt.toString("base64url")}:${key.toString("base64url")}`;
+}
+
 export async function verifyPassword(
   password: string,
   encoded: string,

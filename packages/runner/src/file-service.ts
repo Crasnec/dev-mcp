@@ -134,6 +134,45 @@ export class FileService {
     }
   }
 
+  async readImage(
+    projectId: string,
+    requestedPath: string,
+  ): Promise<ToolResult> {
+    try {
+      const { root } = await this.projects.get(projectId);
+      const filename = await resolveExisting(root, requestedPath);
+      const info = await lstat(filename);
+      if (!info.isFile()) {
+        return fail("NOT_A_FILE", "Requested path is not a regular file");
+      }
+      if (info.size > 1 * 1024 * 1024) {
+        return fail(
+          "FILE_TOO_LARGE",
+          "Images larger than 1 MiB cannot be read with this tool",
+        );
+      }
+      const content = await readFile(filename);
+      const mimeType = detectImageMimeType(content);
+      if (!mimeType) {
+        return fail(
+          "UNSUPPORTED_IMAGE_TYPE",
+          "Supported image formats are PNG, JPEG, GIF, and WebP",
+        );
+      }
+      return ok({
+        path: relativeFrom(root, filename),
+        mimeType,
+        size: content.length,
+        base64: content.toString("base64"),
+      });
+    } catch (error) {
+      return fail(
+        (error as { code?: string }).code ?? "IMAGE_READ_FAILED",
+        errorMessage(error),
+      );
+    }
+  }
+
   async search(
     projectId: string,
     query: string,
@@ -246,6 +285,39 @@ export function extractPatchPaths(patch: string): string[] {
     found.add(filename);
   }
   return [...found];
+}
+
+function detectImageMimeType(content: Buffer): string | undefined {
+  if (
+    content.length >= 8 &&
+    content
+      .subarray(0, 8)
+      .equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+  ) {
+    return "image/png";
+  }
+  if (
+    content.length >= 3 &&
+    content[0] === 0xff &&
+    content[1] === 0xd8 &&
+    content[2] === 0xff
+  ) {
+    return "image/jpeg";
+  }
+  if (content.length >= 6) {
+    const signature = content.subarray(0, 6).toString("ascii");
+    if (signature === "GIF87a" || signature === "GIF89a") {
+      return "image/gif";
+    }
+  }
+  if (
+    content.length >= 12 &&
+    content.subarray(0, 4).toString("ascii") === "RIFF" &&
+    content.subarray(8, 12).toString("ascii") === "WEBP"
+  ) {
+    return "image/webp";
+  }
+  return undefined;
 }
 
 function encodeCursor(kind: string, offset: number): string {

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import express, { type Express, type Request, type Response } from "express";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
@@ -8,26 +9,54 @@ import { AuditLogger } from "./audit.ts";
 import { installOAuthRoutes } from "./oauth.ts";
 import { IpcClient } from "./ipc-client.ts";
 import { createMcpServer } from "./mcp-tools.ts";
-import { errorPage, landingPage, securityPage, sendPage } from "./pages.ts";
+import { verifyMediaToken } from "./media.ts";
+import { errorPage, landingPage, sendPage } from "./pages.ts";
+import { UserStore } from "./user-store.ts";
+import { RunnerRouter } from "./runner-router.ts";
+import { installAccountRoutes } from "./account-routes.ts";
+import { LoginLimiter } from "./login-limiter.ts";
+import { SettingsStore } from "./settings-store.ts";
+import { installAdminRoutes } from "./admin-routes.ts";
+import { GoogleLogin, type GoogleProvider } from "./google-login.ts";
+import { installGoogleRoutes } from "./google-routes.ts";
 
 const SESSION_IDLE_TIMEOUT_MS = 24 * 60 * 60_000;
 
 interface McpSession {
   actor: string;
+  userId: string;
+  authVersion: number;
   scopeKey: string;
   server: ReturnType<typeof createMcpServer>;
   transport: StreamableHTTPServerTransport;
   idleTimer?: NodeJS.Timeout;
 }
 
-export function createApp(config: GatewayConfig): Express {
+export interface AppDependencies {
+  ipc?: IpcClient;
+  users?: UserStore;
+  google?: GoogleProvider;
+}
+
+export function createApp(
+  config: GatewayConfig,
+  dependencies: AppDependencies = {},
+): Express {
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", 1);
   const auth = new AuthStore(config.dataDir);
   const audit = new AuditLogger(config.dataDir);
-  const ipc = new IpcClient(config.runnerSocket);
+  const users =
+    dependencies.users ??
+    new UserStore(config.dataDir, config.adminPasswordHash);
+  const runners = new RunnerRouter(config, dependencies.ipc);
+  const loginLimiter = new LoginLimiter();
   const sessions = new Map<string, McpSession>();
+  app.use(async (_req, _res, next) => {
+    await users.initialize();
+    next();
+  });
 
   const forgetSession = (sessionId: string, session: McpSession): void => {
     if (sessions.get(sessionId) !== session) {
@@ -58,17 +87,92 @@ export function createApp(config: GatewayConfig): Express {
     session.idleTimer.unref();
   };
 
-  installOAuthRoutes(app, config, auth, audit);
+  app.use(
+    "/assets",
+    express.static(fileURLToPath(new URL("../public/", import.meta.url)), {
+      index: false,
+    }),
+  );
+  const settings = new SettingsStore(config.dataDir);
+  const google =
+    dependencies.google ??
+    (config.google
+      ? new GoogleLogin(
+          config.google,
+          config.publicBaseUrl + "/auth/google/callback",
+        )
+      : undefined);
+  installGoogleRoutes(
+    app,
+    config,
+    users,
+    settings,
+    audit,
+    loginLimiter,
+    google,
+  );
+  installAccountRoutes(
+    app,
+    config,
+    users,
+    runners,
+    audit,
+    loginLimiter,
+    settings,
+    !!google,
+  );
+  installAdminRoutes(app, config, users, auth, runners, audit, settings);
+  installOAuthRoutes(app, config, auth, audit, users, loginLimiter, !!google);
 
   app.get("/", (_req, res) => {
     return sendPage(res, 200, landingPage(config.publicBaseUrl));
   });
-  app.get("/security", (_req, res) => {
-    return sendPage(res, 200, securityPage());
-  });
   app.get("/healthz", (_req, res) => res.json({ ok: true }));
+  app.get("/media/:token", async (req, res) => {
+    const claims = verifyMediaToken(config.adminPasswordHash, req.params.token);
+    if (!claims) {
+      return res.status(404).send("Image URL is invalid or expired");
+    }
+    const user = await users.valid(claims);
+    if (!user) {
+      return res.status(404).send("Image URL is invalid or expired");
+    }
+    const result = await runners
+      .forUser(user)
+      .call(
+        "image_read",
+        { project_id: claims.projectId, path: claims.path },
+        `media:${claims.actor}`,
+      );
+    if (!result.ok) {
+      return res.status(404).send("Image is no longer available");
+    }
+    const image = result.data as {
+      mimeType?: unknown;
+      base64?: unknown;
+    };
+    if (
+      typeof image.mimeType !== "string" ||
+      typeof image.base64 !== "string"
+    ) {
+      return res.status(502).send("Runner returned invalid image data");
+    }
+    let content: Buffer;
+    try {
+      content = Buffer.from(image.base64, "base64");
+    } catch {
+      return res.status(502).send("Runner returned invalid image data");
+    }
+    res.setHeader("Content-Type", image.mimeType);
+    res.setHeader("Content-Length", content.length);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.setHeader("Content-Security-Policy", "default-src 'none'");
+    res.setHeader("Referrer-Policy", "no-referrer");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    return res.status(200).send(content);
+  });
   app.post("/mcp", express.json({ limit: "2mb" }), async (req, res) => {
-    const token = await authenticate(req, res, auth, config);
+    const token = await authenticate(req, res, auth, config, users);
     if (!token) {
       return;
     }
@@ -107,13 +211,18 @@ export function createApp(config: GatewayConfig): Express {
       });
       const server = createMcpServer({
         scopes: token.scopes,
-        actor: token.clientId,
-        ipc,
+        actor: `${token.userId}:${token.clientId}`,
+        principal: { userId: token.userId, authVersion: token.authVersion },
+        ipc: runners.forUser(token.user),
         audit,
         resourceMetadataUrl: `${config.publicBaseUrl}/.well-known/oauth-protected-resource`,
+        mediaBaseUrl: config.publicBaseUrl,
+        mediaSigningSecret: config.adminPasswordHash,
       });
       session = {
         actor: token.clientId,
+        userId: token.userId,
+        authVersion: token.authVersion,
         scopeKey: scopeKey(token.scopes),
         server,
         transport,
@@ -147,7 +256,7 @@ export function createApp(config: GatewayConfig): Express {
   });
   for (const method of ["get", "delete"] as const) {
     app[method]("/mcp", async (req: Request, res: Response) => {
-      const token = await authenticate(req, res, auth, config);
+      const token = await authenticate(req, res, auth, config, users);
       if (!token) {
         return;
       }
@@ -212,11 +321,14 @@ function authorizedSession(
     sendMcpError(res, 404, -32001, "Session not found");
     return undefined;
   }
-  if (session.actor !== token.clientId) {
+  if (session.actor !== token.clientId || session.userId !== token.userId) {
     sendMcpError(res, 404, -32001, "Session not found");
     return undefined;
   }
-  if (session.scopeKey !== scopeKey(token.scopes)) {
+  if (
+    session.scopeKey !== scopeKey(token.scopes) ||
+    session.authVersion !== token.authVersion
+  ) {
     sendMcpError(
       res,
       403,
@@ -246,12 +358,14 @@ async function authenticate(
   res: Response,
   auth: AuthStore,
   config: GatewayConfig,
-): Promise<TokenInfo | undefined> {
+  users: UserStore,
+): Promise<(TokenInfo & { user: import("./user-store.ts").User }) | undefined> {
   const authorization = req.header("authorization") ?? "";
   const match = /^Bearer ([A-Za-z0-9_-]+)$/.exec(authorization);
   const token = match?.[1] ? await auth.access(match[1]) : undefined;
-  if (token) {
-    return token;
+  const user = token ? await users.valid(token) : undefined;
+  if (token && user) {
+    return { ...token, user };
   }
   const metadata = `${config.publicBaseUrl}/.well-known/oauth-protected-resource`;
   res.setHeader(

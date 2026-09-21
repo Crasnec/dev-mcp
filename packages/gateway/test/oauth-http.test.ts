@@ -59,7 +59,7 @@ describe("OAuth HTTP endpoints", () => {
       url: "/oauth/register",
       headers: { "content-type": "application/json" },
       payload: JSON.stringify({
-        client_name: "ChatGPT",
+        client_name: "Test <client>",
         redirect_uris: [callback],
         token_endpoint_auth_method: "none",
       }),
@@ -98,9 +98,41 @@ describe("OAuth HTTP endpoints", () => {
       page.payload,
     )?.[1];
     expect(transaction).toBeTruthy();
+    expect(page.payload).toContain("Test &lt;client&gt;");
+    expect(page.payload).not.toContain("Test <client>");
+    expect(page.payload).toContain('value="deny" type="submit" formnovalidate');
+
+    const incorrect = await form(app, "/oauth/authorize", {
+      transaction: transaction!,
+      username: "admin",
+      password: "incorrect",
+      decision: "allow",
+    });
+    expect(incorrect.statusCode).toBe(401);
+    expect(incorrect.payload).toContain("Test &lt;client&gt;");
+    expect(incorrect.payload).toContain('aria-invalid="true"');
+    expect(incorrect.payload).toContain("아이디·비밀번호를 확인해 주세요.");
+
+    const denialPage = await inject(app, {
+      method: "GET",
+      url: `/oauth/authorize?${new URLSearchParams(authorizeQuery).toString()}`,
+    });
+    const denialTransaction = /name="transaction" value="([^"]+)"/.exec(
+      denialPage.payload,
+    )![1]!;
+    const denied = await form(app, "/oauth/authorize", {
+      transaction: denialTransaction,
+      decision: "deny",
+    });
+    expect(denied.statusCode).toBe(302);
+    const denialRedirect = new URL(denied.headers.location as string);
+    expect(denialRedirect.origin + denialRedirect.pathname).toBe(callback);
+    expect(denialRedirect.searchParams.get("error")).toBe("access_denied");
+    expect(denialRedirect.searchParams.get("state")).toBe("state-123");
 
     const approved = await form(app, "/oauth/authorize", {
       transaction: transaction!,
+      username: "admin",
       password,
       decision: "allow",
     });

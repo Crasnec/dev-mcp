@@ -1,6 +1,10 @@
 {{#pagination}}
 <nav class="pagination" aria-label="페이지 이동">
-  <span>총 {{total}}개 · {{page}} / {{pages}} 페이지</span>
-  <div>{{#previous}}<a class="button" href="{{previous}}">← 이전</a>{{/previous}}{{#next}}<a class="button" href="{{next}}">다음 →</a>{{/next}}</div>
+  <span class="pagination-summary">총 {{total}}개 · {{page}} / {{pages}} 페이지</span>
+  <div class="pagination-links">
+    {{#previous}}<a class="button pagination-step" href="{{previous}}" aria-label="이전 페이지">← 이전</a>{{/previous}}{{^previous}}<span class="button pagination-step disabled" aria-disabled="true">← 이전</span>{{/previous}}
+    {{#pageItems}}{{#gap}}<span class="pagination-gap" aria-hidden="true">…</span>{{/gap}}{{#isPage}}{{#current}}<span class="button pagination-page active" aria-current="page">{{label}}</span>{{/current}}{{^current}}<a class="button pagination-page" href="{{href}}" aria-label="{{label}}페이지로 이동">{{label}}</a>{{/current}}{{/isPage}}{{/pageItems}}
+    {{#next}}<a class="button pagination-step" href="{{next}}" aria-label="다음 페이지">다음 →</a>{{/next}}{{^next}}<span class="button pagination-step disabled" aria-disabled="true">다음 →</span>{{/next}}
+  </div>
 </nav>
 {{/pagination}}

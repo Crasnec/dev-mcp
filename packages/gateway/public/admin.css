@@ -186,7 +186,10 @@ button.quiet,
   font-weight: 700;
 }
 .sidebar-bottom strong {
-  overflow-wrap: anywhere;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .sidebar-bottom small {
   color: var(--muted);
@@ -537,10 +540,33 @@ tbody tr:hover {
   color: var(--muted);
   font-size: 11px;
 }
-.pagination div {
+.pagination-links {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.pagination-page {
+  min-width: 34px;
+  min-height: 34px;
+  padding: 5px 9px;
+}
+.pagination-page.active {
+  border-color: var(--sage);
+  background: var(--sage);
+  color: #fff;
+}
+.pagination-gap {
+  display: inline-flex;
+  min-width: 22px;
+  justify-content: center;
+  color: var(--muted);
+}
+.pagination .disabled {
+  background: #f8f9f6;
+  color: #adb5ad;
+  cursor: default;
 }
 .sort-controls {
   display: flex;
@@ -854,7 +880,12 @@ code {
     flex-wrap: wrap;
   }
   .pagination {
+    align-items: flex-start;
     flex-wrap: wrap;
     padding: 16px;
+  }
+  .pagination-links {
+    width: 100%;
+    justify-content: flex-start;
   }
 }

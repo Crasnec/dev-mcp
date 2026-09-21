@@ -19,7 +19,7 @@
       <nav aria-label="관리자 메뉴">
         {{#navigation}}<a href="{{href}}" {{#active}}class="active" aria-current="page"{{/active}}><span class="nav-mark" aria-hidden="true">{{mark}}</span>{{label}}</a>{{/navigation}}
       </nav>
-      <div class="sidebar-bottom"><span class="avatar">{{actor.username}}</span><strong>{{actor.username}}</strong><small>서비스 관리자</small><a href="/account">내 계정 설정 ↗</a></div>
+      <div class="sidebar-bottom"><span class="avatar">{{actor.username}}</span><strong title="{{actor.username}}">{{actor.username}}</strong><small>서비스 관리자</small><a href="/account">내 계정 설정 ↗</a></div>
     </aside>
     <div class="workspace">
       <header class="topbar"><div class="breadcrumb"><a href="/admin">관리자</a><span>/</span><a href="{{sectionHref}}">{{title}}</a></div><form method="post" action="/logout">{{> partials/csrf}}<button class="quiet" type="submit">로그아웃</button></form></header>

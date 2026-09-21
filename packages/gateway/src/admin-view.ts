@@ -109,8 +109,66 @@ export function pageOf<T>(items: T[], req: Request, pageKey = "page") {
       total: items.length,
       previous: page > 1 ? link(page - 1) : undefined,
       next: page < pages ? link(page + 1) : undefined,
+      pageItems: paginationItems(page, pages, link),
     },
   };
+}
+
+function paginationItems(
+  currentPage: number,
+  totalPages: number,
+  link: (page: number) => string,
+) {
+  const visiblePages = new Set<number>();
+  if (totalPages <= 7) {
+    for (let page = 1; page <= totalPages; page += 1) {
+      visiblePages.add(page);
+    }
+  } else if (currentPage <= 4) {
+    for (let page = 1; page <= 5; page += 1) {
+      visiblePages.add(page);
+    }
+    visiblePages.add(totalPages);
+  } else if (currentPage >= totalPages - 3) {
+    visiblePages.add(1);
+    for (let page = totalPages - 4; page <= totalPages; page += 1) {
+      visiblePages.add(page);
+    }
+  } else {
+    for (const page of [
+      1,
+      currentPage - 1,
+      currentPage,
+      currentPage + 1,
+      totalPages,
+    ]) {
+      visiblePages.add(page);
+    }
+  }
+
+  const items: Array<
+    | { gap: true }
+    | {
+        isPage: true;
+        label: string;
+        href: string;
+        current: boolean;
+      }
+  > = [];
+  let previousPage = 0;
+  for (const page of [...visiblePages].sort((left, right) => left - right)) {
+    if (previousPage && page - previousPage > 1) {
+      items.push({ gap: true });
+    }
+    items.push({
+      isPage: true,
+      label: String(page),
+      href: link(page),
+      current: page === currentPage,
+    });
+    previousPage = page;
+  }
+  return items;
 }
 
 type SortDirection = "asc" | "desc";

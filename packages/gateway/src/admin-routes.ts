@@ -18,6 +18,7 @@ import {
   dateLabel,
   pageOf,
   query,
+  sortList,
   statusLabel,
   userRow,
   type AdminSession,
@@ -209,9 +210,22 @@ export function installAdminRoutes(
             .includes(q)) &&
         (!status || entry.status === status),
     );
+    const sorted = sortList(all.map(userRow), req, [
+      { key: "username", label: "사용자", value: (entry) => entry.username },
+      { key: "role", label: "역할", value: (entry) => entry.roleLabel },
+      { key: "status", label: "상태", value: (entry) => entry.statusLabel },
+      {
+        key: "created",
+        label: "가입일",
+        value: (entry) => entry.createdAt,
+        initialDirection: "desc",
+      },
+    ]);
     return adminView(req, res, "users", "admin/users", {
-      ...pageOf(all.map(userRow), req),
+      ...pageOf(sorted.items, req),
       q,
+      sort: sorted.state,
+      sortHeaders: sorted.headers,
       statuses: ["pending", "active", "disabled"].map((value) => ({
         value,
         label: statusLabel(value),
@@ -279,11 +293,21 @@ export function installAdminRoutes(
           "/" +
           encodeURIComponent(project.id),
       }));
+    const sorted = sortList(rows, req, [
+      { key: "name", label: "프로젝트", value: (entry) => entry.name },
+      {
+        key: "path",
+        label: "작업 공간 내 경로",
+        value: (entry) => entry.relativePath,
+      },
+    ]);
     return adminView(req, res, "projects", "admin/projects", {
       ...selection,
       ...state,
-      ...pageOf(rows, req),
+      ...pageOf(sorted.items, req),
       q,
+      sort: sorted.state,
+      sortHeaders: sorted.headers,
     });
   });
   router.post("/projects", async (req, res) => {
@@ -361,12 +385,25 @@ export function installAdminRoutes(
 
   router.get("/runners", async (req, res) => {
     const q = query(req, "q").toLowerCase();
-    const list = pageOf(
+    const sorted = sortList(
       (await users.list()).filter((entry) =>
         (entry.username + " " + (entry.email ?? "")).toLowerCase().includes(q),
       ),
       req,
+      [
+        {
+          key: "username",
+          label: "사용자",
+          value: (entry) => entry.email ?? entry.username,
+        },
+        {
+          key: "status",
+          label: "계정 상태",
+          value: (entry) => statusLabel(entry.status),
+        },
+      ],
     );
+    const list = pageOf(sorted.items, req);
     const rows: Record<string, unknown>[] = [];
     for (let index = 0; index < list.rows.length; index += 4) {
       rows.push(
@@ -387,6 +424,8 @@ export function installAdminRoutes(
       ...list,
       rows,
       q,
+      sort: sorted.state,
+      sortHeaders: sorted.headers,
     });
   });
   router.get("/runners/:id", async (req, res) => {
@@ -421,11 +460,29 @@ export function installAdminRoutes(
           "/" +
           encodeURIComponent(entry.id),
       }));
+    const sorted = sortList(
+      rows,
+      req,
+      [
+        { key: "command", label: "명령", value: (entry) => entry.command },
+        { key: "status", label: "상태", value: (entry) => entry.statusLabel },
+        { key: "pid", label: "PID", value: (entry) => entry.pid },
+        {
+          key: "started",
+          label: "시작 시각",
+          value: (entry) => entry.startedAt,
+          initialDirection: "desc",
+        },
+      ],
+      { defaultKey: "started", defaultDirection: "desc" },
+    );
     return adminView(req, res, "processes", "admin/processes", {
       ...selection,
       ...state,
-      ...pageOf(rows, req),
+      ...pageOf(sorted.items, req),
       q,
+      sort: sorted.state,
+      sortHeaders: sorted.headers,
       statuses: ["running", "exited", "stopped"].map((value) => ({
         value,
         label: statusLabel(value),
@@ -514,7 +571,7 @@ export function installAdminRoutes(
       ),
     ]);
     const q = query(req, "q").toLowerCase();
-    const rows = clients
+    const clientRows = clients
       .filter((client) =>
         (client.clientName + " " + client.clientId).toLowerCase().includes(q),
       )
@@ -528,24 +585,78 @@ export function installAdminRoutes(
             username: names.get(grant.userId) ?? "알 수 없음",
           })),
       }));
-    const sessionPage = pageOf(
-      sessions
-        .filter((session) =>
-          (names.get(session.userId) ?? "").toLowerCase().includes(q),
-        )
-        .map((session) => ({
-          ...session,
-          username: names.get(session.userId),
-          createdLabel: dateLabel(session.createdAt),
-          expiresLabel: dateLabel(session.expiresAt),
-        })),
+    const sortedClients = sortList(
+      clientRows,
       req,
-      "sessionsPage",
+      [
+        {
+          key: "name",
+          label: "이름",
+          value: (entry) => entry.clientName,
+        },
+        {
+          key: "created",
+          label: "등록일",
+          value: (entry) => entry.createdAt,
+          initialDirection: "desc",
+        },
+      ],
+      {
+        defaultKey: "created",
+        defaultDirection: "desc",
+        sortKey: "clientSort",
+        directionKey: "clientDirection",
+      },
     );
+    const sessionRows = sessions
+      .filter((session) =>
+        (names.get(session.userId) ?? "").toLowerCase().includes(q),
+      )
+      .map((session) => ({
+        ...session,
+        username: names.get(session.userId) ?? "알 수 없음",
+        createdLabel: dateLabel(session.createdAt),
+        expiresLabel: dateLabel(session.expiresAt),
+      }));
+    const sortedSessions = sortList(
+      sessionRows,
+      req,
+      [
+        {
+          key: "username",
+          label: "사용자",
+          value: (entry) => entry.username,
+        },
+        {
+          key: "created",
+          label: "로그인 시각",
+          value: (entry) => entry.createdAt,
+          initialDirection: "desc",
+        },
+        {
+          key: "expires",
+          label: "만료 시각",
+          value: (entry) => entry.expiresAt,
+          initialDirection: "desc",
+        },
+      ],
+      {
+        defaultKey: "created",
+        defaultDirection: "desc",
+        sortKey: "sessionSort",
+        directionKey: "sessionDirection",
+        pageKey: "sessionsPage",
+      },
+    );
+    const sessionPage = pageOf(sortedSessions.items, req, "sessionsPage");
     return adminView(req, res, "connections", "admin/connections", {
-      ...pageOf(rows, req),
+      ...pageOf(sortedClients.items, req),
       q,
+      clientSort: sortedClients.state,
+      clientSortHeaders: sortedClients.headers,
       sessions: sessionPage.rows,
+      sessionSort: sortedSessions.state,
+      sessionSortHeaders: sortedSessions.headers,
       sessionPaging: { pagination: sessionPage.pagination },
     });
   });
@@ -576,10 +687,27 @@ export function installAdminRoutes(
           (!event || entry.event === event) &&
           (!q || Object.values(entry).join(" ").toLowerCase().includes(q)),
       );
+    const sorted = sortList(
+      rows,
+      req,
+      [
+        {
+          key: "at",
+          label: "시각",
+          value: (entry) => entry.sortAt,
+          initialDirection: "desc",
+        },
+        { key: "event", label: "이벤트", value: (entry) => entry.event },
+        { key: "actor", label: "실행자", value: (entry) => entry.actor },
+      ],
+      { defaultKey: "at", defaultDirection: "desc" },
+    );
     return adminView(req, res, "audit", "admin/audit", {
-      ...pageOf(rows, req),
+      ...pageOf(sorted.items, req),
       q,
       event,
+      sort: sorted.state,
+      sortHeaders: sorted.headers,
       clipped: recent.clipped,
       events: [
         ...new Set(recent.records.map((entry) => String(entry.event ?? ""))),
@@ -665,6 +793,7 @@ function auditRow(entry: Record<string, unknown>, users: User[]) {
   }
   return {
     at: dateLabel(typeof entry.at === "string" ? entry.at : undefined),
+    sortAt: typeof entry.at === "string" ? entry.at : "",
     event: String(entry.event ?? "unknown"),
     actor: actor || "시스템",
     details: JSON.stringify(details),

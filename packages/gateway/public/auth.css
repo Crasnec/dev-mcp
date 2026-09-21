@@ -138,6 +138,9 @@ h1 {
   background:
     radial-gradient(ellipse at 70% 30%, #e6ecd9 0, transparent 50%), #f8f6f0;
 }
+.account-page {
+  justify-content: flex-start;
+}
 .login-card {
   margin: 50px 0;
   background: #fffefa;
@@ -237,6 +240,7 @@ input:focus {
   margin: 20px 0;
 }
 .error-banner {
+  margin: 0 0 18px;
   padding: 12px;
   border: 1px solid #e8c9bd;
   border-radius: 9px;
@@ -259,6 +263,9 @@ input:focus {
 }
 .wide-card h1 {
   font-size: 30px;
+}
+.wide-card .endpoint {
+  margin-bottom: 26px;
 }
 .page-nav {
   display: flex;
@@ -289,6 +296,9 @@ input:focus {
   font-size: 19px;
   margin: 0 0 10px;
 }
+.user-card > :last-child {
+  margin-bottom: 0;
+}
 .user-card code {
   display: block;
   overflow-wrap: anywhere;
@@ -313,13 +323,6 @@ input:focus {
   font-size: 12px;
   line-height: 1.8;
 }
-.notice {
-  padding: 14px;
-  background: #eff3e8;
-  border-radius: 9px;
-  font-size: 13px;
-  line-height: 1.8;
-}
 .project-list {
   padding-left: 20px;
   font-size: 13px;
@@ -339,11 +342,17 @@ input:focus {
   }
 }
 @media (max-width: 700px) {
+  .login-page {
+    padding: 20px 16px;
+  }
   .login-card {
-    padding: 30px;
+    margin: 28px 0;
+    padding: 28px 22px;
+    border-radius: 18px;
   }
   .login-card h1 {
-    font-size: 32px;
+    font-size: 29px;
+    line-height: 1.4;
   }
 }
 @media (prefers-reduced-motion: reduce) {

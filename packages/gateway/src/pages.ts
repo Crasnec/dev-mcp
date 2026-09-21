@@ -31,7 +31,7 @@ export function sendPage(
     formActions.length > 0 ? formActions.join(" ") : "'none'";
   res.setHeader(
     "Content-Security-Policy",
-    `default-src 'none'; style-src 'self'; form-action ${allowedForms}; base-uri 'none'; frame-ancestors 'none'`,
+    `default-src 'none'; style-src 'self'; script-src 'self'; form-action ${allowedForms}; base-uri 'none'; frame-ancestors 'none'`,
   );
   res.setHeader("Cache-Control", "no-store");
   // Native same-origin POST forms need their Origin for CSRF validation.

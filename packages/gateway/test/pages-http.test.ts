@@ -37,6 +37,10 @@ describe("browser pages", () => {
     expect(home.headers["content-security-policy"]).toContain(
       "form-action 'none'",
     );
+    expect(home.headers["content-security-policy"]).toContain(
+      "script-src 'self'",
+    );
+    expect(home.payload).toContain('src="/assets/message-dialogs.js" defer');
     expect(home.payload).toContain("내 작업 공간을");
     expect(home.payload).toContain("https://dev.example.test/mcp");
 

@@ -1,6 +1,6 @@
 <section class="panel">
-  <form class="toolbar" method="get" action="/admin/runners"><label class="filter-field grow">사용자 검색<input name="q" type="search" value="{{q}}" placeholder="사용자 아이디"></label><button class="primary" type="submit">상태 조회</button></form>
-  <div class="table-scroll"><table><caption class="sr-only">실행 환경 목록</caption><thead><tr><th>사용자</th><th>계정 상태</th><th>runner 연결</th><th>프로젝트</th><th>관리</th></tr></thead><tbody>
+  <form class="toolbar" method="get" action="/admin/runners">{{> partials/sort-fields}}<label class="filter-field grow">사용자 검색<input name="q" type="search" value="{{q}}" placeholder="사용자 아이디"></label><button class="primary" type="submit">상태 조회</button><a class="button quiet" href="/admin/runners">초기화</a></form>
+  <div class="table-scroll"><table><caption class="sr-only">실행 환경 목록</caption><thead><tr>{{#sortHeaders.username}}{{> partials/sortable-header}}{{/sortHeaders.username}}{{#sortHeaders.status}}{{> partials/sortable-header}}{{/sortHeaders.status}}<th>runner 연결</th><th>프로젝트</th><th>관리</th></tr></thead><tbody>
     {{#rows}}<tr><td><strong>{{username}}</strong></td><td><span class="badge {{status}}">{{statusLabel}}</span></td><td>{{#ready}}<span class="badge active">연결됨</span>{{/ready}}{{^ready}}<span class="badge pending">응답 없음</span>{{/ready}}</td><td>{{#ready}}{{projectCount}}개{{/ready}}{{^ready}}—{{/ready}}</td><td><a class="button small" href="{{href}}">상세 확인 →</a></td></tr>{{/rows}}
     {{^rows}}<tr><td colspan="5" class="empty-state">조건에 맞는 사용자가 없습니다.</td></tr>{{/rows}}
   </tbody></table></div>{{> partials/pagination}}

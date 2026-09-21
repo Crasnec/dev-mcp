@@ -7,11 +7,13 @@
   <meta name="robots" content="noindex,nofollow">
   <title>{{title}} · Dev MCP</title>
   <link rel="stylesheet" href="/assets/auth.css">
+  <link rel="stylesheet" href="/assets/message-dialogs.css">
+  <script src="/assets/message-dialogs.js" defer></script>
 </head>
 <body>
-  <main class="login-page">
+  <main class="login-page {{#wide}}account-page{{/wide}}">
     {{> partials/brand}}
-    <section class="login-card">{{{body}}}</section>
+    <section class="login-card {{#wide}}wide-card{{/wide}}">{{{body}}}</section>
     <footer>내 작업 공간과 이어지는 작은 연결.</footer>
   </main>
 </body>

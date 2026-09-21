@@ -7,6 +7,8 @@
   <meta name="robots" content="noindex,nofollow">
   <title>{{title}} · Dev MCP 관리</title>
   <link rel="stylesheet" href="/assets/admin.css">
+  <link rel="stylesheet" href="/assets/message-dialogs.css">
+  <script src="/assets/message-dialogs.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">본문 바로가기</a>
@@ -22,7 +24,7 @@
     <div class="workspace">
       <header class="topbar"><div class="breadcrumb"><a href="/admin">관리자</a><span>/</span><a href="{{sectionHref}}">{{title}}</a></div><form method="post" action="/logout">{{> partials/csrf}}<button class="quiet" type="submit">로그아웃</button></form></header>
       <main id="main">
-        <div class="page-heading"><div><span class="eyebrow">DEV MCP / OPERATIONS</span><h1>{{title}}</h1><p>{{description}}</p></div><a class="button" href="{{sectionHref}}">새로고침 ↻</a></div>
+        <div class="page-heading"><div><span class="eyebrow">DEV MCP / OPERATIONS</span><h1>{{title}}</h1><p>{{description}}</p></div><a class="button refresh-link" href="{{refreshHref}}">새로고침 ↻</a></div>
         {{> partials/notice}}
         {{{body}}}
       </main>

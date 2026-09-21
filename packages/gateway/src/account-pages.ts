@@ -47,6 +47,7 @@ export function accountPage(
 ): string {
   return renderView("auth/account", {
     title: "내 계정",
+    wide: true,
     user,
     isAdmin: user.role === "admin",
     csrf,

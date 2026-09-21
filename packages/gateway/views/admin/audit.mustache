@@ -1,7 +1,7 @@
 <section class="panel">
-  <form class="toolbar" method="get" action="/admin/audit"><label class="filter-field grow">기록 검색<input type="search" name="q" value="{{q}}" placeholder="사용자·도구·대상 ID"></label><label class="filter-field">이벤트<select name="event"><option value="">전체 이벤트</option>{{#events}}<option value="{{value}}" {{#selected}}selected{{/selected}}>{{value}}</option>{{/events}}</select></label><button class="primary" type="submit">조회</button></form>
-  {{#clipped}}<div class="notice">최근 1 MiB의 기록을 표시합니다. 이전 기록은 서버의 보관 로그에서 확인할 수 있습니다.</div>{{/clipped}}
-  <div class="table-scroll"><table><caption class="sr-only">감사 기록</caption><thead><tr><th>시각</th><th>이벤트</th><th>실행자</th><th>상세</th></tr></thead><tbody>
+  <form class="toolbar" method="get" action="/admin/audit">{{> partials/sort-fields}}<label class="filter-field grow">기록 검색<input type="search" name="q" value="{{q}}" placeholder="사용자·도구·대상 ID"></label><label class="filter-field">이벤트<select name="event"><option value="">전체 이벤트</option>{{#events}}<option value="{{value}}" {{#selected}}selected{{/selected}}>{{value}}</option>{{/events}}</select></label><button class="primary" type="submit">조회</button><a class="button quiet" href="/admin/audit">초기화</a></form>
+  {{#clipped}}<div class="context-message">최근 1 MiB의 기록을 표시합니다. 이전 기록은 서버의 보관 로그에서 확인할 수 있습니다.</div>{{/clipped}}
+  <div class="table-scroll"><table><caption class="sr-only">감사 기록</caption><thead><tr>{{#sortHeaders.at}}{{> partials/sortable-header}}{{/sortHeaders.at}}{{#sortHeaders.event}}{{> partials/sortable-header}}{{/sortHeaders.event}}{{#sortHeaders.actor}}{{> partials/sortable-header}}{{/sortHeaders.actor}}<th>상세</th></tr></thead><tbody>
     {{#rows}}<tr><td>{{at}}</td><td><strong>{{event}}</strong></td><td>{{actor}}</td><td><details><summary>상세 보기</summary><pre class="audit-detail">{{details}}</pre></details></td></tr>{{/rows}}
     {{^rows}}<tr><td colspan="4" class="empty-state">조건에 맞는 기록이 없습니다.</td></tr>{{/rows}}
   </tbody></table></div>{{> partials/pagination}}

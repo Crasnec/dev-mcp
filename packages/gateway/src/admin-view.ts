@@ -39,6 +39,7 @@ export function adminView(
         title: current.label,
         description: current.description,
         sectionHref: current.href,
+        refreshHref: currentPageHref(req),
         csrf: session.csrf,
         actor: {
           ...session.user,
@@ -56,6 +57,17 @@ export function adminView(
     ),
     ["'self'"],
   );
+}
+
+function currentPageHref(req: Request): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(req.query)) {
+    if (typeof value === "string" && key !== "saved") {
+      params.set(key, value);
+    }
+  }
+  const suffix = params.toString();
+  return req.baseUrl + req.path + (suffix ? "?" + suffix : "");
 }
 
 export function dateLabel(value: number | string | undefined): string {
@@ -99,6 +111,135 @@ export function pageOf<T>(items: T[], req: Request, pageKey = "page") {
       next: page < pages ? link(page + 1) : undefined,
     },
   };
+}
+
+type SortDirection = "asc" | "desc";
+type SortValue = string | number | boolean | null | undefined;
+
+export interface SortColumn<T> {
+  key: string;
+  label: string;
+  value: (item: T) => SortValue;
+  initialDirection?: SortDirection;
+}
+
+interface SortOptions {
+  defaultKey?: string;
+  defaultDirection?: SortDirection;
+  sortKey?: string;
+  directionKey?: string;
+  pageKey?: string;
+}
+
+const sortCollator = new Intl.Collator("ko", {
+  numeric: true,
+  sensitivity: "base",
+});
+
+export function sortList<T>(
+  items: T[],
+  req: Request,
+  columns: SortColumn<T>[],
+  options: SortOptions = {},
+) {
+  if (columns.length === 0) {
+    throw new Error("정렬 가능한 열이 필요합니다.");
+  }
+  const sortKey = options.sortKey ?? "sort";
+  const directionKey = options.directionKey ?? "direction";
+  const pageKey = options.pageKey ?? "page";
+  const defaultColumn =
+    columns.find((column) => column.key === options.defaultKey) ?? columns[0]!;
+  const requestedColumn = columns.find(
+    (column) => column.key === query(req, sortKey),
+  );
+  const column = requestedColumn ?? defaultColumn;
+  const requestedDirection = query(req, directionKey);
+  const direction: SortDirection =
+    requestedColumn &&
+    (requestedDirection === "asc" || requestedDirection === "desc")
+      ? requestedDirection
+      : (column.initialDirection ?? options.defaultDirection ?? "asc");
+
+  const sorted = items
+    .map((item, index) => ({ item, index }))
+    .sort((left, right) => {
+      const leftValue = column.value(left.item);
+      const rightValue = column.value(right.item);
+      const leftMissing = leftValue === null || leftValue === undefined;
+      const rightMissing = rightValue === null || rightValue === undefined;
+      if (leftMissing || rightMissing) {
+        return leftMissing === rightMissing
+          ? left.index - right.index
+          : leftMissing
+            ? 1
+            : -1;
+      }
+      const compared = compareSortValues(leftValue, rightValue);
+      return (
+        (direction === "asc" ? compared : -compared) || left.index - right.index
+      );
+    })
+    .map(({ item }) => item);
+
+  const headers = Object.fromEntries(
+    columns.map((entry) => {
+      const active = entry.key === column.key;
+      const nextDirection: SortDirection = active
+        ? direction === "asc"
+          ? "desc"
+          : "asc"
+        : (entry.initialDirection ?? "asc");
+      const params = new URLSearchParams();
+      for (const [key, value] of Object.entries(req.query)) {
+        if (
+          typeof value === "string" &&
+          key !== "saved" &&
+          key !== sortKey &&
+          key !== directionKey &&
+          key !== pageKey
+        ) {
+          params.set(key, value);
+        }
+      }
+      params.set(sortKey, entry.key);
+      params.set(directionKey, nextDirection);
+      return [
+        entry.key,
+        {
+          label: entry.label,
+          href: req.baseUrl + req.path + "?" + params.toString(),
+          active,
+          ascending: active && direction === "asc",
+          descending: active && direction === "desc",
+          ariaSort: direction === "asc" ? "ascending" : "descending",
+          stateLabel: active
+            ? direction === "asc"
+              ? "오름차순 정렬됨"
+              : "내림차순 정렬됨"
+            : "정렬되지 않음",
+          actionLabel:
+            nextDirection === "asc" ? "오름차순으로 정렬" : "내림차순으로 정렬",
+        },
+      ];
+    }),
+  );
+
+  return {
+    items: sorted,
+    headers,
+    state: { key: column.key, direction, sortKey, directionKey },
+  };
+}
+
+function compareSortValues(left: SortValue, right: SortValue): number {
+  if (typeof left === "number" && typeof right === "number") {
+    return left - right;
+  }
+  if (typeof left === "boolean" && typeof right === "boolean") {
+    return Number(left) - Number(right);
+  }
+  return sortCollator.compare(String(left), String(right));
 }
 
 export const statusLabel = (status: string) =>

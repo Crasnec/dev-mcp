@@ -107,13 +107,24 @@ describe("multi-user accounts and administration", () => {
       expect(response.statusCode, route).toBe(200);
       expect(response.payload).toContain('aria-label="관리자 메뉴"');
       expect(response.payload).toContain('href="/assets/admin.css"');
+      expect(response.payload).toContain(
+        'src="/assets/message-dialogs.js" defer',
+      );
       expect(response.payload).not.toContain("<style");
       expect(response.payload).not.toContain("scrypt:");
+      expect(response.headers["content-security-policy"]).toContain(
+        "script-src 'self'",
+      );
       expect(response.headers["content-security-policy"]).not.toContain(
         "unsafe-inline",
       );
+      if (route === "/users/" + admin.id) {
+        expect(response.payload).toContain(
+          'class="button refresh-link" href="/admin/users/' + admin.id + '"',
+        );
+      }
     }
-    for (const asset of ["auth", "admin"]) {
+    for (const asset of ["auth", "admin", "message-dialogs"]) {
       const response = await inject(app, {
         method: "GET",
         url: "/assets/" + asset + ".css",
@@ -121,6 +132,23 @@ describe("multi-user accounts and administration", () => {
       expect(response.statusCode).toBe(200);
       expect(response.headers["content-type"]).toContain("text/css");
     }
+    const modalScript = await inject(app, {
+      method: "GET",
+      url: "/assets/message-dialogs.js",
+    });
+    expect(modalScript.statusCode).toBe(200);
+    expect(modalScript.headers["content-type"]).toContain("javascript");
+    expect(modalScript.payload).toContain("dialog.showModal()");
+    expect(modalScript.payload).toContain("history.replaceState");
+    const account = await inject(app, {
+      method: "GET",
+      url: "/account",
+      headers: { cookie: signedIn.cookie },
+    });
+    expect(account.payload).toContain('class="login-card wide-card"');
+    expect(account.payload).toContain('class="account-grid"');
+    expect(account.payload).toContain('class="context-message"');
+    expect(account.payload).not.toContain('class="notice"');
     const alice = await legacyUser(users, dataDir, "alice", password);
     await users.update(admin.id, alice.id, { status: "active", role: "user" });
     const ordinary = await login(app, "alice");
@@ -162,6 +190,50 @@ describe("multi-user accounts and administration", () => {
     expect(crossOrigin.statusCode).toBe(403);
   });
 
+  it("sorts admin lists and keeps filters when changing sort direction", async () => {
+    const { app, users, admin, dataDir } = await fixture();
+    for (const username of ["alpha", "zeta"]) {
+      const created = await legacyUser(users, dataDir, username, password);
+      await users.update(admin.id, created.id, {
+        status: "active",
+        role: "user",
+      });
+    }
+    const signedIn = await login(app, "admin");
+    const response = await inject(app, {
+      method: "GET",
+      url: "/admin/users?q=a&status=active&page=2&sort=username&direction=desc",
+      headers: { cookie: signedIn.cookie },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.payload.indexOf(">zeta</a>")).toBeLessThan(
+      response.payload.indexOf(">alpha</a>"),
+    );
+    expect(response.payload.indexOf(">alpha</a>")).toBeLessThan(
+      response.payload.indexOf(">admin</a>"),
+    );
+    expect(response.payload).toContain('aria-sort="descending"');
+    expect(response.payload).toContain(
+      'class="button refresh-link" href="/admin/users?q=a&amp;status=active&amp;page=2&amp;sort=username&amp;direction=desc"',
+    );
+    expect(response.payload).toContain(
+      "/admin/users?q=a&amp;status=active&amp;sort=username&amp;direction=asc",
+    );
+    expect(response.payload).not.toContain(
+      "/admin/users?q=a&amp;status=active&amp;page=2&amp;sort=username&amp;direction=asc",
+    );
+    const saved = await inject(app, {
+      method: "GET",
+      url: "/admin/users?saved=1",
+      headers: { cookie: signedIn.cookie },
+    });
+    expect(saved.payload).toContain('class="notice" role="status"');
+    expect(saved.payload).toContain(
+      'class="button refresh-link" href="/admin/users"',
+    );
+  });
+
   it("persists signup settings, escapes messages, and revokes sessions and OAuth clients", async () => {
     const { app, users, auth, admin, dataDir } = await fixture();
     const signedIn = await login(app, "admin");
@@ -184,7 +256,7 @@ describe("multi-user accounts and administration", () => {
     ).toBe(303);
     const closed = await inject(app, { method: "GET", url: "/signup" });
     expect(closed.payload).toContain("&lt;script&gt;");
-    expect(closed.payload).not.toContain("<script>");
+    expect(closed.payload).not.toContain('<script>alert("x")</script>');
     expect(
       (
         await post(
@@ -235,6 +307,8 @@ describe("multi-user accounts and administration", () => {
       headers: { cookie: signedIn.cookie },
     });
     expect(connections.payload).toContain("&lt;img");
+    expect(connections.payload).toContain('class="client-summary"');
+    expect(connections.payload).toContain('class="client-created"');
     expect(connections.payload).not.toContain(issued.accessToken);
     expect(connections.payload).not.toContain(issued.refreshToken);
     const url = "/admin/connections/clients/" + client.clientId + "/delete";
@@ -332,7 +406,7 @@ describe("multi-user accounts and administration", () => {
       });
       expect(page.statusCode).toBe(200);
       expect(page.payload).toContain("&lt;script&gt;");
-      expect(page.payload).not.toContain("<script>");
+      expect(page.payload).not.toContain("<script>runner data</script>");
     }
     const url = "/admin/projects/" + alice.id + "/project-a/delete";
     expect(

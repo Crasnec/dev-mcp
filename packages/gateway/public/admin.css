@@ -20,6 +20,8 @@ body {
     BlinkMacSystemFont,
     "Segoe UI",
     sans-serif;
+  word-break: keep-all;
+  overflow-wrap: break-word;
 }
 a {
   color: #3f7056;
@@ -307,6 +309,9 @@ h2 {
   padding: 23px 24px 18px;
   border-bottom: 1px solid #edf0e9;
 }
+.panel-heading > * {
+  min-width: 0;
+}
 .panel-heading h2 {
   margin: 0;
 }
@@ -456,6 +461,29 @@ th {
   font-weight: 600;
   white-space: nowrap;
 }
+.sort-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #6f7d71;
+}
+.sort-link:hover {
+  color: #365f47;
+  text-decoration: none;
+}
+.sort-link.active {
+  color: #365f47;
+  font-weight: 700;
+}
+.sort-indicator {
+  width: 11px;
+  color: #a3ada3;
+  font-size: 11px;
+  text-align: center;
+}
+.sort-link.active .sort-indicator {
+  color: var(--sage);
+}
 td {
   padding: 16px 23px;
   border-top: 1px solid #edf0e9;
@@ -514,6 +542,29 @@ tbody tr:hover {
   align-items: center;
   gap: 10px;
 }
+.sort-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.sort-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.sort-control:hover,
+.sort-control.active {
+  border-color: #b5c6b2;
+  background: #f3f6f0;
+  color: #365f47;
+  text-decoration: none;
+}
 .empty-state {
   padding: 42px 24px;
   text-align: center;
@@ -524,18 +575,12 @@ tbody tr:hover {
   margin: 7px 0 0;
   font-size: 11px;
 }
-.notice,
 .error-banner {
   margin: 0 0 22px;
   padding: 15px 18px;
   border-radius: 7px;
   font-size: 13px;
   overflow-wrap: anywhere;
-}
-.notice {
-  background: #eef3e8;
-  color: #56734f;
-  border: 1px solid #d8e4cf;
 }
 .error-banner {
   background: #fff0ec;
@@ -605,6 +650,12 @@ code {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.log-panel-body .log-output {
+  margin: 0;
+}
+.log-panel-body .log-output + .button {
+  margin-top: 16px;
+}
 .command-preview {
   display: block;
   max-width: 360px;
@@ -626,9 +677,28 @@ code {
   cursor: pointer;
   overflow-wrap: anywhere;
 }
-.client-record summary small {
-  margin-left: 12px;
+.client-summary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  width: calc(100% - 20px);
+  gap: 18px;
+  vertical-align: middle;
+}
+.client-summary-main {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  min-width: 0;
+  gap: 6px 12px;
+}
+.client-summary-main code {
   color: var(--muted);
+}
+.client-created {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 11px;
 }
 .client-body {
   padding: 0 24px 24px;
@@ -760,6 +830,18 @@ code {
   .padded,
   .panel-heading {
     padding: 18px;
+  }
+  .panel-heading {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .sort-controls {
+    width: 100%;
+  }
+  .client-summary {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 5px;
   }
   .filter-field {
     min-width: 120px;

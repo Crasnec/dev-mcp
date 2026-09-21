@@ -1,0 +1,125 @@
+.message-dialog {
+  width: min(440px, calc(100vw - 32px));
+  max-width: none;
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  color: inherit;
+  box-shadow: 0 24px 80px #1e2e2752;
+}
+.message-dialog::backdrop {
+  background: #17241f73;
+  backdrop-filter: blur(2px);
+}
+.message-dialog-panel {
+  padding: 25px;
+  border: 1px solid #dce5d8;
+  border-radius: 14px;
+  background: #fff;
+}
+.message-dialog-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.message-dialog-heading h2 {
+  margin: 0;
+  color: #294a38;
+  font-size: 17px;
+  line-height: 1.4;
+}
+.message-dialog-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #e8f0e4;
+  color: #527b63;
+  font-family: Georgia, serif;
+  font-size: 16px;
+  font-weight: 700;
+}
+.message-dialog-body {
+  margin: 0;
+  color: #5f6e64;
+  font-size: 13px;
+  line-height: 1.8;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.message-dialog-body a {
+  color: #3f7056;
+  font-weight: 600;
+}
+.message-dialog-body code {
+  font-size: 11px;
+}
+.message-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 22px;
+}
+.message-dialog-close {
+  min-width: 76px;
+  background: #527b63;
+  border-color: #527b63;
+  color: #fff;
+}
+.message-dialog-close:hover {
+  background: #416b52;
+}
+.context-message {
+  position: relative;
+  margin: 0 0 20px;
+  padding-left: 22px;
+  color: #5f6e64;
+  font-size: 13px;
+  line-height: 1.8;
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+.context-message::before {
+  position: absolute;
+  top: 0;
+  left: 0;
+  color: #66836f;
+  content: "ⓘ";
+}
+.context-message a {
+  color: #3f7056;
+  font-weight: 600;
+}
+.context-message code {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+.panel > .context-message {
+  margin: 18px 24px;
+}
+body:has(.message-dialog[open]) {
+  overflow: hidden;
+}
+@media (max-width: 480px) {
+  .message-dialog-panel {
+    padding: 21px;
+  }
+  .message-dialog-actions {
+    display: block;
+  }
+  .message-dialog-close {
+    width: 100%;
+  }
+  .panel > .context-message {
+    margin: 16px 18px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .message-dialog::backdrop {
+    backdrop-filter: none;
+  }
+}

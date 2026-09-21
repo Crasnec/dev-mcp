@@ -2,7 +2,7 @@
 <div class="two-column">
   <section class="panel padded">
     <h2>계정 정보</h2>
-    {{#target.googleLinked}}<p class="notice">Google 로그인 · {{target.email}}</p>{{/target.googleLinked}}
+    {{#target.googleLinked}}<p class="context-message">Google 로그인 · {{target.email}}</p>{{/target.googleLinked}}
     <dl class="properties"><div><dt>사용자 ID</dt><dd><code>{{target.id}}</code></dd></div><div><dt>가입일</dt><dd>{{target.createdLabel}}</dd></div><div><dt>로그인 세션</dt><dd>{{sessionCount}}개</dd></div></dl>
     <form method="post" action="/admin/users/{{target.id}}">
       {{> partials/csrf}}

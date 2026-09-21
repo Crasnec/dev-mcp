@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -212,5 +212,69 @@ describe("MCP tool catalog", () => {
     });
     await client.close();
     await server.close();
+  });
+
+  it("records the owner and returned process id for process starts", async () => {
+    const data = await mkdtemp(path.join(os.tmpdir(), "mcp-process-audit-"));
+    temporary.push(data);
+    const projectId = "00000000-0000-4000-8000-000000000000";
+    const processId = "11111111-1111-4111-8111-111111111111";
+    const ipc = {
+      call: async () => ({
+        ok: true,
+        data: {
+          process: {
+            id: processId,
+            projectId,
+            command: "npm run dev",
+          },
+        },
+        truncated: false,
+      }),
+    } as unknown as IpcClient;
+    const server = createMcpServer({
+      scopes: ["command:run"],
+      actor: "user-id:client-id",
+      principal: { userId: "user-id", authVersion: 1 },
+      ipc,
+      audit: new AuditLogger(data),
+      resourceMetadataUrl:
+        "https://dev.example.test/.well-known/oauth-protected-resource",
+      mediaBaseUrl: "https://dev.example.test",
+      mediaSigningSecret: "test-media-secret",
+    });
+    const client = new Client({ name: "process-test", version: "1.0.0" });
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    const result = await client.callTool({
+      name: "process_start",
+      arguments: {
+        project_id: projectId,
+        command: "npm run dev",
+        network_intent: "none",
+      },
+    });
+    expect(result.isError).toBe(false);
+    await client.close();
+    await server.close();
+
+    const entry = JSON.parse(
+      (await readFile(path.join(data, "audit.jsonl"), "utf8")).trim(),
+    );
+    expect(entry).toMatchObject({
+      event: "tool_call",
+      actor: "user-id:client-id",
+      userId: "user-id",
+      tool: "process_start",
+      processId,
+      projectId,
+      params: {
+        project_id: projectId,
+        command: "npm run dev",
+        network_intent: "none",
+      },
+    });
   });
 });

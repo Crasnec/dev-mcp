@@ -4,6 +4,7 @@ import express, {
   type Response,
   type NextFunction,
 } from "express";
+import { createHash } from "node:crypto";
 import type { GatewayConfig } from "./config.ts";
 import type { User, UserStore } from "./user-store.ts";
 import type { AuthStore } from "./auth-store.ts";
@@ -32,6 +33,25 @@ interface ProcessSummary {
   pid: number;
   startedAt: string;
   exitCode?: number;
+}
+interface AuditRow {
+  id: string;
+  source: Record<string, unknown>;
+  ownerId?: string;
+  processId?: string;
+  projectId?: string;
+  command?: string;
+  tool?: string;
+  at: string;
+  sortAt: string;
+  event: string;
+  actor: string;
+  details: string;
+  detailHref?: string;
+  detailLabel?: string;
+  expanded?: boolean;
+  expandedText?: string;
+  detail?: Record<string, unknown>;
 }
 class AdminError extends Error {
   constructor(
@@ -159,6 +179,77 @@ export function installAdminRoutes(
     event: string,
     details: Record<string, unknown>,
   ) => audit.write({ event, actor: actor(res).id, ...details });
+  const auditProcessDetail = async (
+    row: AuditRow,
+    allUsers: User[],
+    res: Response,
+  ): Promise<Record<string, unknown>> => {
+    const owner = row.ownerId
+      ? allUsers.find((entry) => entry.id === row.ownerId)
+      : undefined;
+    const related = Boolean(
+      row.processId || row.projectId || row.tool?.startsWith("process_"),
+    );
+    if (!related) {
+      return {
+        command: row.command,
+        message: "이 감사 기록에 연결된 백그라운드 프로세스가 없습니다.",
+        processes: [],
+      };
+    }
+    if (!owner) {
+      return {
+        command: row.command,
+        message: "프로세스 소유 사용자를 확인할 수 없습니다.",
+        processes: [],
+      };
+    }
+    const state = await processList(owner, res);
+    if (!state.ready) {
+      return {
+        command: row.command,
+        message: `${owner.email ?? owner.username}님의 실행 환경에 연결할 수 없습니다.`,
+        processListHref: "/admin/processes?owner=" + owner.id,
+        processes: [],
+      };
+    }
+    const matches = relatedProcesses(row, state.processes);
+    const processRows = await Promise.all(
+      matches.map(async (process) => {
+        const logs = await call(owner, res, "process_logs", {
+          process_id: process.id,
+          max_bytes: 16 * 1024,
+        });
+        const output = logs.ok
+          ? String(
+              (logs.data as { output?: unknown } | undefined)?.output ?? "",
+            )
+          : logs.error?.message || "프로세스 로그를 가져오지 못했습니다.";
+        return {
+          ...process,
+          statusLabel: statusLabel(process.status),
+          startedLabel: dateLabel(process.startedAt),
+          output: output || "기록된 로그가 없습니다.",
+          truncated: logs.ok && logs.truncated,
+          href:
+            "/admin/processes/" +
+            owner.id +
+            "/" +
+            encodeURIComponent(process.id),
+        };
+      }),
+    );
+    return {
+      command: row.command,
+      ownerLabel: owner.email ?? owner.username,
+      processListHref: "/admin/processes?owner=" + owner.id,
+      message:
+        processRows.length === 0
+          ? "조건에 맞는 연관 프로세스를 찾지 못했습니다."
+          : undefined,
+      processes: processRows,
+    };
+  };
 
   router.get("/", async (req, res) => {
     if (query(req, "user")) {
@@ -702,8 +793,24 @@ export function installAdminRoutes(
       ],
       { defaultKey: "at", defaultDirection: "desc" },
     );
+    const page = pageOf(sorted.items, req);
+    const selectedId = query(req, "detail");
+    for (const row of page.rows) {
+      row.expanded = row.id === selectedId;
+      row.expandedText = row.expanded ? "true" : "false";
+      row.detailLabel = row.expanded ? "상세 닫기" : "상세 보기";
+      row.detailHref = auditDetailHref(
+        req,
+        row.expanded ? undefined : row.id,
+        row.id,
+      );
+    }
+    const selected = page.rows.find((row) => row.expanded);
+    if (selected) {
+      selected.detail = await auditProcessDetail(selected, all, res);
+    }
     return adminView(req, res, "audit", "admin/audit", {
-      ...pageOf(sorted.items, req),
+      ...page,
       q,
       event,
       sort: sorted.state,
@@ -762,17 +869,18 @@ export function installAdminRoutes(
   app.use("/admin", router);
 }
 
-function auditRow(entry: Record<string, unknown>, users: User[]) {
+function auditRow(entry: Record<string, unknown>, users: User[]): AuditRow {
   const actorId =
     typeof entry.actor === "string"
       ? entry.actor
       : typeof entry.userId === "string"
         ? entry.userId
         : "";
-  const actor =
-    users.find(
-      (user) => actorId === user.id || actorId.startsWith(user.id + ":"),
-    )?.username ?? actorId;
+  const owner = users.find(
+    (user) => actorId === user.id || actorId.startsWith(user.id + ":"),
+  );
+  const actor = owner?.username ?? actorId;
+  const params = recordValue(entry.params);
   const details: Record<string, unknown> = {};
   for (const key of [
     "userId",
@@ -786,16 +894,104 @@ function auditRow(entry: Record<string, unknown>, users: User[]) {
     "ok",
     "errorCode",
     "registrationOpen",
+    "requiredScopes",
+    "message",
+    "params",
   ]) {
     if (entry[key] !== undefined) {
       details[key] = entry[key];
     }
   }
   return {
+    id: auditRecordId(entry),
+    source: entry,
+    ownerId:
+      typeof entry.userId === "string" ? entry.userId : owner?.id || undefined,
+    processId: stringValue(entry.processId) ?? stringValue(params.process_id),
+    projectId: stringValue(entry.projectId) ?? stringValue(params.project_id),
+    command: stringValue(params.command),
+    tool: stringValue(entry.tool),
     at: dateLabel(typeof entry.at === "string" ? entry.at : undefined),
     sortAt: typeof entry.at === "string" ? entry.at : "",
     event: String(entry.event ?? "unknown"),
     actor: actor || "시스템",
-    details: JSON.stringify(details),
-  };
+    details: JSON.stringify(details, null, 2),
+  } satisfies AuditRow;
+}
+
+function auditRecordId(entry: Record<string, unknown>): string {
+  return createHash("sha256")
+    .update(JSON.stringify(entry))
+    .digest("base64url")
+    .slice(0, 20);
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value ? value : undefined;
+}
+
+function auditDetailHref(
+  req: Request,
+  detailId: string | undefined,
+  rowId: string,
+): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(req.query)) {
+    if (typeof value === "string" && key !== "saved" && key !== "detail") {
+      params.set(key, value);
+    }
+  }
+  if (detailId) {
+    params.set("detail", detailId);
+  }
+  const suffix = params.toString();
+  return (
+    req.baseUrl +
+    req.path +
+    (suffix ? "?" + suffix : "") +
+    (detailId ? "#audit-detail-" : "#audit-row-") +
+    rowId
+  );
+}
+
+function relatedProcesses(
+  row: AuditRow,
+  processes: ProcessSummary[],
+): ProcessSummary[] {
+  if (row.processId) {
+    return processes.filter((process) => process.id === row.processId);
+  }
+  let candidates = processes.filter(
+    (process) => !row.projectId || process.projectId === row.projectId,
+  );
+  if (row.tool === "process_start" && row.command) {
+    candidates = candidates.filter(
+      (process) => process.command === row.command,
+    );
+    const eventTime = Date.parse(String(row.source.at ?? ""));
+    candidates.sort((left, right) => {
+      if (!Number.isFinite(eventTime)) {
+        return Date.parse(right.startedAt) - Date.parse(left.startedAt);
+      }
+      return (
+        Math.abs(Date.parse(left.startedAt) - eventTime) -
+        Math.abs(Date.parse(right.startedAt) - eventTime)
+      );
+    });
+    return candidates.slice(0, 1);
+  }
+  if (!row.projectId && row.tool !== "process_list") {
+    return [];
+  }
+  return candidates
+    .sort(
+      (left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt),
+    )
+    .slice(0, 5);
 }

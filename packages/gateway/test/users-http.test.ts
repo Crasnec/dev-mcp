@@ -475,6 +475,41 @@ describe("multi-user accounts and administration", () => {
           (call) => call.actor === "admin:" + admin.id + ":owner:" + alice.id,
         ),
     ).toBe(true);
+    const auditList = await inject(app, {
+      method: "GET",
+      url: "/admin/audit",
+      headers: { cookie: signedIn.cookie },
+    });
+    expect(auditList.statusCode).toBe(200);
+    expect(auditList.payload).not.toContain("<details>");
+    const stoppedDetailHref =
+      /<strong>admin_process_stopped<\/strong>[\s\S]*?<a class="button small audit-detail-toggle" href="([^"]+)"/.exec(
+        auditList.payload,
+      )?.[1];
+    expect(stoppedDetailHref).toBeTruthy();
+    const auditDetail = await inject(app, {
+      method: "GET",
+      url: stoppedDetailHref!.replaceAll("&amp;", "&").split("#")[0]!,
+      headers: { cookie: signedIn.cookie },
+    });
+    expect(auditDetail.statusCode).toBe(200);
+    expect(auditDetail.payload).toContain('class="audit-detail-row"');
+    expect(auditDetail.payload).toContain("연관 프로세스·작동 로그");
+    expect(auditDetail.payload).toContain(
+      "echo &lt;script&gt;x&lt;/script&gt;",
+    );
+    expect(auditDetail.payload).toContain(
+      "&lt;script&gt;runner data&lt;/script&gt;",
+    );
+    expect(auditDetail.payload).not.toContain("<script>runner data</script>");
+    expect(
+      calls.some(
+        (call) =>
+          call.method === "process_logs" &&
+          call.params.process_id === "process-a" &&
+          call.params.max_bytes === 16 * 1024,
+      ),
+    ).toBe(true);
     const count = ipc.mock.calls.length;
     expect(
       (

@@ -82,7 +82,7 @@ export function adminView(
 function currentPageHref(req: Request): string {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(req.query)) {
-    if (typeof value === "string" && key !== "saved") {
+    if (typeof value === "string" && key !== "saved" && key !== "detail") {
       params.set(key, value);
     }
   }
@@ -114,7 +114,7 @@ export function pageOf<T>(items: T[], req: Request, pageKey = "page") {
   const link = (target: number) => {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(req.query)) {
-      if (typeof value === "string" && key !== "saved") {
+      if (typeof value === "string" && key !== "saved" && key !== "detail") {
         params.set(key, value);
       }
     }
@@ -273,6 +273,7 @@ export function sortList<T>(
         if (
           typeof value === "string" &&
           key !== "saved" &&
+          key !== "detail" &&
           key !== sortKey &&
           key !== directionKey &&
           key !== pageKey

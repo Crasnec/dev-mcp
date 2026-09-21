@@ -116,11 +116,13 @@ export function createMcpServer(options: {
       await options.audit.write({
         event: "tool_call",
         actor: options.actor,
+        userId: options.principal.userId,
         tool: definition.name,
         requiredScopes: required,
         ok: result.ok,
         errorCode: result.error?.code,
         params: auditParams(params),
+        ...auditResult(definition.name, result),
       });
       const summary = result.ok
         ? `${definition.name} succeeded${result.truncated ? "; output truncated, use continuation" : ""}.`
@@ -500,4 +502,23 @@ function auditParams(params: Record<string, unknown>): Record<string, unknown> {
     }
   }
   return output;
+}
+
+function auditResult(
+  tool: string,
+  result: ToolResult,
+): Record<string, unknown> {
+  if (tool !== "process_start" || !result.ok) {
+    return {};
+  }
+  const process = (
+    result.data as
+      { process?: { id?: unknown; projectId?: unknown } } | undefined
+  )?.process;
+  return {
+    ...(typeof process?.id === "string" ? { processId: process.id } : {}),
+    ...(typeof process?.projectId === "string"
+      ? { projectId: process.projectId }
+      : {}),
+  };
 }

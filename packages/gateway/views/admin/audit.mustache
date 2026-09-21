@@ -2,7 +2,17 @@
   <form class="toolbar" method="get" action="/admin/audit">{{> partials/sort-fields}}<label class="filter-field grow">기록 검색<input type="search" name="q" value="{{q}}" placeholder="사용자·도구·대상 ID"></label><label class="filter-field">이벤트<select name="event"><option value="">전체 이벤트</option>{{#events}}<option value="{{value}}" {{#selected}}selected{{/selected}}>{{value}}</option>{{/events}}</select></label><button class="primary" type="submit">조회</button><a class="button quiet" href="/admin/audit">초기화</a></form>
   {{#clipped}}<div class="context-message">최근 1 MiB의 기록을 표시합니다. 이전 기록은 서버의 보관 로그에서 확인할 수 있습니다.</div>{{/clipped}}
   <div class="table-scroll"><table><caption class="sr-only">감사 기록</caption><thead><tr>{{#sortHeaders.at}}{{> partials/sortable-header}}{{/sortHeaders.at}}{{#sortHeaders.event}}{{> partials/sortable-header}}{{/sortHeaders.event}}{{#sortHeaders.actor}}{{> partials/sortable-header}}{{/sortHeaders.actor}}<th>상세</th></tr></thead><tbody>
-    {{#rows}}<tr><td>{{at}}</td><td><strong>{{event}}</strong></td><td>{{actor}}</td><td><details><summary>상세 보기</summary><pre class="audit-detail">{{details}}</pre></details></td></tr>{{/rows}}
+    {{#rows}}<tr id="audit-row-{{id}}" class="audit-row{{#expanded}} expanded{{/expanded}}"><td>{{at}}</td><td><strong>{{event}}</strong></td><td>{{actor}}</td><td><a class="button small audit-detail-toggle" href="{{detailHref}}" aria-expanded="{{expandedText}}" aria-controls="audit-detail-{{id}}">{{detailLabel}}</a></td></tr>
+    {{#expanded}}<tr id="audit-detail-{{id}}" class="audit-detail-row"><td colspan="4"><div class="audit-detail-panel">
+      <div class="audit-detail-columns">
+        <section><h3>감사 정보</h3><dl class="properties compact"><div><dt>시각</dt><dd>{{at}}</dd></div><div><dt>이벤트</dt><dd><code>{{event}}</code></dd></div><div><dt>실행자</dt><dd>{{actor}}</dd></div></dl><pre class="audit-json">{{details}}</pre></section>
+        {{#detail.command}}<section><h3>실행 명령</h3><pre class="command-block">{{detail.command}}</pre></section>{{/detail.command}}
+      </div>
+      {{#detail}}<section class="audit-process-section"><div class="audit-process-heading"><div><h3>연관 프로세스·작동 로그</h3>{{#ownerLabel}}<p>{{ownerLabel}}님의 실행 환경</p>{{/ownerLabel}}</div>{{#processListHref}}<a class="button small" href="{{processListHref}}">프로세스 관리 →</a>{{/processListHref}}</div>
+        {{#message}}<p class="context-message">{{message}}</p>{{/message}}
+        <div class="audit-process-list">{{#processes}}<article class="audit-process-card"><header><div><code>{{id}}</code><strong>{{command}}</strong><span><span class="badge {{status}}">{{statusLabel}}</span> PID {{pid}} · {{startedLabel}}</span></div><a class="button small" href="{{href}}">전체 로그 →</a></header><pre class="log-output">{{output}}</pre>{{#truncated}}<p class="help">로그가 길어 앞부분만 표시합니다. 전체 로그는 프로세스 상세에서 확인하세요.</p>{{/truncated}}</article>{{/processes}}</div>
+      </section>{{/detail}}
+    </div></td></tr>{{/expanded}}{{/rows}}
     {{^rows}}<tr><td colspan="4" class="empty-state">조건에 맞는 기록이 없습니다.</td></tr>{{/rows}}
   </tbody></table></div>{{> partials/pagination}}
 </section>

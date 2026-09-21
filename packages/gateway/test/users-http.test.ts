@@ -105,7 +105,7 @@ describe("multi-user accounts and administration", () => {
         headers: { cookie: signedIn.cookie },
       });
       expect(response.statusCode, route).toBe(200);
-      expect(response.payload).toContain('aria-label="관리자 메뉴"');
+      expect(response.payload).toContain('aria-label="관리 메뉴"');
       expect(response.payload).toContain('href="/assets/admin.css"');
       expect(response.payload).toContain(
         'src="/assets/message-dialogs.js" defer',
@@ -145,13 +145,39 @@ describe("multi-user accounts and administration", () => {
       url: "/account",
       headers: { cookie: signedIn.cookie },
     });
-    expect(account.payload).toContain('class="login-card wide-card"');
+    expect(account.payload).toContain('class="admin-shell');
+    expect(account.payload).toContain('href="/assets/admin.css"');
+    expect(account.payload).toContain(
+      'href="/account" class="active" aria-current="page"',
+    );
+    expect(account.payload).toContain('href="/admin/users"');
     expect(account.payload).toContain('class="account-grid"');
     expect(account.payload).toContain('class="context-message"');
     expect(account.payload).not.toContain('class="notice"');
     const alice = await legacyUser(users, dataDir, "alice", password);
     await users.update(admin.id, alice.id, { status: "active", role: "user" });
     const ordinary = await login(app, "alice");
+    const ordinaryAccount = await inject(app, {
+      method: "GET",
+      url: "/account",
+      headers: { cookie: ordinary.cookie },
+    });
+    expect(ordinaryAccount.statusCode).toBe(200);
+    expect(ordinaryAccount.payload).toContain('aria-label="관리 메뉴"');
+    expect(ordinaryAccount.payload).toContain(
+      'href="/account" class="active" aria-current="page"',
+    );
+    expect(ordinaryAccount.payload).toContain("일반 사용자");
+    expect(ordinaryAccount.payload).toContain("내 프로젝트");
+    expect(ordinaryAccount.payload).not.toContain('href="/admin"');
+    expect(ordinaryAccount.payload).not.toContain('href="/admin/users"');
+    const forbiddenAdmin = await inject(app, {
+      method: "GET",
+      url: "/admin",
+      headers: { cookie: ordinary.cookie },
+    });
+    expect(forbiddenAdmin.statusCode).toBe(403);
+    expect(forbiddenAdmin.payload).toContain("관리자 전용 화면입니다");
     for (const route of [
       "/users/" + alice.id,
       "/users/" + alice.id + "/revoke",

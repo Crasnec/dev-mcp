@@ -1,0 +1,36 @@
+<section class="panel padded account-overview">
+  <div class="account-profile">
+    <span class="badge active">{{roleLabel}}</span>
+    <h2 title="{{displayName}}">{{displayName}}</h2>
+    <p class="help">현재 계정에 배정된 실행 환경과 연결 설정입니다.</p>
+  </div>
+  <div class="account-endpoint">
+    <span>MCP 엔드포인트</span>
+    <code>{{endpoint}}/mcp</code>
+  </div>
+</section>
+<div class="account-grid">
+  <section class="panel padded account-card">
+    <h2>내 프로젝트</h2>
+    {{^summary.ready}}<p class="context-message">실행 환경이 준비되지 않았습니다. 관리자에게 문의해 주세요.</p>{{/summary.ready}}
+    {{#summary.ready}}
+      <ul class="account-project-list">{{#summary.projects}}<li><strong>{{name}}</strong><code>{{relativePath}}</code></li>{{/summary.projects}}</ul>
+      {{^summary.projects}}<p class="help">등록된 프로젝트가 없습니다. MCP에서 프로젝트를 등록하거나 저장소를 복제하세요.</p>{{/summary.projects}}
+    {{/summary.ready}}
+  </section>
+  <section class="panel padded account-card">
+    <h2>Google 계정</h2>
+    {{#user.googleLinked}}<p class="context-message">{{user.email}} 계정이 연결되어 있습니다.</p>{{/user.googleLinked}}
+    {{^user.googleLinked}}{{#googleEnabled}}<p class="help">현재 계정에 Google 로그인을 연결합니다. 기존 권한과 작업 공간은 유지되며, 기존 로그인·MCP 인증은 만료됩니다.</p><form method="post" action="/auth/google">{{> partials/csrf}}<input type="hidden" name="mode" value="link"><button class="google-button" type="submit">{{> partials/google-mark}}Google 계정 연결</button></form>{{/googleEnabled}}{{^googleEnabled}}<p class="help">현재 서비스에는 Google 로그인이 설정되어 있지 않습니다.</p>{{/googleEnabled}}{{/user.googleLinked}}
+  </section>
+  {{#user.passwordLogin}}<section class="panel padded account-card">
+    <h2>비밀번호 변경</h2><p class="help">변경하면 브라우저 로그인과 기존 MCP 연결 인증이 모두 만료됩니다.</p>
+    {{#error}}<div class="error-banner" role="alert">{{error}}</div>{{/error}}
+    <form class="account-form" method="post" action="/account/password">
+      {{> partials/csrf}}
+      <label for="current">현재 비밀번호<input id="current" name="current_password" type="password" required autocomplete="current-password" maxlength="256"></label>
+      <label for="new-password">새 비밀번호<input id="new-password" name="password" type="password" required minlength="12" maxlength="256" autocomplete="new-password"></label>
+      <button class="primary" type="submit">비밀번호 변경</button>
+    </form>
+  </section>{{/user.passwordLogin}}
+</div>

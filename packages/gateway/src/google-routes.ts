@@ -219,7 +219,7 @@ export function installGoogleRoutes(
       });
       return res.redirect(
         303,
-        flow.returnTo === "/account" && user.role === "admin"
+        flow.returnTo === "/account" && user.role === "admin" && !flow.link
           ? "/admin"
           : flow.returnTo,
       );

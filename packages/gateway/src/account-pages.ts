@@ -1,5 +1,6 @@
 import { renderView } from "./views.ts";
 import type { User } from "./user-store.ts";
+import { managementShell } from "./admin-view.ts";
 
 export function credentialsPage(
   kind: "login" | "signup",
@@ -45,16 +46,19 @@ export function accountPage(
   error = "",
   googleEnabled = false,
 ): string {
-  return renderView("auth/account", {
-    title: "내 계정",
-    wide: true,
-    user,
-    isAdmin: user.role === "admin",
-    csrf,
-    summary,
-    endpoint,
-    error,
-    googleEnabled,
-    displayName: user.email ?? user.username,
-  });
+  return renderView(
+    "admin/account",
+    {
+      ...managementShell(user, csrf, "account"),
+      refreshHref: "/account",
+      user,
+      summary,
+      endpoint,
+      error,
+      googleEnabled,
+      displayName: user.email ?? user.username,
+      roleLabel: user.role === "admin" ? "관리자" : "일반 사용자",
+    },
+    "layouts/admin",
+  );
 }

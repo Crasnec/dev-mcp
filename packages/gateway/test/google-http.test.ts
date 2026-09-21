@@ -226,6 +226,8 @@ describe("Google-only registration and browser login", () => {
     expect(cookies(response)).toContain("__Host-dev-mcp-session=");
     const account = await get(app, "/account", cookies(response));
     expect(account.payload).toContain(identity.email);
+    expect(account.payload).toContain('aria-label="관리 메뉴"');
+    expect(account.payload).not.toContain('href="/admin/users"');
     expect(account.payload).not.toContain('action="/account/password"');
     await users.update(admin.id, user.id, { status: "disabled", role: "user" });
     flow = await start(app);
@@ -275,7 +277,9 @@ describe("Google-only registration and browser login", () => {
       authVersion: admin.authVersion,
     });
     const flow = await start(app, { mode: "link" }, adminCookie, "/account");
-    expect((await get(app, flow.callback, flow.jar)).statusCode).toBe(303);
+    const linked = await get(app, flow.callback, flow.jar);
+    expect(linked.statusCode).toBe(303);
+    expect(linked.headers.location).toBe("/account");
     expect(await users.list()).toHaveLength(1);
     expect(await users.get(admin.id)).toMatchObject({
       role: "admin",

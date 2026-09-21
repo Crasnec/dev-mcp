@@ -7,6 +7,13 @@
     "description": "서비스 운영 현황과 처리할 요청을 확인합니다."
   },
   {
+    "key": "account",
+    "href": "/account",
+    "label": "내 계정",
+    "mark": "●",
+    "description": "내 실행 환경, 프로젝트와 로그인 수단을 확인합니다."
+  },
+  {
     "key": "users",
     "href": "/admin/users",
     "label": "사용자",

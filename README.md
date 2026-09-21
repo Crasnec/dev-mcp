@@ -49,6 +49,7 @@ For MCP connections, Google login returns to a browser-bound consent page, never
 
 | URL | Management functions |
 | --- | --- |
+| `/account` | Current user's runner, projects, Google link, and password settings |
 | `/admin` | User/approval/session/client counts, pending approvals, recent activity |
 | `/admin/users` | Search and status filters; account detail, approval, suspension, role changes, revoke all authentication |
 | `/admin/projects` | Owner-specific project list and search; register existing directories; Git status; unregister or permanently delete with name confirmation |

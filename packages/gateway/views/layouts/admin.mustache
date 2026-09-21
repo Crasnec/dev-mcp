@@ -12,17 +12,17 @@
 </head>
 <body>
   <a class="skip-link" href="#main">본문 바로가기</a>
-  <div class="admin-shell">
+  <div class="admin-shell {{^isAdmin}}user-shell{{/isAdmin}}">
     <aside class="sidebar">
       {{> partials/brand}}
-      <span class="workspace-label">관리 워크스페이스</span>
-      <nav aria-label="관리자 메뉴">
+      <span class="workspace-label">{{workspaceLabel}}</span>
+      <nav aria-label="관리 메뉴">
         {{#navigation}}<a href="{{href}}" {{#active}}class="active" aria-current="page"{{/active}}><span class="nav-mark" aria-hidden="true">{{mark}}</span>{{label}}</a>{{/navigation}}
       </nav>
-      <div class="sidebar-bottom"><span class="avatar">{{actor.username}}</span><strong title="{{actor.username}}">{{actor.username}}</strong><small>서비스 관리자</small><a href="/account">내 계정 설정 ↗</a></div>
+      <div class="sidebar-bottom"><span class="avatar">{{actor.username}}</span><strong title="{{actor.username}}">{{actor.username}}</strong><small>{{actor.roleLabel}}</small></div>
     </aside>
     <div class="workspace">
-      <header class="topbar"><div class="breadcrumb"><a href="/admin">관리자</a><span>/</span><a href="{{sectionHref}}">{{title}}</a></div><form method="post" action="/logout">{{> partials/csrf}}<button class="quiet" type="submit">로그아웃</button></form></header>
+      <header class="topbar"><div class="breadcrumb"><a href="{{managementHref}}">관리</a><span>/</span><a href="{{sectionHref}}">{{title}}</a></div><form method="post" action="/logout">{{> partials/csrf}}<button class="quiet" type="submit">로그아웃</button></form></header>
       <main id="main">
         <div class="page-heading"><div><span class="eyebrow">DEV MCP / OPERATIONS</span><h1>{{title}}</h1><p>{{description}}</p></div><a class="button refresh-link" href="{{refreshHref}}">새로고침 ↻</a></div>
         {{> partials/notice}}

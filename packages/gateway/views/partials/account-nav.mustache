@@ -1,4 +1,0 @@
-<nav class="page-nav" aria-label="계정 메뉴">
-  <a href="/account">내 계정</a>{{#isAdmin}}<a href="/admin">관리자</a>{{/isAdmin}}
-  <form method="post" action="/logout">{{> partials/csrf}}<button type="submit">로그아웃</button></form>
-</nav>

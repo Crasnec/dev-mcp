@@ -194,11 +194,6 @@ button.quiet,
 .sidebar-bottom small {
   color: var(--muted);
 }
-.sidebar-bottom a {
-  grid-column: span 2;
-  margin-top: 15px;
-  color: var(--muted);
-}
 .workspace {
   min-width: 0;
   display: flex;
@@ -620,6 +615,100 @@ tbody tr:hover {
   line-height: 1.8;
   overflow-wrap: anywhere;
 }
+.context-message {
+  margin: 0;
+  padding: 13px 15px;
+  border: 1px solid #dfe8d9;
+  border-radius: 7px;
+  background: #f3f7ef;
+  color: #58705d;
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.account-overview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 1fr);
+  align-items: end;
+  gap: 28px;
+}
+.account-profile h2 {
+  margin: 8px 0 4px;
+  font-size: 22px;
+  overflow-wrap: anywhere;
+}
+.account-profile .help {
+  margin-bottom: 0;
+}
+.account-endpoint {
+  min-width: 0;
+}
+.account-endpoint > span {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+.account-endpoint code {
+  display: block;
+  padding: 12px 14px;
+  border-radius: 7px;
+  background: #f3f6f0;
+  line-height: 1.7;
+}
+.account-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: 22px;
+  margin-bottom: 22px;
+}
+.account-grid .panel {
+  margin-bottom: 0;
+}
+.account-card h2 {
+  font-size: 16px;
+}
+.account-card > :last-child {
+  margin-bottom: 0;
+}
+.account-card .context-message {
+  margin-bottom: 0;
+}
+.account-project-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.account-project-list li {
+  min-width: 0;
+  padding: 12px 14px;
+  border-radius: 7px;
+  background: #f7f9f5;
+}
+.account-project-list strong,
+.account-project-list code {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.account-project-list code {
+  margin-top: 4px;
+  color: var(--muted);
+}
+.account-form label {
+  margin-bottom: 14px;
+}
+.google-button {
+  width: 100%;
+  min-height: 42px;
+  border-color: #cfd6ce;
+  background: #fff;
+}
+.google-button svg {
+  flex-shrink: 0;
+}
 .back-link {
   display: inline-block;
   margin-bottom: 12px;
@@ -790,6 +879,9 @@ code {
     grid-template-columns: 1fr;
     gap: 0;
   }
+  .account-overview {
+    grid-template-columns: 1fr;
+  }
 }
 @media (max-width: 720px) {
   .admin-shell {
@@ -813,6 +905,9 @@ code {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 4px;
+  }
+  .user-shell .sidebar nav {
+    grid-template-columns: 1fr;
   }
   .sidebar nav a {
     justify-content: center;

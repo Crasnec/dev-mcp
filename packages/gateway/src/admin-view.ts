@@ -13,6 +13,45 @@ interface NavItem {
 }
 export type AdminSession = { user: User; csrf: string };
 
+export function managementShell(
+  user: User,
+  csrf: string,
+  section: string,
+): Record<string, unknown> {
+  const allNavigation = JSON.parse(
+    readFileSync(
+      new URL("../views/admin/navigation.json", import.meta.url),
+      "utf8",
+    ),
+  ) as NavItem[];
+  const allowedNavigation =
+    user.role === "admin"
+      ? allNavigation
+      : allNavigation.filter((item) => item.key === "account");
+  const current = allowedNavigation.find((item) => item.key === section);
+  if (!current) {
+    throw new Error("사용할 수 없는 관리 화면입니다.");
+  }
+  const isAdmin = user.role === "admin";
+  return {
+    title: current.label,
+    description: current.description,
+    sectionHref: current.href,
+    managementHref: isAdmin ? "/admin" : "/account",
+    workspaceLabel: isAdmin ? "관리 워크스페이스" : "내 워크스페이스",
+    isAdmin,
+    csrf,
+    actor: {
+      username: user.email ?? user.username,
+      roleLabel: isAdmin ? "서비스 관리자" : "일반 사용자",
+    },
+    navigation: allowedNavigation.map((item) => ({
+      ...item,
+      active: item.key === section,
+    })),
+  };
+}
+
 export function adminView(
   req: Request,
   res: Response,
@@ -21,14 +60,6 @@ export function adminView(
   data: Record<string, unknown> = {},
   status = 200,
 ): Response {
-  const navigation = JSON.parse(
-    readFileSync(
-      new URL("../views/admin/navigation.json", import.meta.url),
-      "utf8",
-    ),
-  ) as NavItem[];
-  const current =
-    navigation.find((item) => item.key === section) ?? navigation[0]!;
   const session = res.locals.admin as AdminSession;
   return sendPage(
     res,
@@ -36,19 +67,8 @@ export function adminView(
     renderView(
       template,
       {
-        title: current.label,
-        description: current.description,
-        sectionHref: current.href,
+        ...managementShell(session.user, session.csrf, section),
         refreshHref: currentPageHref(req),
-        csrf: session.csrf,
-        actor: {
-          ...session.user,
-          username: session.user.email ?? session.user.username,
-        },
-        navigation: navigation.map((item) => ({
-          ...item,
-          active: item.key === section,
-        })),
         notice:
           req.query.saved === "1" ? "변경 사항을 저장했습니다." : undefined,
         ...data,

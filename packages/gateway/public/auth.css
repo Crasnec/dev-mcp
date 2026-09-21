@@ -138,9 +138,6 @@ h1 {
   background:
     radial-gradient(ellipse at 70% 30%, #e6ecd9 0, transparent 50%), #f8f6f0;
 }
-.account-page {
-  justify-content: flex-start;
-}
 .login-card {
   margin: 50px 0;
   background: #fffefa;
@@ -258,79 +255,10 @@ input:focus {
   line-height: 1.8;
   overflow-wrap: anywhere;
 }
-.wide-card {
-  width: min(1120px, 100%);
-}
-.wide-card h1 {
-  font-size: 30px;
-}
-.wide-card .endpoint {
-  margin-bottom: 26px;
-}
-.page-nav {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 16px;
-  margin-bottom: 26px;
-  font-size: 13px;
-}
-.page-nav form {
-  margin-left: auto;
-}
-.account-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
-  gap: 20px;
-}
-.user-card + .account-grid {
-  margin-top: 20px;
-}
-.user-card {
-  padding: 22px;
-  border: 1px solid #e6e9dc;
-  border-radius: 16px;
-  min-width: 0;
-}
-.user-card h2 {
-  font-size: 19px;
-  margin: 0 0 10px;
-}
-.user-card > :last-child {
-  margin-bottom: 0;
-}
-.user-card code {
-  display: block;
-  overflow-wrap: anywhere;
-  font-size: 11px;
-  line-height: 1.8;
-  background: #eff3e8;
-  padding: 12px;
-  border-radius: 9px;
-  margin: 12px 0;
-}
-.badge {
-  display: inline-block;
-  padding: 5px 9px;
-  background: #edf0e5;
-  border-radius: 20px;
-  font-size: 11px;
-  color: #526b4e;
-  margin-bottom: 16px;
-}
 .help {
   color: #697761;
   font-size: 12px;
   line-height: 1.8;
-}
-.project-list {
-  padding-left: 20px;
-  font-size: 13px;
-  line-height: 1.9;
-}
-.project-list code {
-  font-size: 11px;
-  overflow-wrap: anywhere;
 }
 @media (max-width: 1020px) {
   .brand {

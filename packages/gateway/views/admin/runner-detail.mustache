@@ -1,9 +1,49 @@
-<div class="detail-heading"><div><a class="back-link" href="/admin/runners">← 실행 환경 목록</a><h2>{{owner.username}}님의 실행 환경</h2>{{#ready}}<span class="badge active">연결됨</span>{{/ready}}{{^ready}}<span class="badge pending">준비 필요 · 응답 없음</span>{{/ready}}</div><a class="button" href="/admin/runners/{{owner.id}}">상태 다시 확인 ↻</a></div>
+<div class="detail-heading"><div><a class="back-link" href="/admin/runners">← 실행 환경 목록</a><h2>{{owner.username}}님의 실행 환경</h2>{{#ready}}<span class="badge active">연결됨</span>{{/ready}}{{^ready}}<span class="badge pending">연결 대기</span>{{/ready}}</div><a class="button" href="/admin/runners/{{owner.id}}">상태 새로고침 ↻</a></div>
+{{#operationPending}}<p class="context-message" role="status">운영 요청을 처리 중입니다. 잠시 후 상태를 새로고침해 주세요.</p>{{/operationPending}}
+{{#operationMessage}}<p class="context-message" role="status">{{operationMessage}}</p>{{/operationMessage}}
 <div class="two-column">
-  <section class="panel padded"><h2>배정된 프로젝트</h2><ul class="project-list">{{#projects}}<li><strong>{{name}}</strong><code>{{relativePath}}</code></li>{{/projects}}</ul>{{^projects}}<p class="help">{{#ready}}등록된 프로젝트가 없습니다.{{/ready}}{{^ready}}실행 환경에 연결한 뒤 확인할 수 있습니다.{{/ready}}</p>{{/projects}}<div class="actions"><a class="button" href="/admin/projects?owner={{owner.id}}">프로젝트 관리</a><a class="button" href="/admin/processes?owner={{owner.id}}">프로세스 관리</a></div></section>
-  <section class="panel padded"><h2>실행 환경 운영</h2>
-    {{#primary}}<p class="help">초기 관리자에게 배정된 기존 runner입니다. 기본 Docker Compose 스택에서 관리합니다.</p>{{/primary}}
-    {{^primary}}<p class="help">계정 승인 후 전용 컨테이너가 자동으로 준비됩니다. 준비가 오래 걸리면 호스트에서 관리 서비스 로그를 확인하거나 아래 명령으로 생성할 수 있습니다.</p><h3>관리 서비스 로그</h3><pre class="command-block">docker compose logs provisioner</pre><h3>수동 생성</h3><pre class="command-block">{{provisionCommand}}</pre><h3>컨테이너 중지</h3><pre class="command-block">{{stopCommand}}</pre><p class="help">계정을 중지해도 이미 실행 중인 작업은 유지됩니다. 실행 환경 전체를 중지하려면 위 명령을 사용하세요.</p>{{/primary}}
-    <a class="button" href="/admin/users/{{owner.id}}">계정 상태 관리 →</a>
+  <div class="stack">
+    <section class="panel padded">
+      <h2>실행 환경 운영</h2>
+      <dl class="properties"><div><dt>컨테이너 상태</dt><dd>{{containerState}}</dd></div><div><dt>마지막 확인</dt><dd>{{observedLabel}}</dd></div></dl>
+      {{^observationFresh}}<p class="help">관리 서비스의 상태 정보가 아직 없거나 오래되었습니다. 연결 상태와 작업 결과를 새로고침해 확인하세요.</p>{{/observationFresh}}
+      <form method="post" action="/admin/runners/{{owner.id}}/operations">
+        {{> partials/csrf}}<input type="hidden" name="revision" value="{{revision}}">
+        <div class="actions">
+          {{#canCreate}}<button type="submit" name="action" value="create">환경 생성</button>{{/canCreate}}
+          {{#canStart}}<button class="primary" type="submit" name="action" value="start">시작</button><button type="submit" name="action" value="restart">재시작</button>{{/canStart}}
+          <button class="danger" type="submit" name="action" value="stop">중지</button>
+        </div>
+      </form>
+      <p class="help">중지·재시작하면 실행 중인 작업이 종료됩니다. 프로젝트와 저장된 파일은 유지됩니다. 계정 사용 중지와 실행 환경 중지는 별개입니다.</p>
+      <a class="button" href="/admin/users/{{owner.id}}">계정 상태 관리 →</a>
+    </section>
+    <section class="panel padded">
+      <h2>실제 적용된 제한</h2>
+      {{#observed}}<dl class="properties"><div><dt>외부 네트워크</dt><dd>{{network}}</dd></div><div><dt>메모리 (MiB)</dt><dd>{{memory}}</dd></div><div><dt>CPU 코어</dt><dd>{{cpus}}</dd></div><div><dt>프로세스 수</dt><dd>{{pids}}</dd></div><div><dt>저장공간 (MiB)</dt><dd>{{storageUsed}} 사용 / {{storage}}</dd></div><div><dt>파일 하나당 크기 (MiB)</dt><dd>{{fileSize}}</dd></div></dl>{{/observed}}
+      {{^observed}}<p class="help">관리 서비스에서 컨테이너 정보를 확인한 후 표시됩니다.</p>{{/observed}}
+    </section>
+    <section class="panel padded"><h2>프로젝트</h2><ul class="project-list">{{#projects}}<li><strong>{{name}}</strong><code>{{relativePath}}</code></li>{{/projects}}</ul>{{^projects}}<p class="help">{{#ready}}등록된 프로젝트가 없습니다.{{/ready}}{{^ready}}실행 환경에 연결한 뒤 확인할 수 있습니다.{{/ready}}</p>{{/projects}}<div class="actions"><a class="button" href="/admin/projects?owner={{owner.id}}">프로젝트 관리</a><a class="button" href="/admin/processes?owner={{owner.id}}">프로세스 관리</a></div></section>
+  </div>
+  <section class="panel padded">
+    <h2>권한·자원 제한 설정</h2>
+    <form method="post" action="/admin/runners/{{owner.id}}/operations">
+      {{> partials/csrf}}<input type="hidden" name="revision" value="{{revision}}"><input type="hidden" name="action" value="apply">
+      <label class="checkbox-label"><input type="checkbox" name="network" {{#limits.network}}checked{{/limits.network}}> 외부 네트워크 허용</label>
+      <p class="help">차단하면 인터넷과 다른 네트워크로의 통신이 끊깁니다. 파일 작업과 관리 연결은 계속 사용할 수 있습니다.</p>
+      <label>메모리 상한 (MiB)<input name="memoryMiB" type="number" min="0" max="1048576" step="1" required value="{{limits.memoryMiB}}"></label>
+      <p class="help">64 MiB 이상을 권장합니다. 제한을 설정하면 swap을 사용할 수 없으며, 메모리를 초과한 프로세스는 종료될 수 있습니다.</p>
+      <label>CPU 상한 (코어)<input name="cpus" type="number" min="0" max="1024" step="0.01" required value="{{limits.cpus}}"></label>
+      <label>프로세스 수 상한<input name="pids" type="number" min="0" max="1048576" step="1" required value="{{limits.pids}}"></label>
+      {{^primary}}
+      <label>총 저장공간 상한 (MiB)<input name="storageMiB" type="number" min="0" max="102400" step="1" required value="{{limits.storageMiB}}"></label>
+      <p class="help">작업공간과 실행 데이터의 합계입니다. 64 MiB 이상으로 설정하면 초과 쓰기가 즉시 차단됩니다. 사용량보다 작은 값은 적용되지 않습니다. 처음 설정할 때 작업을 중지하고 저장소를 이전하며, 원본 볼륨은 보존합니다.</p>
+      <label>파일 하나당 최대 크기 (MiB)<input name="fileSizeMiB" type="number" min="0" max="1048576" step="1" required value="{{limits.fileSizeMiB}}"></label>
+      <p class="help">파일 크기 제한 변경이나 메모리·CPU 제한 해제는 컨테이너를 재생성하므로 실행 중인 작업이 종료됩니다.</p>
+      {{/primary}}
+      {{#primary}}<input type="hidden" name="storageMiB" value="0"><input type="hidden" name="fileSizeMiB" value="0"><p class="help">기본 환경은 기존 호스트 공유 디렉터리를 사용합니다. 설정한 메모리·CPU 제한 해제는 Compose에서 재생성해야 합니다. 저장공간과 파일 크기 제한은 전용 사용자 환경에서 설정할 수 있습니다.</p>{{/primary}}
+      <p class="help">숫자 제한의 0은 무제한입니다. 저장 후 실제 적용 결과를 확인해 주세요.</p>
+      <button class="primary" type="submit">설정 적용</button>
+    </form>
   </section>
 </div>

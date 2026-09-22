@@ -13,6 +13,7 @@ import type { RunnerRouter } from "./runner-router.ts";
 import type { SettingsStore } from "./settings-store.ts";
 import type { ProjectSummary } from "./account-pages.ts";
 import { browserSession, field } from "./browser-session.ts";
+import { RunnerControlStore } from "./runner-control-store.ts";
 import { errorPage, sendPage } from "./pages.ts";
 import {
   adminView,
@@ -73,6 +74,10 @@ export function installAdminRoutes(
 ): void {
   const router = express.Router();
   const browser = browserSession(config, users);
+  const controls = new RunnerControlStore(
+    config.dataDir,
+    config.runnerStatusDir ?? "/runner-status",
+  );
   router.use(express.urlencoded({ extended: false, limit: "16kb" }));
   router.use(async (req, res, next) => {
     const session = await browser.current(req);
@@ -522,13 +527,91 @@ export function installAdminRoutes(
   router.get("/runners/:id", async (req, res) => {
     const owner = await user(String(req.params.id));
     const state = await projectsFor(owner, res);
+    const { control, observation } = await controls.read(owner.id);
+    const fresh = observation && Date.now() - observation.observedAt < 60_000;
+    const limits = control?.limits ?? observation;
     return adminView(req, res, "runners", "admin/runner-detail", {
       owner: userRow(owner),
       ...state,
       primary: owner.runner === "primary",
-      provisionCommand: "./scripts/provision-user.sh " + owner.id,
-      stopCommand: "docker stop dev-mcp-user-" + owner.id,
+      revision: control?.revision ?? "",
+      operationPending:
+        control &&
+        (control.revision !== observation?.revision ||
+          observation?.phase === "applying"),
+      operationMessage:
+        control?.revision === observation?.revision
+          ? observation?.message
+          : undefined,
+      observationFresh: fresh,
+      containerState: fresh
+        ? ({
+            running: "실행 중",
+            exited: "중지됨",
+            created: "생성됨 · 시작 전",
+            restarting: "재시작 중",
+            paused: "일시 정지",
+            missing: "미생성",
+            unknown: "확인 실패",
+          }[observation.state] ?? observation.state)
+        : "확인 중 · 상태 정보 없음",
+      observedLabel: dateLabel(observation?.observedAt),
+      canCreate: owner.runner !== "primary" && owner.status === "active",
+      canStart: owner.status === "active",
+      limits: {
+        network: limits?.network ?? true,
+        memoryMiB: limits?.memoryMiB ?? 0,
+        cpus: limits?.cpus ?? 0,
+        pids: limits?.pids ?? 0,
+        fileSizeMiB: limits?.fileSizeMiB ?? 0,
+        storageMiB: limits?.storageMiB ?? 0,
+      },
+      observed:
+        observation && !["missing", "unknown"].includes(observation.state)
+          ? {
+              memory: observation.memoryMiB || "무제한",
+              cpus: observation.cpus || "무제한",
+              pids: observation.pids || "무제한",
+              network: observation.network ? "허용" : "차단",
+              fileSize: observation.fileSizeMiB || "무제한",
+              storage: observation.storageMiB || "무제한",
+              storageUsed: observation.storageUsedMiB ?? "확인 중",
+            }
+          : undefined,
     });
+  });
+  router.post("/runners/:id/operations", async (req, res) => {
+    const owner = await user(String(req.params.id));
+    const action = field(req, "action");
+    const number = (name: string) => {
+      const value = field(req, name);
+      return /^\d+(?:\.\d+)?$/.test(value) ? Number(value) : NaN;
+    };
+    const limits =
+      action === "apply"
+        ? {
+            network: field(req, "network") === "on",
+            memoryMiB: number("memoryMiB"),
+            cpus: number("cpus"),
+            pids: number("pids"),
+            fileSizeMiB: number("fileSizeMiB"),
+            storageMiB: number("storageMiB"),
+          }
+        : undefined;
+    const request = await controls.request(
+      owner,
+      actor(res).id,
+      field(req, "revision"),
+      action,
+      limits,
+    );
+    await record(res, "runner_operation_requested", {
+      userId: owner.id,
+      action,
+      revision: request.revision,
+      limits,
+    });
+    return res.redirect(303, "/admin/runners/" + owner.id);
   });
   router.get("/processes", async (req, res) => {
     const selection = await selected(req, res);
@@ -897,6 +980,9 @@ function auditRow(entry: Record<string, unknown>, users: User[]): AuditRow {
     "requiredScopes",
     "message",
     "params",
+    "action",
+    "revision",
+    "limits",
   ]) {
     if (entry[key] !== undefined) {
       details[key] = entry[key];

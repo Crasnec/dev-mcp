@@ -46,3 +46,11 @@ To use that Google identity for the existing projects, sign in as the existing `
 - Existing project files remain in the unchanged `/home/crasnec/workspace` bind mount; that workspace was not included in the metadata/runtime-volume archive.
 
 Do not remove the backup volume or original data volumes during rollback. First stop the gateway/runner, preserve any post-deployment changes in a separate backup, and restore the matching old images/configuration and data deliberately. The old gateway uses the previous single-user authentication model, so rollback also changes the security model. Never dump credential files, cookies, tokens or full configuration environment values into logs while troubleshooting.
+
+## Development changes awaiting deployment
+
+The web execution-environment operations and resource/quota management changes have **not** been deployed. As requested, verification uses a separately tagged development image and disposable test containers only. Do not run Compose `up`, recreate production services, or migrate production storage as part of this development work.
+
+When a future deployment is explicitly authorized, the gateway and provisioner need the updated images and the new `runner-status` volume mounts. Quota storage is initialized only when an administrator requests a nonzero storage limit for a dedicated user. The prior primary workspace and existing runner volumes must be preserved. Review the storage backup/loop-device notes in README before enabling quotas.
+
+Development verification passed: 55 tests, TypeScript, formatting and shell syntax; disposable Docker lifecycle/resource/network tests; and a full temporary-volume migration test confirming combined workspace/runtime hard quota, quota increase and preserved source volumes. No production account received a resource or storage change.

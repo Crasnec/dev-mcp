@@ -53,7 +53,7 @@ For MCP connections, Google login returns to a browser-bound consent page, never
 | `/admin` | User/approval/session/client counts, pending approvals, recent activity |
 | `/admin/users` | Search and status filters; account detail, approval, suspension, role changes, revoke all authentication |
 | `/admin/projects` | Owner-specific project list and search; register existing directories; Git status; unregister or permanently delete with name confirmation |
-| `/admin/runners` | Per-user connectivity and project counts; detail pages with host provisioning/stop commands |
+| `/admin/runners` | Per-user connectivity, lifecycle operations, network access and resource/quota controls |
 | `/admin/processes` | Owner/status filters; process detail, paged logs, stop a running process |
 | `/admin/connections` | Browser sessions and individual revocation; OAuth clients, callback URLs and grant counts; client removal with ID confirmation |
 | `/admin/audit` | Searchable, event-filtered audit records; bounded to the most recent 1 MiB of the log |
@@ -258,3 +258,35 @@ docker compose config --quiet
 ```
 
 Tests cover PKCE, one-time codes, refresh rotation, revocation, path and symlink escapes, project registration through commit, long-output pagination, and background process lifecycle. After deployment, `scripts/verify-deployment.sh` checks public HTTPS metadata, the authentication challenge, mount isolation, network separation, and read-only roots.
+
+### Web execution environment operations
+
+Administrators can use **실행 환경 → 사용자 상세** to create, start, stop and restart a runner, and edit external network access, memory, CPU, process count, total persistent storage and per-file size limits. Requests require the existing administrator session and CSRF protection. Forms include a revision to reject stale submissions. The page distinguishes pending/failed requests from the latest Docker observations; saving a request alone does not mean it was applied.
+
+The gateway writes requests into `gateway-data/runner-controls.json`. The provisioner validates account/container ownership, executes fixed Docker operations and atomically publishes observations into the separate `runner-status` volume (read-only in the gateway). It still has no HTTP listener. User processes never receive the control/status volumes or Docker socket. Restart requests are not replayed after an ambiguous controller crash; check the actual state and submit a new request.
+
+Network blocking disconnects the runner from Docker networks; authenticated Unix-socket management remains available. Nonzero memory limits disable swap. CPU and PID limits are enforced by Docker/cgroups. Reducing memory can terminate processes. File size limits use `RLIMIT_FSIZE`. Changing these or resetting an existing memory/CPU limit to unlimited requires container replacement; volumes are preserved. Storage limit changes can stop running jobs. The existing primary runner's host bind mount is never automatically migrated; persistent storage and per-file limits apply to dedicated user runners. Resetting an already-set primary memory/CPU limit to unlimited requires an operator-managed Compose recreation; the web controller rejects that change before mutating it.
+
+#### Persistent storage hard quota
+
+On the first nonzero storage quota, the provisioner prepares a separate XFS filesystem in the `dev-mcp-quota-images` volume and mounts it as `dev-mcp-quota-pool`. This needs Linux XFS/project-quota and loop-device support. A short-lived trusted storage helper uses privileged Docker access to prepare the loop device and administer XFS quotas; the user runner remains unprivileged. The helper image is the running provisioner's image, not an arbitrary image supplied by a request.
+
+Each user gets a unique project ID and isolated volume subpaths. `/workspace` and `/var/lib/dev-mcp` share a single block quota; writes beyond it fail in the filesystem (XFS commonly returns `ENOSPC`). Existing files are copied while the runner is stopped. The original named volumes remain available for deliberate rollback. A failed copy leaves the original container and volumes intact. The pool is a sparse 100 GiB filesystem; quota values may range from 64 MiB to 100 GiB. Zero removes the user's project limit but does not remove the pool's total capacity. Physical host free space can be exhausted before allocated quotas are reached. `/tmp`, `/dev/shm` and IPC socket storage are outside the persistent workspace/runtime quota.
+
+The image volume records its reserved loop device. After a restart, the provisioner reattaches only that image to that device, and refuses to overwrite an occupied device. Do not detach or repurpose this loop device while runners use the quota pool. Back up `dev-mcp-quota-images`, `runner-status` (project IDs), account/control state and IPC keys together, with affected runners stopped. Copy the image consistently; do not treat a live copy of the filesystem image as a backup. Do not delete the old user volumes until migration and backups have been verified. After quota migration, recreate missing environments through the web controller, which retains the quota backing store; do not use the original manual helper without its quota settings.
+
+The mechanism follows [Docker volume subpaths and block devices](https://docs.docker.com/engine/storage/volumes/) and [XFS directory tree quotas](https://man7.org/linux/man-pages/man8/xfs_quota.8.html). Memory/CPU behavior follows [Docker resource constraints](https://docs.docker.com/engine/containers/resource_constraints/).
+
+#### Development verification without deployment
+
+Build a separate test image; do not recreate running services:
+
+```bash
+docker build -f docker/provisioner.Dockerfile -t dev-mcp-provisioner-devtest .
+# Disposable container with no host data mounts or Docker socket; cleans up its loop device.
+docker run --rm -i --privileged --network none --entrypoint sh dev-mcp-provisioner-devtest -s < scripts/test-quota-storage.sh
+```
+
+`npm test` covers authorization, form validation, stale requests, ownership checks, migration failure and recreation recovery. `scripts/test-runner-controls.mjs` is an optional Docker integration test: run it inside the test image with the scripts directory read-only and the Docker socket mounted. It creates random test containers/networks and removes them in `finally`; it never selects an existing user's runner.
+
+`scripts/test-runner-storage.mjs` additionally checks the full Docker migration path, volume subpaths, quota resizing and retained original data with uniquely named temporary volumes; its cleanup removes those test volumes and detaches only the test image's loop device.

@@ -25,7 +25,7 @@ container="dev-mcp-user-$user_id"
 if docker container inspect "$container" >/dev/null 2>&1; then
   # A failed docker run may have created the container without starting it.
   # Never restart an exited container: an operator may have stopped its jobs.
-  if [[ "$(docker inspect --format '{{.State.Status}}' "$container")" == created ]]; then
+  if [[ "${RUNNER_START:-true}" != false && "$(docker inspect --format '{{.State.Status}}' "$container")" == created ]]; then
     docker start "$container"
   fi
   echo "$container already exists; use docker start $container if it is stopped."
@@ -59,13 +59,48 @@ docker run --rm --network none --read-only --user 0:0 --cap-drop ALL \
 if ! docker network inspect "$container" >/dev/null 2>&1; then
   docker network create --label "dev-mcp.user=$user_id" "$container" >/dev/null
 fi
-docker run --detach --name "$container" --label "dev-mcp.user=$user_id" \
-  --network "$container" \
+resource_args=()
+for value in "${RUNNER_MEMORY_MIB:-0}" "${RUNNER_PIDS:-0}" "${RUNNER_FILE_SIZE_MIB:-0}"; do
+  [[ "$value" =~ ^[0-9]+$ ]] || exit 2
+done
+[[ "${RUNNER_CPUS:-0}" =~ ^[0-9]+([.][0-9]+)?$ ]] || exit 2
+if [[ "${RUNNER_MEMORY_MIB:-0}" != 0 ]]; then
+  resource_args+=(--memory "${RUNNER_MEMORY_MIB}m" --memory-swap "${RUNNER_MEMORY_MIB}m")
+fi
+if [[ "${RUNNER_CPUS:-0}" != 0 ]]; then
+  resource_args+=(--cpus "$RUNNER_CPUS")
+fi
+if [[ "${RUNNER_PIDS:-0}" != 0 ]]; then
+  resource_args+=(--pids-limit "$RUNNER_PIDS")
+fi
+if [[ "${RUNNER_FILE_SIZE_MIB:-0}" != 0 ]]; then
+  bytes=$((RUNNER_FILE_SIZE_MIB * 1048576))
+  resource_args+=(--ulimit "fsize=$bytes:$bytes")
+fi
+network="$container"
+if [[ "${RUNNER_NETWORK:-true}" == false ]]; then
+  network=none
+fi
+workspace_mount="type=volume,source=$container-workspace,target=/workspace"
+data_mount="type=volume,source=$container-data,target=/var/lib/dev-mcp"
+if [[ "${RUNNER_QUOTA_STORAGE:-false}" == true ]]; then
+  quota_volume="${RUNNER_QUOTA_VOLUME:-dev-mcp-quota-pool}"
+  [[ "$quota_volume" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || exit 2
+  workspace_mount="type=volume,source=$quota_volume,target=/workspace,volume-subpath=$user_id/workspace"
+  data_mount="type=volume,source=$quota_volume,target=/var/lib/dev-mcp,volume-subpath=$user_id/data"
+  resource_args+=(--label dev-mcp.storage=quota)
+fi
+create_command=(run --detach)
+if [[ "${RUNNER_START:-true}" == false ]]; then
+  create_command=(create)
+fi
+docker "${create_command[@]}" --name "$container" --label "dev-mcp.user=$user_id" \
+  --network "$network" "${resource_args[@]}" \
   --read-only --init --restart unless-stopped \
   --cap-drop ALL --security-opt no-new-privileges:true \
   --tmpfs /tmp:rw,nosuid,nodev,exec,mode=1777 \
-  --mount "type=volume,source=$container-workspace,target=/workspace" \
-  --mount "type=volume,source=$container-data,target=/var/lib/dev-mcp" \
+  --mount "$workspace_mount" \
+  --mount "$data_mount" \
   --mount "type=bind,source=$ipc_root/$user_id,target=/ipc" \
   --mount "type=bind,source=$ipc_root/$user_id.key,target=/run/dev-mcp-ipc-key,readonly" \
   --env WORKSPACE_ROOT=/workspace --env RUNNER_DATA_DIR=/var/lib/dev-mcp \

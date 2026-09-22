@@ -15,6 +15,7 @@ export interface GatewayConfig {
   dataDir: string;
   runnerSocket: string;
   userRunnerSocketDir?: string;
+  runnerStatusDir?: string;
   adminPasswordHash: string;
   google?: { clientId: string; clientSecret: string };
 }
@@ -58,6 +59,7 @@ export function loadConfig(
     userRunnerSocketDir: path.resolve(
       env.USER_RUNNER_SOCKET_DIR ?? "/user-ipc",
     ),
+    runnerStatusDir: path.resolve(env.RUNNER_STATUS_DIR ?? "/runner-status"),
     adminPasswordHash: env.ADMIN_PASSWORD_HASH,
     ...(clientId && clientSecret ? { google: { clientId, clientSecret } } : {}),
   };

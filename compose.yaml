@@ -52,8 +52,10 @@ services:
       GATEWAY_DATA_DIR: /var/lib/dev-mcp
       RUNNER_SOCKET: /ipc/runner.sock
       USER_RUNNER_SOCKET_DIR: /user-ipc
+      RUNNER_STATUS_DIR: /runner-status
     volumes:
       - gateway-data:/var/lib/dev-mcp
+      - runner-status:/runner-status:ro
       - runner-ipc:/ipc
       - type: bind
         source: ${USER_RUNNER_IPC_DIR:-./data/user-ipc}
@@ -88,6 +90,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - gateway-data:/gateway-data:ro
+      - runner-status:/runner-status
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,mode=1777
@@ -132,6 +135,7 @@ services:
 
 volumes:
   gateway-data:
+  runner-status:
   runner-data:
   runner-ipc:
   caddy-data:

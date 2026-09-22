@@ -78,6 +78,110 @@ async function login(app: App, username: string, secret = password) {
 }
 
 describe("multi-user accounts and administration", () => {
+  it("authorizes runner operations, validates limits and rejects stale admin forms", async () => {
+    const { app, users, admin, dataDir } = await fixture();
+    const signedIn = await login(app, "admin");
+    const page = await inject(app, {
+      method: "GET",
+      url: "/admin/runners/" + admin.id,
+      headers: { cookie: signedIn.cookie },
+    });
+    const token = csrf(page.payload);
+    const target = await legacyUser(users, dataDir, "runner-user", password);
+    const url = "/admin/runners/" + target.id + "/operations";
+    const limits = {
+      action: "apply",
+      revision: "",
+      csrf: token,
+      network: "on",
+      memoryMiB: "512",
+      cpus: "1.5",
+      pids: "64",
+      storageMiB: "1024",
+      fileSizeMiB: "64",
+    };
+    expect((await post(app, url, limits)).statusCode).toBe(403);
+    expect(
+      (await post(app, url, { ...limits, csrf: "wrong" }, signedIn.cookie))
+        .statusCode,
+    ).toBe(403);
+    expect(
+      (await post(app, url, { ...limits, action: "start" }, signedIn.cookie))
+        .statusCode,
+    ).toBe(400);
+    expect(
+      (
+        await post(
+          app,
+          "/admin/runners/" + admin.id + "/operations",
+          limits,
+          signedIn.cookie,
+        )
+      ).statusCode,
+    ).toBe(400);
+    for (const bad of [
+      { memoryMiB: "1" },
+      { storageMiB: "-1" },
+      { storageMiB: "102401" },
+      { cpus: "Infinity" },
+      { pids: "1" },
+      { fileSizeMiB: "1;touch /tmp/injected" },
+    ]) {
+      expect(
+        (await post(app, url, { ...limits, ...bad }, signedIn.cookie))
+          .statusCode,
+      ).toBe(400);
+    }
+    await users.update(admin.id, target.id, { status: "active", role: "user" });
+    const regular = await login(app, target.username);
+    expect((await post(app, url, limits, regular.cookie)).statusCode).toBe(403);
+    expect((await post(app, url, limits, signedIn.cookie)).statusCode).toBe(
+      303,
+    );
+    const db = JSON.parse(
+      await readFile(path.join(dataDir, "runner-controls.json"), "utf8"),
+    );
+    expect(db.entries[target.id]).toMatchObject({
+      action: "apply",
+      actorId: admin.id,
+      limits: {
+        network: true,
+        memoryMiB: 512,
+        cpus: 1.5,
+        pids: 64,
+        storageMiB: 1024,
+        fileSizeMiB: 64,
+      },
+    });
+    expect(
+      (await post(app, url, { ...limits, action: "stop" }, signedIn.cookie))
+        .statusCode,
+    ).toBe(400);
+    expect(
+      (
+        await post(
+          app,
+          url,
+          {
+            csrf: token,
+            revision: db.entries[target.id].revision,
+            action: "stop",
+          },
+          signedIn.cookie,
+        )
+      ).statusCode,
+    ).toBe(303);
+    const view = await inject(app, {
+      method: "GET",
+      url: "/admin/runners/" + target.id,
+      headers: { cookie: signedIn.cookie },
+    });
+    expect(view.payload).toContain("운영 요청을 처리 중");
+    expect(view.payload).toContain('name="storageMiB"');
+    expect(view.payload).toContain('value="512"');
+    expect(view.payload).not.toContain("scrypt:");
+  });
+
   it("serves separate ERP pages and assets, enforces guards on every management action", async () => {
     const { app, users, admin, dataDir } = await fixture();
     const signedIn = await login(app, "admin");
@@ -625,9 +729,9 @@ describe("multi-user accounts and administration", () => {
       headers: { cookie: adminLogin.cookie },
     });
     expect(environment.payload).toContain(
-      "./scripts/provision-user.sh " + alice.id,
+      'action="/admin/runners/' + alice.id + '/operations"',
     );
-    expect(environment.payload).toContain("준비 필요");
+    expect(environment.payload).toContain("연결 대기");
     const stored = await readFile(path.join(dataDir, "users.json"), "utf8");
     expect(stored).not.toContain(password);
     expect(stored).not.toContain(

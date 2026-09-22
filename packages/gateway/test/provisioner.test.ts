@@ -41,26 +41,37 @@ state.calls.push(args);
 let output = "", code = 0;
 const name = args.at(-1);
 if (args[0] === "ps") {
-  if (args.includes("-a")) {
-    output = Object.entries(state.containers).map(([key, value]) => key + " " + value).join("\\n");
+  const filter = args.find(arg => arg.startsWith("name=^/"));
+  if (filter) {
+    output = state.containers[filter.slice(7, -1)] ? "cccccccccccc" : "";
   } else {
     output = args.some(arg => arg.endsWith("service=gateway")) ? "aaaaaaaaaaaa" : "bbbbbbbbbbbb";
   }
 } else if (args[0] === "container") {
   code = state.containers[name] ? 0 : 1;
 } else if (args[0] === "inspect") {
-  output = args[2].includes("Mounts") ? "/host/user-ipc" : args[2].includes("Image") ? "sha256:runner-image" : state.containers[name];
+  if (args.includes("--format")) {
+    output = args[2].includes("Mounts") ? "/host/user-ipc" : args[2].includes("Image") ? "sha256:runner-image" : state.containers[name];
+  } else {
+    const primary = name === "bbbbbbbbbbbb";
+    output = JSON.stringify([{
+      Config: { Labels: primary ? {"com.docker.compose.project":"dev-mcp", "com.docker.compose.service":"runner"} : {"dev-mcp.user":name.replace("dev-mcp-user-", "")} },
+      HostConfig: {},
+      NetworkSettings: {Networks: {}},
+      State: {Status:primary ? "running" : state.containers[name], Running:primary || state.containers[name] === "running"},
+    }]);
+  }
 } else if (args[0] === "network" && args[1] === "inspect") {
   code = 1;
-} else if (args[0] === "run" && args.includes("--detach")) {
+} else if ((args[0] === "run" && args.includes("--detach")) || args[0] === "create") {
   const container = args[args.indexOf("--name") + 1];
   if (state.failNext) {
     delete state.failNext;
     code = 1;
   } else {
-    state.containers[container] = "running";
+    state.containers[container] = args[0] === "create" ? "created" : "running";
   }
-} else if (args[0] === "start") {
+} else if (args[0] === "start" || args[0] === "restart") {
   state.containers[name] = "running";
 }
 fs.writeFileSync(process.env.FAKE_DOCKER_STATE, JSON.stringify(state));
@@ -83,6 +94,7 @@ process.exit(code);
             PATH: directory + path.delimiter + process.env.PATH,
             PROVISIONER_USERS_FILE: usersFile,
             FAKE_DOCKER_STATE: stateFile,
+            RUNNER_STATUS_DIR: path.join(directory, "status"),
           },
         },
       ),
@@ -102,9 +114,7 @@ it("creates only approved dedicated runners with isolated mounts and no publishe
   expect(result.stdout).toContain("user_runner_provisioned");
   const state = await fixtureData.state();
   expect(state.containers).toEqual({ ["dev-mcp-user-" + alice]: "running" });
-  const creation = state.calls.find((args: string[]) =>
-    args.includes("--detach"),
-  );
+  const creation = state.calls.find((args: string[]) => args[0] === "create");
   expect(creation).toEqual(
     expect.arrayContaining([
       "--read-only",
@@ -131,7 +141,7 @@ it("creates only approved dedicated runners with isolated mounts and no publishe
   const approved = await fixtureData.state();
   expect(Object.keys(approved.containers)).toHaveLength(2);
   expect(
-    approved.calls.filter((args: string[]) => args.includes("--detach")),
+    approved.calls.filter((args: string[]) => args[0] === "create"),
   ).toHaveLength(2);
 });
 
@@ -167,7 +177,7 @@ it("preserves running and intentionally stopped containers, but recovers an inco
   expect(state.containers["dev-mcp-user-" + bob]).toBe("exited");
   expect(state.containers["dev-mcp-user-" + charlie]).toBe("running");
   expect(
-    state.calls.filter((args: string[]) => args.includes("--detach")),
+    state.calls.filter((args: string[]) => args[0] === "create"),
   ).toHaveLength(0);
 });
 
@@ -180,3 +190,39 @@ it("fails closed on unreadable account state without logging its contents", asyn
   });
   expect((await f.state()).calls).toHaveLength(0);
 });
+
+it("applies a restart once and does not replay an ambiguous operation after a controller restart", async () => {
+  const f = await fixture([account(alice)]);
+  await f.run();
+  const request = {
+    revision: bob,
+    action: "restart",
+    actorId: charlie,
+    requestedAt: Date.now(),
+  };
+  const controlsFile = path.join(
+    path.dirname(f.stateFile),
+    "runner-controls.json",
+  );
+  const statusFile = path.join(path.dirname(f.stateFile), "status/status.json");
+  await writeFile(
+    controlsFile,
+    JSON.stringify({ entries: { [alice]: request } }),
+  );
+  await f.run();
+  await f.run();
+  expect(
+    (await f.state()).calls.filter((args: string[]) => args[0] === "restart"),
+  ).toHaveLength(1);
+  const status = JSON.parse(await readFile(statusFile, "utf8"));
+  expect(status.entries[alice].phase).toBe("applied");
+  status.entries[alice].phase = "applying";
+  await writeFile(statusFile, JSON.stringify(status));
+  await f.run();
+  expect(
+    (await f.state()).calls.filter((args: string[]) => args[0] === "restart"),
+  ).toHaveLength(1);
+  expect(
+    JSON.parse(await readFile(statusFile, "utf8")).entries[alice].phase,
+  ).toBe("failed");
+}, 30000);

@@ -78,6 +78,33 @@ services:
       timeout: 3s
       retries: 6
 
+  # Trusted control-plane service. Docker access is never mounted in gateway or runners.
+  provisioner:
+    build:
+      context: .
+      dockerfile: docker/provisioner.Dockerfile
+    environment:
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-dev-mcp}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - gateway-data:/gateway-data:ro
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,mode=1777
+    cap_drop: [ALL]
+    # Account records are mode 0600 and owned by the gateway's UID.
+    cap_add: [DAC_READ_SEARCH]
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    restart: unless-stopped
+    network_mode: none
+    depends_on:
+      gateway:
+        condition: service_healthy
+      runner:
+        condition: service_healthy
+
   caddy:
     image: caddy:2.11.4
     environment:

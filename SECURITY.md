@@ -6,6 +6,8 @@ Report vulnerabilities privately to the repository owner. Do not include real ac
 
 The supported boundary is the current main branch. Docker daemon compromise, upstream container image or package-registry compromise, and host-kernel/container-runtime escapes are outside the application threat model.
 
+The separate provisioner is a trusted host control-plane service with Docker daemon access and a read-only account database mount. It has no network or HTTP endpoint, polls approved accounts, validates UUID and runner identity, and invokes a fixed creation helper. The gateway and all runners have no Docker access. Pending/disabled accounts are skipped; existing stopped containers are not restarted automatically. Approval withdrawal cannot cancel a Docker creation already in flight, but account authentication checks continue to block access.
+
 Approved users receive dedicated runner containers, workspace/data volumes, bridge networks, and per-user authenticated IPC endpoints. The gateway chooses the runner from the authenticated account; clients cannot supply a runner identity. Per-user IPC calls are signed and wrapped in a method the legacy primary runner does not execute, preventing socket redirection from reaching another runner. No user runner mounts the shared parent IPC directory.
 
 Projects are private to their owner's execution environment. Administrators can inspect users and project metadata; administrator privileges are trusted service-wide privileges. Do not promote untrusted users. The primary administrator retains the pre-existing workspace.

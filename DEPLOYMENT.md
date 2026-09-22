@@ -1,11 +1,11 @@
 # Current server deployment
 
-Applied on 2026-09-21 to `https://dev.crasnec.com`.
+Updated on 2026-09-22 at `https://dev.crasnec.com`.
 
 ## Deployment command
 
 ```bash
-sudo docker compose -f compose.yaml -f compose.google.yaml -f compose.server.yaml up -d --build --wait runner gateway
+sudo docker compose -f compose.yaml -f compose.google.yaml -f compose.server.yaml up -d --build --wait runner gateway provisioner
 node scripts/verify-public.mjs https://dev.crasnec.com
 ```
 
@@ -13,7 +13,17 @@ node scripts/verify-public.mjs https://dev.crasnec.com
 
 The public reverse proxy is the existing `plan-app-caddy-1`, connected to `dev-mcp_edge`. Do **not** start this repository's separate `caddy` service on this server: the existing proxy owns ports 80/443. Its active configuration has access logging disabled. Other plan-app services were not changed.
 
-## Verification
+## Automatic user runner creation (2026-09-22)
+
+Account approval previously saved only the runner identity; creating its container required the manual host helper. The separate `provisioner` service now polls active accounts every five seconds and creates missing dedicated runners with that helper. It also repairs already-approved accounts and retries failed creations. Running or deliberately stopped containers are preserved. Pending/disabled accounts are skipped.
+
+The provisioner alone receives the Docker socket, has no network, and mounts `gateway-data` read-only. `DAC_READ_SEARCH` lets it read the gateway-owned mode-0600 account file without changing its permissions. The gateway and runners still have no Docker access. Check `sudo docker compose logs provisioner` for UUID-only success/failure events. Stop the provisioner during maintenance if an active user's container must remain absent.
+
+The gateway and provisioner were rebuilt and started; the existing primary runner and reverse proxy were left running. The previously missing approved user's container was automatically created, with separate workspace/data volumes, network, IPC directory and key. Authenticated `project_list` calls succeeded for both primary and dedicated runners. The dedicated runner returned an empty project list, as expected for a new workspace. No existing projects were modified.
+
+Type checking, formatting, shell syntax and all 46 tests passed. Tests ran in the existing Fedora runner image because this development environment intercepts subprocess executable resolution. Public HTTPS health, login/signup, Google authorization start, OAuth metadata and MCP authentication checks passed after deployment.
+
+## Previous deployment verification (2026-09-21)
 
 - Build, formatting and all 39 tests passed after compatible runtime dependency security updates and the browser-form regression fix.
 - `npm audit --omit=dev` reported zero vulnerabilities. Development-only dependency warnings remain outside the runtime image.

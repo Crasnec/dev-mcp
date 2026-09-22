@@ -1,6 +1,6 @@
 # dev-mcp
 
-`dev-mcp` is a self-contained Docker Compose deployment that lets ChatGPT use MCP tools to work with files, shell commands, background processes, and Git in one host directory. It does not use an OpenAI API key, run Codex CLI, or expose the Docker socket to the MCP services.
+`dev-mcp` is a self-contained Docker Compose deployment that lets ChatGPT use MCP tools to work with files, shell commands, background processes, and Git in one host directory. It does not use an OpenAI API key, run Codex CLI, or expose the Docker socket to the gateway or runners. A separate trusted provisioner uses Docker access to create approved users' containers.
 
 ```text
 Internet / ChatGPT
@@ -63,25 +63,31 @@ Lists are paginated (25 records); browser sessions and OAuth clients have indepe
 
 Page HTML lives in `packages/gateway/views/**/*.mustache`, separate from TypeScript route logic. Shared layouts and partials provide navigation, forms, notices, and pagination. Edit menu labels/order in `views/admin/navigation.json`; edit styles in `packages/gateway/public/{auth,admin}.css`. `src/views.ts` renders escaped data; only the already-rendered layout body is inserted as HTML. Production templates are cached until restart. Templates and CSS are copied into the gateway image; rebuild the image when changing them. Signup policy persists in `gateway-data/settings.json` and is included in gateway volume backups.
 
-For a new user, open **실행 환경 → 사용자 상세** and run the displayed command on the Docker host:
+When an administrator approves an account, the `provisioner` service creates its dedicated runner automatically. It checks committed account state every five seconds, also repairs missing runners for already-approved users after a restart, and retries failed creations. Initial startup can take longer while Docker prepares volumes. Pending and disabled users are skipped. Start it when upgrading an existing deployment:
+
+```bash
+docker compose up -d --build provisioner
+```
+
+Include your usual Compose overlays. On a host sharing an existing reverse proxy, start only the intended services. For manual recovery, open **실행 환경 → 사용자 상세** and run the displayed command on the Docker host:
 
 ```bash
 ./scripts/provision-user.sh <user-uuid>
 ```
 
-Run it with Docker access (`sudo` if required), after rebuilding and starting the updated gateway and primary runner. It uses the running primary runner's image. Approve the account once its environment is ready. No request falls back to the primary runner when a user runner is missing.
+Run it with Docker access (`sudo` if required), after rebuilding and starting the updated gateway and primary runner. It uses the running primary runner's image. No request falls back to the primary runner when a user runner is missing.
 
 The helper creates `dev-mcp-user-<uuid>`, two persistent volumes (`-workspace`, `-data`), a dedicated bridge network, and a per-user authenticated Unix socket. It does not publish ports or mount Docker credentials, the primary workspace, or other users' sockets. Git commits default to a per-user UUID identity. Each user's projects can be cloned via MCP or copied into their workspace volume by the operator.
 
 Set `USER_RUNNER_IPC_DIR` to a dedicated absolute path on the Docker host if the daemon uses a different filesystem namespace. Otherwise it defaults to `./data/user-ipc`. Back up this directory (including the `.key` files), `gateway-data`, and each user's workspace/data volumes.
 
-The gateway has no Docker access, so account approval does not automatically create containers. To stop existing jobs after disabling a user:
+Only the provisioner has Docker access. It has no network or HTTP endpoint and reads `gateway-data` read-only. Its logs contain provisioning success/failure events with account UUIDs (`docker compose logs provisioner`); a failed creation is retried on the next pass. Treat this service as a trusted host administrator. To stop existing jobs after disabling a user:
 
 ```bash
 docker stop dev-mcp-user-<uuid>
 ```
 
-After updating the runner image, stop and remove that user's container, then rerun the provisioning command. Preserve the named volumes to retain projects and logs. Do not remove volumes as part of an upgrade. The helper leaves existing containers untouched. Dedicated runners are separate from the main Compose stack and must be stopped/backed up explicitly.
+After updating the runner image, stop and remove that user's container, then rerun the provisioning command. Preserve the named volumes to retain projects and logs. Do not remove volumes as part of an upgrade. Running and intentionally stopped containers are left untouched; use `docker start` to resume a stopped environment. A container left in the `created` state by a failed start is retried. Stop the provisioner during maintenance if you need to keep an active user's container absent. Dedicated runners are separate from the main Compose stack and must be stopped/backed up explicitly.
 
 ## Requirements
 

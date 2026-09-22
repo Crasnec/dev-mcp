@@ -9,8 +9,8 @@ if [[ "$#" != 1 || ! "$user_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
   exit 2
 fi
 
-gateway_id="$(docker compose ps -q gateway)"
-primary_id="$(docker compose ps -q runner)"
+gateway_id="${GATEWAY_CONTAINER_ID:-$(docker compose ps -q gateway)}"
+primary_id="${PRIMARY_CONTAINER_ID:-$(docker compose ps -q runner)}"
 if [[ -z "$gateway_id" || -z "$primary_id" ]]; then
   echo "Start the updated gateway and primary runner with Docker Compose first." >&2
   exit 1
@@ -23,6 +23,11 @@ if [[ -z "$ipc_root" || "$ipc_root" == "/" || "$ipc_root" == *","* ]]; then
 fi
 container="dev-mcp-user-$user_id"
 if docker container inspect "$container" >/dev/null 2>&1; then
+  # A failed docker run may have created the container without starting it.
+  # Never restart an exited container: an operator may have stopped its jobs.
+  if [[ "$(docker inspect --format '{{.State.Status}}' "$container")" == created ]]; then
+    docker start "$container"
+  fi
   echo "$container already exists; use docker start $container if it is stopped."
   exit 0
 fi

@@ -5,7 +5,8 @@ Updated on 2026-09-22 at `https://dev.crasnec.com`.
 ## Deployment command
 
 ```bash
-sudo docker compose -f compose.yaml -f compose.google.yaml -f compose.server.yaml up -d --build --wait runner gateway provisioner
+sudo docker compose -f compose.yaml -f compose.google.yaml -f compose.server.yaml build gateway provisioner
+sudo docker compose -f compose.yaml -f compose.google.yaml -f compose.server.yaml up -d --no-deps --wait gateway provisioner
 node scripts/verify-public.mjs https://dev.crasnec.com
 ```
 
@@ -47,10 +48,19 @@ To use that Google identity for the existing projects, sign in as the existing `
 
 Do not remove the backup volume or original data volumes during rollback. First stop the gateway/runner, preserve any post-deployment changes in a separate backup, and restore the matching old images/configuration and data deliberately. The old gateway uses the previous single-user authentication model, so rollback also changes the security model. Never dump credential files, cookies, tokens or full configuration environment values into logs while troubleshooting.
 
-## Development changes awaiting deployment
+## Web runner operations and quotas deployed (2026-09-22)
 
-The web execution-environment operations and resource/quota management changes have **not** been deployed. As requested, verification uses a separately tagged development image and disposable test containers only. Do not run Compose `up`, recreate production services, or migrate production storage as part of this development work.
+Following explicit deployment authorization, commit `e9b4e0a` was deployed at approximately 04:38 UTC. The gateway and provisioner were rebuilt and recreated with the new `runner-status` volume. Web administrators can now request runner creation/start/stop/restart, account-wide external network access, memory/CPU/PID limits, per-file size limits and hard combined workspace/runtime storage quotas.
 
-When a future deployment is explicitly authorized, the gateway and provisioner need the updated images and the new `runner-status` volume mounts. Quota storage is initialized only when an administrator requests a nonzero storage limit for a dedicated user. The prior primary workspace and existing runner volumes must be preserved. Review the storage backup/loop-device notes in README before enabling quotas.
+The existing primary and dedicated runner containers and reverse proxy were left running. No production account received a resource limit change or storage migration during deployment. Quota storage is initialized only when an administrator requests a nonzero storage limit for a dedicated user; the original primary workspace is excluded. Review the storage backup/loop-device notes in README before enabling quotas.
 
-Development verification passed: 55 tests, TypeScript, formatting and shell syntax; disposable Docker lifecycle/resource/network tests; and a full temporary-volume migration test confirming combined workspace/runtime hard quota, quota increase and preserved source volumes. No production account received a resource or storage change.
+Deployment verification passed: public HTTPS health, login/signup, static assets, Google authorization start and provider reachability, OAuth metadata, unauthenticated admin redirect and MCP authentication rejection. Authenticated read-only `project_list` calls succeeded for both active accounts (four primary projects and one dedicated-runner project at verification time). The gateway could read fresh observations for both running containers from the status volume, and the provisioner logged no reconciliation errors.
+
+Development verification previously passed: 55 tests, TypeScript, formatting and shell syntax; disposable Docker lifecycle/resource/network tests; and a full temporary-volume migration test confirming combined workspace/runtime hard quota, quota increase and preserved source volumes.
+
+Deployed image IDs:
+
+- Gateway: `sha256:898fe033b52962cb56d8521288c3fbc6d1b32deba087e58a6e25ae42d04bc0d9`.
+- Provisioner: `sha256:8017bcc4fdf92732cb9bf38ead9dac3015ba5e1f9cafb822525ba3c2f4a7a1a2`.
+
+The immediately preceding images are retained as `dev-mcp-gateway:rollback-20260922-before-controls` and `dev-mcp-provisioner:rollback-20260922-before-controls`. These are separate from the older single-user rollback assets above. Preserve any subsequently applied runner settings and quota storage when planning a rollback.

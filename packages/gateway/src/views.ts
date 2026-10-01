@@ -16,10 +16,9 @@ function template(name: string): string {
   return source;
 }
 
-export function renderView(
+export function renderFragment(
   name: string,
   model: Record<string, unknown>,
-  layout = "layouts/auth",
 ): string {
   const options = {
     escape: (value: unknown) =>
@@ -35,12 +34,15 @@ export function renderView(
           })[character]!,
       ),
   };
-  const body = Mustache.render(template(name), model, template, options);
+  return Mustache.render(template(name), model, template, options);
+}
+
+export function renderView(
+  name: string,
+  model: Record<string, unknown>,
+  layout = "layouts/auth",
+): string {
+  const body = renderFragment(name, model);
   // Only rendered, escaped templates may supply the layout body.
-  return Mustache.render(
-    template(layout),
-    { ...model, body },
-    template,
-    options,
-  );
+  return renderFragment(layout, { ...model, body });
 }

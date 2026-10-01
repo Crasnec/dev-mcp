@@ -56,12 +56,14 @@ For MCP connections, Google login returns to a browser-bound consent page, never
 | `/admin/runners` | Per-user connectivity, lifecycle operations, network access and resource/quota controls |
 | `/admin/processes` | Owner/status filters; process detail, paged logs, stop a running process |
 | `/admin/connections` | Browser sessions and individual revocation; OAuth clients, callback URLs and grant counts; client removal with ID confirmation |
-| `/admin/audit` | Searchable, event-filtered audit records; bounded to the most recent 1 MiB of the log |
+| `/admin/audit` | Automatically refreshed, searchable audit records with inline details and live process logs; bounded to the most recent 1 MiB of the log |
 | `/admin/settings` | Open/close new registrations and edit the signup notice; read-only deployment/isolation information |
 
 Lists are paginated (25 records); browser sessions and OAuth clients have independent pagination on the connections screen. Administrators can manage all users' workspaces, but every operation still targets that owner's isolated runner. Normal users cannot enter administration. All mutations require the administrator's authenticated session, CSRF token, and a matching Origin when present. Removing an OAuth client invalidates its access/refresh tokens and pending authorizations. Project deletion is permanent and does not stop running processes automatically.
 
 Runner and process pages refresh their status automatically while the browser tab is visible, preserving filters and unsaved settings. Process details append new log output and follow the bottom; scrolling up keeps the reading position. Polling drains the remaining output when a process exits, then stops. Manual refresh and paged logs remain available without JavaScript.
+
+Audit details expand in place. The list, related process state, and logs refresh while the tab is visible; incoming records retain open details and the current reading position. Raw record data stays collapsed until requested. Without JavaScript, detail links still render on the server.
 
 Page HTML lives in `packages/gateway/views/**/*.mustache`, separate from TypeScript route logic. Shared layouts and partials provide navigation, forms, notices, and pagination. Edit menu labels/order in `views/admin/navigation.json`; edit styles in `packages/gateway/public/{auth,admin}.css`. `src/views.ts` renders escaped data; only the already-rendered layout body is inserted as HTML. Production templates are cached until restart. Templates and CSS are copied into the gateway image; rebuild the image when changing them. Signup policy persists in `gateway-data/settings.json` and is included in gateway volume backups.
 

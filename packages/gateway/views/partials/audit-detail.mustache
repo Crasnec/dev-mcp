@@ -1,0 +1,31 @@
+<div class="audit-detail-panel" data-audit-fragment>
+  <dl class="audit-meta">
+    <div><dt>시각</dt><dd>{{at}}</dd></div>
+    <div><dt>실행자</dt><dd>{{actor}}</dd></div>
+    <div><dt>이벤트</dt><dd><code>{{event}}</code></dd></div>
+  </dl>
+  {{#detail.command}}<section class="audit-command-section"><h3>실행 명령</h3><pre class="command-block audit-command">{{detail.command}}</pre></section>{{/detail.command}}
+  {{#detail}}
+  <section class="audit-process-section">
+    <div data-audit-process-meta>
+      <div class="audit-process-heading"><div><h3>연관 프로세스·작동 로그</h3>{{#ownerLabel}}<p>{{ownerLabel}}님의 실행 환경</p>{{/ownerLabel}}</div>{{#processListHref}}<a class="audit-text-link" href="{{processListHref}}">프로세스 관리 →</a>{{/processListHref}}</div>
+      {{#message}}<p class="audit-message">{{message}}</p>{{/message}}
+    </div>
+    <div class="audit-process-list" data-audit-processes>
+      {{#processes}}
+      <article class="audit-process-card" data-audit-process="{{id}}" data-live-url="{{liveUrl}}" data-running="{{runningText}}" data-more="{{moreText}}">
+        <header data-audit-process-header>
+          <div class="audit-process-identity"><strong>{{command}}</strong><div class="audit-process-facts"><span class="badge {{status}}" data-process-status>{{statusLabel}}</span><span>PID {{pid}}</span><span>{{startedLabel}} 시작</span></div><code class="audit-process-id">{{id}}</code></div>
+          <a class="audit-text-link" href="{{href}}">프로세스 상세 →</a>
+        </header>
+        {{#logError}}<p class="audit-log-error" data-log-error role="alert">{{logError}}</p>{{/logError}}
+        {{^output}}{{^logError}}<p class="audit-log-empty" data-log-empty>아직 기록된 로그가 없습니다.</p>{{/logError}}{{/output}}
+        <pre class="log-output" data-audit-log data-cursor="{{cursor}}" tabindex="0" aria-label="프로세스 {{id}} 실행 로그">{{output}}</pre>
+        {{#truncated}}<p class="audit-log-note" data-log-truncated>이후 로그가 더 있습니다. <a href="{{href}}">프로세스 상세에서 보기 →</a></p>{{/truncated}}
+      </article>
+      {{/processes}}
+    </div>
+  </section>
+  {{/detail}}
+  <details class="audit-raw"><summary>원본 기록</summary><pre class="audit-json">{{details}}</pre></details>
+</div>

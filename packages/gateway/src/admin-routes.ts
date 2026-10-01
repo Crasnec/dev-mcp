@@ -15,6 +15,7 @@ import type { ProjectSummary } from "./account-pages.ts";
 import { browserSession, field } from "./browser-session.ts";
 import { RunnerControlStore } from "./runner-control-store.ts";
 import { errorPage, sendPage } from "./pages.ts";
+import { renderFragment } from "./views.ts";
 import {
   adminView,
   dateLabel,
@@ -223,6 +224,7 @@ export function installAdminRoutes(
     row: AuditRow,
     allUsers: User[],
     res: Response,
+    includeLogs = true,
   ): Promise<Record<string, unknown>> => {
     const owner = row.ownerId
       ? allUsers.find((entry) => entry.id === row.ownerId)
@@ -256,26 +258,41 @@ export function installAdminRoutes(
     const matches = relatedProcesses(row, state.processes);
     const processRows = await Promise.all(
       matches.map(async (process) => {
-        const logs = await call(owner, res, "process_logs", {
-          process_id: process.id,
-          max_bytes: 16 * 1024,
-        });
-        const output = logs.ok
+        const logs = includeLogs
+          ? await call(owner, res, "process_logs", {
+              process_id: process.id,
+              max_bytes: 16 * 1024,
+            })
+          : undefined;
+        const output = logs?.ok
           ? String(
               (logs.data as { output?: unknown } | undefined)?.output ?? "",
             )
-          : logs.error?.message || "프로세스 로그를 가져오지 못했습니다.";
+          : "";
+        const href =
+          "/admin/processes/" + owner.id + "/" + encodeURIComponent(process.id);
         return {
           ...process,
           statusLabel: statusLabel(process.status),
           startedLabel: dateLabel(process.startedAt),
-          output: output || "기록된 로그가 없습니다.",
-          truncated: logs.ok && logs.truncated,
-          href:
-            "/admin/processes/" +
-            owner.id +
-            "/" +
-            encodeURIComponent(process.id),
+          output,
+          empty: !output && !logs?.error,
+          logError:
+            logs && !logs.ok
+              ? logs.error?.message || "프로세스 로그를 가져오지 못했습니다."
+              : undefined,
+          cursor: logs?.ok
+            ? processLogCursor(
+                process.id,
+                logs.data as ProcessLogPage,
+                logs.continuation,
+              )
+            : undefined,
+          truncated: logs?.ok && logs.truncated,
+          liveUrl: href + "/live",
+          runningText: String(process.status === "running"),
+          moreText: String(!logs || !logs.ok || logs.truncated),
+          href,
         };
       }),
     );
@@ -942,6 +959,29 @@ export function installAdminRoutes(
     await record(res, "admin_client_removed", { clientId: id });
     return res.redirect(303, "/admin/connections?saved=1");
   });
+  router.get("/audit/:id/detail", async (req, res) => {
+    const id = String(req.params.id);
+    if (!/^[A-Za-z0-9_-]{20}$/.test(id)) {
+      throw new AdminError("감사 기록을 찾을 수 없습니다.", 404);
+    }
+    const [recent, all] = await Promise.all([audit.recent(), users.list()]);
+    const source = recent.records.find((entry) => auditRecordId(entry) === id);
+    if (!source) {
+      throw new AdminError("감사 기록을 찾을 수 없습니다.", 404);
+    }
+    const row = auditRow(source, all);
+    const detail = await auditProcessDetail(
+      row,
+      all,
+      res,
+      query(req, "metadata") !== "1",
+    );
+    return sendPage(
+      res,
+      200,
+      renderFragment("partials/audit-detail", { ...row, detail }),
+    );
+  });
   router.get("/audit", async (req, res) => {
     const [recent, all] = await Promise.all([audit.recent(), users.list()]);
     const q = query(req, "q").toLowerCase(),
@@ -985,6 +1025,7 @@ export function installAdminRoutes(
       selected.detail = await auditProcessDetail(selected, all, res);
     }
     return adminView(req, res, "audit", "admin/audit", {
+      liveAudit: true,
       ...page,
       q,
       event,

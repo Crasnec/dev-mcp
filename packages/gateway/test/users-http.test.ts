@@ -586,10 +586,16 @@ describe("multi-user accounts and administration", () => {
     });
     expect(auditList.statusCode).toBe(200);
     expect(auditList.payload).not.toContain("<details>");
-    const stoppedDetailHref =
-      /<strong>admin_process_stopped<\/strong>[\s\S]*?<a class="button small audit-detail-toggle" href="([^"]+)"/.exec(
-        auditList.payload,
-      )?.[1];
+    const stoppedRow = Array.from(
+      auditList.payload.matchAll(
+        /<tr\b[^>]*id="audit-row-[^"]+"[^>]*>([\s\S]*?)<\/tr>/g,
+      ),
+    ).find((match) =>
+      match[1]?.includes("<strong>admin_process_stopped</strong>"),
+    );
+    const stoppedDetailHref = /<a\b[^>]*href="([^"]+)"/.exec(
+      stoppedRow?.[1] ?? "",
+    )?.[1];
     expect(stoppedDetailHref).toBeTruthy();
     const auditDetail = await inject(app, {
       method: "GET",

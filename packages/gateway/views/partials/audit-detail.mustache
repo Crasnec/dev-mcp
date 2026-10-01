@@ -1,10 +1,4 @@
-<div class="audit-detail-panel" data-audit-fragment>
-  <dl class="audit-meta">
-    <div><dt>시각</dt><dd>{{at}}</dd></div>
-    <div><dt>실행자</dt><dd>{{actor}}</dd></div>
-    <div><dt>이벤트</dt><dd><code>{{event}}</code></dd></div>
-  </dl>
-  {{#detail.command}}<section class="audit-command-section"><h3>실행 명령</h3><pre class="command-block audit-command">{{detail.command}}</pre></section>{{/detail.command}}
+<div class="audit-detail-panel" data-audit-fragment role="region" aria-label="{{event}} 상세">
   {{#detail}}
   <section class="audit-process-section">
     <div data-audit-process-meta>
@@ -15,7 +9,7 @@
       {{#processes}}
       <article class="audit-process-card" data-audit-process="{{id}}" data-live-url="{{liveUrl}}" data-running="{{runningText}}" data-more="{{moreText}}">
         <header data-audit-process-header>
-          <div class="audit-process-identity"><strong>{{command}}</strong><div class="audit-process-facts"><span class="badge {{status}}" data-process-status>{{statusLabel}}</span><span>PID {{pid}}</span><span>{{startedLabel}} 시작</span></div><code class="audit-process-id">{{id}}</code></div>
+          <div class="audit-process-identity"><div class="audit-process-facts"><span class="badge {{status}}" data-process-status>{{statusLabel}}</span><span>PID {{pid}}</span><span>{{startedLabel}} 시작</span></div><strong class="audit-process-command">{{command}}</strong><code class="audit-process-id">{{id}}</code></div>
           <a class="audit-text-link" href="{{href}}">프로세스 상세 →</a>
         </header>
         {{#logError}}<p class="audit-log-error" data-log-error role="alert">{{logError}}</p>{{/logError}}
@@ -27,5 +21,6 @@
     </div>
   </section>
   {{/detail}}
+  {{#detail.command}}<details class="audit-command-section audit-request-command"{{^detail.processes}} open{{/detail.processes}}><summary>요청한 명령</summary><pre class="command-block audit-command">{{detail.command}}</pre></details>{{/detail.command}}
   <details class="audit-raw"><summary>원본 기록</summary><pre class="audit-json">{{details}}</pre></details>
 </div>

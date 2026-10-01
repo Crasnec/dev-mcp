@@ -1,55 +1,82 @@
 # Current server deployment
 
-Updated on 2026-09-22 at `https://dev.crasnec.com`.
+Updated on 2026-10-01 at `https://dev.crasnec.com`.
 
 ## Deployment command
 
 ```bash
-sudo docker compose -f compose.yaml -f compose.google.yaml -f compose.server.yaml build gateway provisioner
-sudo docker compose -f compose.yaml -f compose.google.yaml -f compose.server.yaml up -d --no-deps --wait gateway provisioner
+C="-f compose.yaml -f compose.google.yaml -f compose.server.yaml -f compose.telemetry.yaml"
+sudo docker compose $C build runner gateway provisioner telemetry
+sudo docker compose $C up -d --no-deps --wait gateway provisioner telemetry
 node scripts/verify-public.mjs https://dev.crasnec.com
 ```
+
+A new runner image applies to runners created afterwards; existing per-account runners keep the image they were created with.
 
 `compose.server.yaml` is a host-local, Git-ignored override. It maps Google credential copies and `/user-ipc` through the Docker host's `/home/crasnec/workspace/dev-mcp/data` directory. This development environment sees that repository as `/workspace/dev-mcp`. Do not replace these mappings with container-local paths.
 
 The public reverse proxy is the existing `plan-app-caddy-1`, connected to `dev-mcp_edge`. Do **not** start this repository's separate `caddy` service on this server: the existing proxy owns ports 80/443. Its active configuration has access logging disabled. Other plan-app services were not changed.
 
-## Pending: per-account runners only, onboarding and host workspaces (developed 2026-10-01, not deployed)
+## Per-account runners only, onboarding and host workspaces (deployed 2026-10-01)
 
-The current server still runs the previous version: the shared `dev-mcp-runner-1` serves the administrator, with the whole `/home/crasnec/workspace`. The new version has no shared runner, so deploying it means migrating that account in the same maintenance window. Nothing below has been run on this server.
+Commit `46da0f8` was deployed at about 22:55 UTC. It also contains the apps code, which stays inactive until `PREVIEW_DOMAIN` is set (next section).
 
-1. Check that host loopback port 3100 is free; the gateway now publishes `127.0.0.1:${ONBOARDING_HOST_PORT:-3100}` for the local onboarding.
-2. Build: `sudo docker compose -f compose.yaml -f compose.google.yaml -f compose.server.yaml build runner gateway provisioner`.
-3. Stop the services: `sudo docker compose -f compose.yaml -f compose.google.yaml -f compose.server.yaml stop gateway provisioner`.
-4. Migrate: run `sudo ./scripts/migrate-primary-runner.sh` and review the dry run, then run `sudo ./scripts/migrate-primary-runner.sh --apply`.
-   - It finds the single active Google-linked administrator on the shared runner. Read-only check on 2026-10-01: one such account, plus one dedicated user.
-   - It copies `dev-mcp_runner-data` into `dev-mcp-user-<id>-data`.
-   - It records `/home/crasnec/workspace` as that account's reserved host workspace.
-   - It updates `users.json`, keeping a backup.
-5. Start the services: `sudo docker compose -f compose.yaml -f compose.google.yaml -f compose.server.yaml up -d --no-deps --wait gateway provisioner`.
-   - The provisioner creates the administrator's `dev-mcp-user-<id>` with the same `/home/crasnec/workspace`, so existing projects and IDs remain.
-   - The old `dev-mcp-runner-1` stays stopped for rollback.
-6. Verify with `node scripts/verify-public.mjs https://dev.crasnec.com`, then check the administrator's projects via MCP. MCP sessions and OAuth tokens stay valid.
-7. Open the onboarding through `ssh -L 3100:127.0.0.1:3100` to the Docker host (not `dev-fedora`, whose loopback is its own) with the code from `logs gateway | grep onboarding_available`. The administrator step is skipped. Workspace root:
-   - It must lie outside `/home/crasnec/workspace`, which is now the administrator's reserved workspace. For example `/home/crasnec/dev-mcp-workspaces`, owned by UID 1000.
-   - New accounts' directories there are not visible in the current `dev-fedora` VS Code session. Open them with Remote - SSH to the Docker host.
-   - Alternatively, leave the root unset and keep Docker volumes.
+1. The current images were tagged `rollback-20261001-before-accounts`:
 
-Rollback (printed by the migration script):
+   | Image            | ID             |
+   | ---------------- | -------------- |
+   | gateway          | `e336f09674f8` |
+   | runner           | `b0a702391709` |
+   | provisioner      | `b8c74a02bfca` |
+   | telemetry        | `2b0389dcc000` |
+   | `plan-app-caddy` | `e65ed7f25d44` |
+
+   The new images are gateway `09a27ec5d0ef`, runner `2bac23575617`, provisioner `73e861310ee5` and telemetry `44ae03f0ec92`.
+
+2. Host loopback ports 3100 and 3200 were free. The shared runner had no background processes.
+3. Gateway and provisioner were stopped, and `scripts/migrate-primary-runner.sh` was run, first as a dry run, then with `--apply`. It migrated the administrator account `fc14e8ef-791e-4014-9f04-c639def636eb`:
+   - `dev-mcp_runner-data` was copied to `dev-mcp-user-fc14e8ef-…-data`.
+   - `/home/crasnec/workspace` was registered as that account's reserved (legacy) host workspace.
+   - `users.json.pre-primary-migration` was written to `dev-mcp_gateway-data`.
+4. `up -d --no-deps --wait gateway provisioner telemetry` brought all three up healthy. The provisioner created `dev-mcp-user-fc14e8ef-…` from the new runner image, with `/home/crasnec/workspace` at `/workspace` and a new signed IPC key.
+
+Verification:
+
+- `verify-public.mjs` passed all 36 checks.
+- Signed `project_list` calls returned 5 projects for the administrator and 0 for the dedicated user.
+- Telemetry reports the host and both runners.
+- The local onboarding is available. Its administrator step is skipped because an active administrator exists. No workspace root is set yet, so new accounts still get Docker volumes.
+
+The old `dev-mcp-runner-1` (exited) and `dev-mcp_runner-data` are kept for rollback.
+
+The dedicated user's runner `dev-mcp-user-989ec54d-…` was left running on its older image `20fd5131486c`. It serves normal tools, but that account's apps will report the server as unavailable until the runner is recreated from the current image. A limit change that recreates the container, or a workspace move, does this.
+
+Onboarding: `dev-fedora` uses the host network, so `http://127.0.0.1:3100/` opens there directly, and through VS Code port forwarding. The code is in `docker logs dev-mcp-gateway-1 | grep onboarding_available`. If you set a workspace root:
+
+- It must lie outside `/home/crasnec/workspace`, the administrator's reserved workspace. For example `/home/crasnec/dev-mcp-workspaces`, owned by UID 1000.
+- New accounts' directories there are not mounted in `dev-fedora`. Open them with Remote - SSH to the Docker host.
+
+Rollback:
 
 1. Stop gateway and provisioner.
-2. Remove the new `dev-mcp-user-<id>` container.
+2. Remove `dev-mcp-user-fc14e8ef-…`.
 3. Restore `users.json.pre-primary-migration` in `dev-mcp_gateway-data`.
-4. Remove the entry from `workspace-dirs.json` in `dev-mcp_runner-status`.
-5. Start `dev-mcp-runner-1`, and redeploy the previous gateway and provisioner images. Tag them before step 2, e.g. `dev-mcp-gateway:rollback-<date>`.
+4. Delete the account's entry from `workspace-dirs.json` in `dev-mcp_runner-status`.
+5. Start `dev-mcp-runner-1`.
+6. Redeploy the `rollback-20261001-before-accounts` gateway, provisioner and telemetry images.
 
-## Pending: apps (developed 2026-10-01, not deployed)
+## Pending: apps public URLs (code deployed, not enabled)
 
-Requires the pending per-account runner version above, deployed and migrated first. Then:
+1. Set `PREVIEW_DOMAIN=crasnec.duckdns.org` in `.env` and recreate the gateway. `*.crasnec.duckdns.org` already resolves to this host, and `duckdns.org` is a public suffix, so it is a different site from `dev.crasnec.com`.
+2. Add the app site to plan-app's Caddy, which owns ports 80/443 here:
+   - the global `on_demand_tls { ask http://gateway:3200/__dev-mcp/tls-allowed }`;
+   - a `*.crasnec.duckdns.org { tls { on_demand } reverse_proxy gateway:3200 { flush_interval -1 } }` block, as in this repository's `Caddyfile.preview`.
 
-1. Pick a preview domain on a different registrable domain from `dev.crasnec.com`. `crasnec.duckdns.org` already resolves `*.crasnec.duckdns.org` to this host. Set `PREVIEW_DOMAIN=crasnec.duckdns.org` in `.env` and recreate the gateway.
-2. Add the app site to plan-app's Caddy, which owns ports 80/443 here: the global `on_demand_tls { ask http://gateway:3200/__dev-mcp/tls-allowed }` and a `*.crasnec.duckdns.org { tls { on_demand } reverse_proxy gateway:3200 { flush_interval -1 } }` block, as in this repository's `Caddyfile.preview`. Then rebuild the `plan-app-caddy` image. The proxy already shares `dev-mcp_edge` with the gateway.
-3. Verify with an app in the administrator's account: open a private app, which goes through the console sign-in redirect. Then switch it to public and open it again.
+   Then validate it, rebuild the `plan-app-caddy` image and recreate only that service. It also fronts `plan.crasnec.com` and `matcha.oaknamu.com`. The proxy already shares `dev-mcp_edge` with the gateway.
+
+3. Verify with an app in the administrator's account:
+   1. Open a private app; it should go through the console sign-in redirect.
+   2. Switch it to public and open it again.
 
 ## Automatic user runner creation (2026-09-22)
 

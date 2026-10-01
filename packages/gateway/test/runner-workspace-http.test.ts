@@ -5,6 +5,7 @@ import path from "node:path";
 import inject from "light-my-request";
 import { createApp } from "../src/app.ts";
 import { UserStore } from "../src/user-store.ts";
+import { adminAccount } from "./accounts.ts";
 import { vscodeUrl, type SiteSettings } from "../src/settings-store.ts";
 
 const temporary: string[] = [];
@@ -20,8 +21,8 @@ async function fixture() {
   temporary.push(dataDir);
   const statusDir = path.join(dataDir, "status");
   await mkdir(statusDir);
-  const users = new UserStore(dataDir, "unused-legacy-hash");
-  const admin = (await users.list())[0]!;
+  const users = new UserStore(dataDir);
+  const admin = await adminAccount(users, dataDir);
   const { user } = await users.googleAccount(
     { sub: "mina-subject", email: "Mina@example.test" },
     true,
@@ -35,10 +36,8 @@ async function fixture() {
       port: 3000,
       publicBaseUrl: origin,
       dataDir,
-      runnerSocket: path.join(dataDir, "primary.sock"),
       userRunnerSocketDir: path.join(dataDir, "runners"),
       runnerStatusDir: statusDir,
-      adminPasswordHash: "unused-legacy-hash",
       google: { clientId: "test-client", clientSecret: "test-secret" },
     },
     { users },

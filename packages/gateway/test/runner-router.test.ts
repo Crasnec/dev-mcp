@@ -31,24 +31,36 @@ afterEach(async () => {
   );
 });
 
-async function runner(socketPath: string, identity: string, secret?: string) {
-  const runtime = {
+function runtimeFor(identity: string): RunnerRuntime {
+  return {
     dispatch: async (request: { method: string; actor: string }) => ({
       ok: request.method !== "__authenticated_call",
       truncated: false,
       data: { runner: identity, method: request.method, actor: request.actor },
     }),
   } as unknown as RunnerRuntime;
-  servers.push(await startIpcServer(socketPath, runtime, secret));
+}
+async function runner(socketPath: string, identity: string, secret: string) {
+  servers.push(await startIpcServer(socketPath, runtimeFor(identity), secret));
+}
+function rawCall(socketPath: string, line: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection(socketPath, () =>
+      socket.write(line + "\n"),
+    );
+    let output = "";
+    socket.on("data", (chunk) => (output += chunk));
+    socket.on("end", () => resolve(output));
+    socket.on("error", reject);
+  });
 }
 
 describe("dedicated user runner routing", () => {
-  it("routes every tool to the authenticated user's socket, never falls back to the primary", async () => {
+  it("routes every account, administrators included, to its own signed runner", async () => {
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "mcp-router-"));
     temporary.push(dataDir);
     const aliceId = "00000000-0000-4000-8000-000000000001";
     const bobId = "00000000-0000-4000-8000-000000000002";
-    await runner(path.join(dataDir, "primary.sock"), "primary");
     await writeFile(path.join(dataDir, aliceId + ".key"), "a".repeat(64));
     await writeFile(path.join(dataDir, bobId + ".key"), "b".repeat(64));
     await runner(
@@ -65,8 +77,6 @@ describe("dedicated user runner routing", () => {
       port: 3000,
       publicBaseUrl: "https://dev.example.test",
       dataDir,
-      adminPasswordHash: "unused",
-      runnerSocket: path.join(dataDir, "primary.sock"),
       userRunnerSocketDir: dataDir,
     });
     const user = (id: string): User => ({
@@ -107,15 +117,29 @@ describe("dedicated user runner routing", () => {
       (await router.forUser(user(aliceId)).call("project_list", {}, aliceId))
         .ok,
     ).toBe(false);
-    await unlink(path.join(dataDir, aliceId, "runner.sock"));
-    await symlink(
-      path.join(dataDir, "primary.sock"),
-      path.join(dataDir, aliceId, "runner.sock"),
+    // Runners never accept unsigned requests, and never start without a key.
+    const unsigned = await rawCall(
+      path.join(dataDir, bobId, "runner.sock"),
+      JSON.stringify({
+        id: "1",
+        method: "project_list",
+        params: {},
+        actor: "x",
+      }),
     );
-    expect(
-      (await router.forUser(user(aliceId)).call("project_list", {}, aliceId))
-        .ok,
-    ).toBe(false);
+    expect(JSON.parse(unsigned).result).toMatchObject({
+      ok: false,
+      error: { message: expect.stringContaining("authentication required") },
+    });
+    for (const secret of ["", "short", "A".repeat(64)]) {
+      await expect(
+        startIpcServer(
+          path.join(dataDir, "unsigned", "runner.sock"),
+          runtimeFor("unsigned"),
+          secret,
+        ),
+      ).rejects.toThrow("Invalid runner IPC key");
+    }
     const missing = user("00000000-0000-4000-8000-000000000003");
     expect(
       (await router.forUser(missing).call("project_list", {}, missing.id)).error
@@ -127,5 +151,9 @@ describe("dedicated user runner routing", () => {
     expect(() => router.forUser(user("../../primary"))).toThrow(
       "Invalid user runner identity",
     );
+    // Records not yet migrated from the shared runner are refused.
+    expect(() =>
+      router.forUser({ ...user(aliceId), runner: "primary" }),
+    ).toThrow("Invalid user runner identity");
   });
 });

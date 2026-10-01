@@ -1,6 +1,9 @@
 name: dev-mcp
 
 services:
+  # Builds the runner image only: `docker compose build runner`. The
+  # provisioner starts one dedicated runner per account, administrators
+  # included; no shared runner container runs from this file.
   runner:
     build:
       context: .
@@ -8,38 +11,8 @@ services:
       args:
         DEV_UID: ${DEV_UID:-1000}
         DEV_GID: ${DEV_GID:-1000}
-    environment:
-      WORKSPACE_ROOT: /workspace
-      RUNNER_DATA_DIR: /var/lib/dev-mcp
-      RUNNER_SOCKET: /ipc/runner.sock
-      MAX_CONCURRENT_COMMANDS: ${MAX_CONCURRENT_COMMANDS:-4}
-      MAX_CONCURRENT_PROCESSES: ${MAX_CONCURRENT_PROCESSES:-8}
-      DEFAULT_COMMAND_TIMEOUT_MS: ${DEFAULT_COMMAND_TIMEOUT_MS:-0}
-      MAX_OUTPUT_BYTES: ${MAX_OUTPUT_BYTES:-65536}
-      GIT_AUTHOR_NAME: ${GIT_AUTHOR_NAME:-}
-      GIT_AUTHOR_EMAIL: ${GIT_AUTHOR_EMAIL:-}
-    volumes:
-      - type: bind
-        source: ${WORKSPACE_DIR:?Set WORKSPACE_DIR in .env}
-        target: /workspace
-      - runner-data:/var/lib/dev-mcp
-      - runner-ipc:/ipc
-    read_only: true
-    tmpfs:
-      - /tmp:rw,nosuid,nodev,exec,mode=1777
-    cap_drop: [ALL]
-    security_opt:
-      - no-new-privileges:true
-    init: true
-    restart: unless-stopped
-    networks:
-      - runner-egress
-    healthcheck:
-      test: [CMD, node, -e, "require('fs').statSync('/ipc/runner.sock').isSocket()||process.exit(1)"]
-      interval: 5s
-      timeout: 3s
-      retries: 12
-      start_period: 5s
+    image: ${RUNNER_IMAGE:-dev-mcp-runner:latest}
+    profiles: [image]
 
   gateway:
     build:
@@ -48,9 +21,7 @@ services:
     environment:
       PORT: "3000"
       PUBLIC_BASE_URL: https://${MCP_DOMAIN:?Set MCP_DOMAIN in .env}
-      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:?Generate ADMIN_PASSWORD_HASH with npm run password-hash}
       GATEWAY_DATA_DIR: /var/lib/dev-mcp
-      RUNNER_SOCKET: /ipc/runner.sock
       USER_RUNNER_SOCKET_DIR: /user-ipc
       RUNNER_STATUS_DIR: /runner-status
       ONBOARDING_PORT: "3100"
@@ -60,7 +31,6 @@ services:
     volumes:
       - gateway-data:/var/lib/dev-mcp
       - runner-status:/runner-status:ro
-      - runner-ipc:/ipc
       - type: bind
         source: ${USER_RUNNER_IPC_DIR:-./data/user-ipc}
         target: /user-ipc
@@ -75,9 +45,6 @@ services:
     restart: unless-stopped
     networks:
       - edge
-    depends_on:
-      runner:
-        condition: service_healthy
     healthcheck:
       test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 10s
@@ -91,6 +58,7 @@ services:
       dockerfile: docker/provisioner.Dockerfile
     environment:
       COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-dev-mcp}
+      RUNNER_IMAGE: ${RUNNER_IMAGE:-dev-mcp-runner:latest}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - gateway-data:/gateway-data:ro
@@ -108,8 +76,6 @@ services:
     network_mode: none
     depends_on:
       gateway:
-        condition: service_healthy
-      runner:
         condition: service_healthy
 
   caddy:
@@ -140,11 +106,8 @@ services:
 volumes:
   gateway-data:
   runner-status:
-  runner-data:
-  runner-ipc:
   caddy-data:
   caddy-config:
 
 networks:
   edge:
-  runner-egress:

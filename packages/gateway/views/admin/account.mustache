@@ -22,7 +22,6 @@
   </section>
   <section class="panel padded account-card">
     <h2>Google 계정</h2>
-    {{#user.googleLinked}}<p class="context-message">{{user.email}} 계정이 연결되어 있습니다.</p>{{/user.googleLinked}}
-    {{^user.googleLinked}}{{#googleEnabled}}<p class="help">현재 계정에 Google 로그인을 연결합니다. 기존 권한과 작업 공간은 유지되며, 기존 로그인·MCP 인증은 만료됩니다.</p><form method="post" action="/auth/google">{{> partials/csrf}}<input type="hidden" name="mode" value="link"><button class="google-button" type="submit">{{> partials/google-mark}}Google 계정 연결</button></form>{{/googleEnabled}}{{^googleEnabled}}<p class="help">현재 서비스에는 Google 로그인이 설정되어 있지 않습니다.</p>{{/googleEnabled}}{{/user.googleLinked}}
+    <p class="context-message">{{user.email}} 계정으로 로그인합니다.</p>
   </section>
 </div>

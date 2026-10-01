@@ -6,6 +6,7 @@ import os from "node:os";
 import inject from "light-my-request";
 import { createApp } from "../src/app.ts";
 import { UserStore } from "../src/user-store.ts";
+import { adminAccount } from "./accounts.ts";
 import { pkceChallenge } from "../src/crypto.ts";
 
 const temporary: string[] = [];
@@ -36,14 +37,11 @@ describe("OAuth HTTP endpoints", () => {
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "mcp-oauth-http-"));
     temporary.push(dataDir);
     const password = "a-long-test-password";
-    const adminPasswordHash = await passwordHash(password);
-    const users = new UserStore(dataDir, adminPasswordHash);
+    const users = new UserStore(dataDir);
     const app = createApp({
       port: 3000,
       publicBaseUrl: "http://127.0.0.1",
       dataDir,
-      runnerSocket: path.join(dataDir, "missing.sock"),
-      adminPasswordHash,
     });
     const callback = "https://chat.example.test/oauth/callback";
 
@@ -159,7 +157,9 @@ describe("OAuth HTTP endpoints", () => {
     expect(denialRedirect.searchParams.get("error")).toBe("access_denied");
     expect(denialRedirect.searchParams.get("state")).toBe("state-123");
 
-    const session = await users.createSession((await users.list())[0]!);
+    const session = await users.createSession(
+      await adminAccount(users, dataDir),
+    );
     const sessionCookie = "dev-mcp-session=" + session.token;
     const consent = await inject(app, {
       method: "GET",

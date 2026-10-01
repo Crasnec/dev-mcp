@@ -9,13 +9,10 @@ export interface BootstrapAccount {
 export function bootstrapGoogleAdmin(options: {
   users: {
     list(): Promise<BootstrapAccount[]>;
-    update(
-      actorId: string,
-      id: string,
-      changes: { role: "admin"; status: "active" },
-    ): Promise<BootstrapAccount>;
+    promoteFirstAdmin(id: string): Promise<BootstrapAccount>;
   };
   audit: { write(event: Record<string, unknown>): Promise<void> };
   userId: string;
   email: string;
+  actor?: string;
 }): Promise<BootstrapAccount>;

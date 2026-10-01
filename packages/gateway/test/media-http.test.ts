@@ -7,6 +7,7 @@ import inject from "light-my-request";
 import { createApp } from "../src/app.ts";
 import type { IpcClient } from "../src/ipc-client.ts";
 import { UserStore } from "../src/user-store.ts";
+import { adminAccount } from "./accounts.ts";
 
 const temporary: string[] = [];
 afterEach(async () => {
@@ -21,8 +22,8 @@ describe("removed image endpoint", () => {
   it("rejects even a valid previously issued URL without calling a runner", async () => {
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "mcp-media-removed-"));
     temporary.push(dataDir);
-    const users = new UserStore(dataDir, "secret");
-    const admin = (await users.list())[0]!;
+    const users = new UserStore(dataDir);
+    const admin = await adminAccount(users, dataDir);
     // Sign the old wire format to ensure removal, rather than invalid-token rejection.
     const claims = Buffer.from(
       JSON.stringify({
@@ -44,8 +45,6 @@ describe("removed image endpoint", () => {
         port: 3000,
         publicBaseUrl: "https://dev.example.test",
         dataDir,
-        runnerSocket: path.join(dataDir, "runner.sock"),
-        adminPasswordHash: "secret",
       },
       { users, ipc: { call } as unknown as IpcClient },
     );

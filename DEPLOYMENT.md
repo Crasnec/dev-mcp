@@ -14,13 +14,36 @@ node scripts/verify-public.mjs https://dev.crasnec.com
 
 The public reverse proxy is the existing `plan-app-caddy-1`, connected to `dev-mcp_edge`. Do **not** start this repository's separate `caddy` service on this server: the existing proxy owns ports 80/443. Its active configuration has access logging disabled. Other plan-app services were not changed.
 
-## Local onboarding and host-directory workspaces (developed 2026-10-01, not deployed)
+## Pending: per-account runners only, onboarding and host workspaces (developed 2026-10-01, not deployed)
 
-Deploying it requires rebuilding the gateway and provisioner, and recreating the gateway so that it publishes `127.0.0.1:${ONBOARDING_HOST_PORT:-3100}`. Check first that the port is free on the host. This installation already has a Google administrator, so the onboarding asks only for the optional workspace root. Read the code from `sudo docker compose ... logs gateway | grep onboarding_available` and open the page through `ssh -L 3100:127.0.0.1:3100` to the Docker host. Do not open it through `dev-fedora`: its loopback is its own.
+The current server still runs the previous version: the shared `dev-mcp-runner-1` serves the administrator, with the whole `/home/crasnec/workspace`. The new version has no shared runner, so deploying it means migrating that account in the same maintenance window. Nothing below has been run on this server.
 
-This server's existing layout stays unchanged. The primary runner keeps the whole `/home/crasnec/workspace`, and `dev-fedora` keeps its mounts. Because roots inside the primary workspace are rejected, a root here must lie outside `/home/crasnec/workspace`. For example, `/home/crasnec/dev-mcp-workspaces`, created and owned by UID 1000 on the host. Its directories are not visible in the current `dev-fedora` VS Code session. Open them with Remote - SSH to the Docker host instead (set that host in **운영 설정 → VS Code 연결**), or skip the root and keep Docker volumes. Existing dedicated runners keep their volumes until moved from the runner page.
+1. Check that host loopback port 3100 is free; the gateway now publishes `127.0.0.1:${ONBOARDING_HOST_PORT:-3100}` for the local onboarding.
+2. Build: `sudo docker compose -f compose.yaml -f compose.google.yaml -f compose.server.yaml build runner gateway provisioner`.
+3. Stop the services: `sudo docker compose -f compose.yaml -f compose.google.yaml -f compose.server.yaml stop gateway provisioner`.
+4. Migrate: run `sudo ./scripts/migrate-primary-runner.sh` and review the dry run, then run `sudo ./scripts/migrate-primary-runner.sh --apply`.
+   - It finds the single active Google-linked administrator on the shared runner. Read-only check on 2026-10-01: one such account, plus one dedicated user.
+   - It copies `dev-mcp_runner-data` into `dev-mcp-user-<id>-data`.
+   - It records `/home/crasnec/workspace` as that account's reserved host workspace.
+   - It updates `users.json`, keeping a backup.
+5. Start the services: `sudo docker compose -f compose.yaml -f compose.google.yaml -f compose.server.yaml up -d --no-deps --wait gateway provisioner`.
+   - The provisioner creates the administrator's `dev-mcp-user-<id>` with the same `/home/crasnec/workspace`, so existing projects and IDs remain.
+   - The old `dev-mcp-runner-1` stays stopped for rollback.
+6. Verify with `node scripts/verify-public.mjs https://dev.crasnec.com`, then check the administrator's projects via MCP. MCP sessions and OAuth tokens stay valid.
+7. Open the onboarding through `ssh -L 3100:127.0.0.1:3100` to the Docker host (not `dev-fedora`, whose loopback is its own) with the code from `logs gateway | grep onboarding_available`. The administrator step is skipped. Workspace root:
+   - It must lie outside `/home/crasnec/workspace`, which is now the administrator's reserved workspace. For example `/home/crasnec/dev-mcp-workspaces`, owned by UID 1000.
+   - New accounts' directories there are not visible in the current `dev-fedora` VS Code session. Open them with Remote - SSH to the Docker host.
+   - Alternatively, leave the root unset and keep Docker volumes.
 
-Separately, `data/user-ipc` lies inside the primary runner's `/workspace`, so the primary runner can read every dedicated runner's IPC key. This predates the feature. Move `USER_RUNNER_IPC_DIR` outside `WORKSPACE_DIR` when convenient.
+Rollback (printed by the migration script):
+
+1. Stop gateway and provisioner.
+2. Remove the new `dev-mcp-user-<id>` container.
+3. Restore `users.json.pre-primary-migration` in `dev-mcp_gateway-data`.
+4. Remove the entry from `workspace-dirs.json` in `dev-mcp_runner-status`.
+5. Start `dev-mcp-runner-1`, and redeploy the previous gateway and provisioner images. Tag them before step 2, e.g. `dev-mcp-gateway:rollback-<date>`.
+
+Known issue that the migration does not change: `data/user-ipc` and `data/google` live inside `/home/crasnec/workspace`, so the administrator's runner can read the other runners' IPC keys and the Google credential copies. Move `USER_RUNNER_IPC_DIR` and the secret copies outside the workspace when convenient.
 
 ## Automatic user runner creation (2026-09-22)
 

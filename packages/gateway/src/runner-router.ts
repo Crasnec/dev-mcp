@@ -3,16 +3,16 @@ import type { GatewayConfig } from "./config.ts";
 import { IpcClient } from "./ipc-client.ts";
 import type { User } from "./user-store.ts";
 
+// Every account, administrators included, owns one dedicated runner reached
+// through its own socket and HMAC key.
 export class RunnerRouter {
   constructor(
     private readonly config: GatewayConfig,
-    private readonly primary?: IpcClient,
+    // Tests inject one client for every account.
+    private readonly override?: IpcClient,
   ) {}
 
   forUser(user: User): IpcClient {
-    if (user.runner === "primary") {
-      return this.primary ?? new IpcClient(this.config.runnerSocket);
-    }
     if (
       user.runner !== user.id ||
       !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
@@ -20,6 +20,9 @@ export class RunnerRouter {
       )
     ) {
       throw new Error("Invalid user runner identity");
+    }
+    if (this.override) {
+      return this.override;
     }
     const directory = this.config.userRunnerSocketDir ?? "/user-ipc";
     return new IpcClient(

@@ -23,8 +23,6 @@ describe("browser pages", () => {
       port: 3000,
       publicBaseUrl: "https://dev.example.test",
       dataDir,
-      runnerSocket: path.join(dataDir, "missing.sock"),
-      adminPasswordHash: "unused-on-public-pages",
     });
 
     const home = await inject(app, {

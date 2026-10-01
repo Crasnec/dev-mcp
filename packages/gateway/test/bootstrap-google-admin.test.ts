@@ -3,7 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { bootstrapGoogleAdmin } from "../../../scripts/bootstrap-google-admin.mjs";
-import { UserStore } from "../src/user-store.ts";
+import { JsonStore } from "../src/json-store.ts";
+import { UserStore, type User } from "../src/user-store.ts";
 import { AuditLogger } from "../src/audit.ts";
 
 const temporary: string[] = [];
@@ -16,18 +17,39 @@ afterEach(async () => {
 async function fixture() {
   const directory = await mkdtemp(path.join(os.tmpdir(), "mcp-bootstrap-"));
   temporary.push(directory);
-  const users = new UserStore(directory, "unused-bootstrap-hash");
-  const admin = (await users.list())[0]!;
+  const users = new UserStore(directory);
   const { user } = await users.googleAccount(
     { sub: "verified-provider-subject", email: "chosen@example.test" },
     true,
   );
-  return { users, user, admin, audit: new AuditLogger(directory) };
+  // Raw records for states production code never creates any more.
+  const store = new JsonStore<{
+    users: Array<User & { googleSub?: string; passwordHash?: string }>;
+    sessions: Record<string, unknown>;
+  }>(path.join(directory, "users.json"), () => ({ users: [], sessions: {} }));
+  const insert = async (record: Partial<User> & { googleSub?: string }) => {
+    const id = record.id ?? crypto.randomUUID();
+    await store.update((db) => {
+      db.users.push({
+        id,
+        username: "raw-" + id,
+        role: "user",
+        status: "pending",
+        runner: id,
+        authVersion: 1,
+        createdAt: Date.now(),
+        ...record,
+      });
+    });
+    return id;
+  };
+  return { users, user, insert, audit: new AuditLogger(directory) };
 }
 
-describe("offline Google administrator bootstrap", () => {
-  it("promotes the exact verified pending account once and preserves its identity and workspace", async () => {
-    const { users, user, admin, audit } = await fixture();
+describe("first Google administrator bootstrap", () => {
+  it("promotes the exact verified pending account once without any seeded account", async () => {
+    const { users, user, audit } = await fixture();
+    expect(await users.list()).toHaveLength(1);
     const promoted = await bootstrapGoogleAdmin({
       users,
       audit,
@@ -40,10 +62,9 @@ describe("offline Google administrator bootstrap", () => {
       googleLinked: true,
       role: "admin",
       status: "active",
-      runner: user.runner,
+      runner: user.id,
       authVersion: user.authVersion + 1,
     });
-    expect(await users.get(admin.id)).toEqual(admin);
     expect((await audit.recent()).records).toEqual([
       expect.objectContaining({
         event: "bootstrap_google_admin",
@@ -63,53 +84,60 @@ describe("offline Google administrator bootstrap", () => {
         email: other.user.email,
       }),
     ).rejects.toThrow("already exists");
+    await expect(users.promoteFirstAdmin(other.user.id)).rejects.toThrow(
+      "이미 활성 관리자",
+    );
     expect((await users.get(other.user.id))?.status).toBe("pending");
   });
 
-  it("rejects mismatched identities, an unlinked account and nonpending targets without granting access", async () => {
-    const { users, user, admin, audit } = await fixture();
+  it("rejects mismatched identities, unlinked records and non-pending targets", async () => {
+    const { users, user, insert, audit } = await fixture();
     for (const [userId, email] of [
       ["../users", user.email],
       [user.id, "different@example.test"],
-      [admin.id, user.email],
       ["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", user.email],
     ]) {
       await expect(
         bootstrapGoogleAdmin({ users, audit, userId, email }),
       ).rejects.toThrow();
     }
+    const unlinked = await insert({});
+    const active = await insert({ status: "active", googleSub: "active-sub" });
+    const shared = await insert({ runner: "primary", googleSub: "shared-sub" });
+    for (const id of [unlinked, active, shared]) {
+      await expect(users.promoteFirstAdmin(id)).rejects.toThrow(
+        "승인 대기 중인 Google 계정만",
+      );
+      expect((await users.get(id))?.role).toBe("user");
+    }
     expect(await users.get(user.id)).toEqual(user);
-    await users.update(admin.id, user.id, { role: "user", status: "active" });
-    await expect(
-      bootstrapGoogleAdmin({
-        users,
-        audit,
-        userId: user.id,
-        email: user.email,
-      }),
-    ).rejects.toThrow("does not match");
     expect((await audit.recent()).records).toHaveLength(0);
   });
 
-  it("protects the last Google administrator even while an unlinked legacy administrator remains", async () => {
-    const { users, user, admin, audit } = await fixture();
+  it("ignores a leftover legacy administrator and protects the last signed-in administrator", async () => {
+    const { users, user, insert, audit } = await fixture();
+    // An older installation's seeded account cannot sign in any more.
+    const legacy = await insert({
+      role: "admin",
+      status: "active",
+      runner: "primary",
+    });
     const promoted = await bootstrapGoogleAdmin({
       users,
       audit,
       userId: user.id,
       email: user.email,
     });
-    expect((await users.get(admin.id))?.googleLinked).toBe(false);
+    expect((await users.get(legacy))?.googleLinked).toBe(false);
     for (const changes of [
       { role: "user", status: "active" },
       { role: "admin", status: "disabled" },
     ] as const) {
       await expect(
         users.update(promoted.id, promoted.id, changes),
-      ).rejects.toThrow("마지막 Google 로그인 관리자");
+      ).rejects.toThrow("마지막 관리자");
       expect(await users.get(promoted.id)).toEqual(promoted);
     }
-
     const { user: second } = await users.googleAccount(
       { sub: "second-admin-subject", email: "second@example.test" },
       true,
@@ -126,6 +154,6 @@ describe("offline Google administrator bootstrap", () => {
     ).toMatchObject({ role: "user", status: "active" });
     await expect(
       users.update(second.id, second.id, { role: "admin", status: "disabled" }),
-    ).rejects.toThrow("마지막 Google 로그인 관리자");
+    ).rejects.toThrow("마지막 관리자");
   });
 });

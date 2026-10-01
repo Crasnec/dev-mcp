@@ -289,7 +289,7 @@ function ownsRunner(user: User): boolean {
     validTelemetryScope(user.id) &&
     user.id !== "host" &&
     user.id !== "all-runners" &&
-    (user.runner === "primary" || user.runner === user.id)
+    user.runner === user.id
   );
 }
 

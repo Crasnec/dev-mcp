@@ -271,13 +271,16 @@ describe("telemetry observations", () => {
 
 describe("collector ownership and storage isolation", () => {
   it("requires exact ownership and rejects arbitrary Docker mutations before opening a socket", () => {
-    expect(ownsContainer(user(), info(), "dev-mcp")).toBe(true);
-    expect(ownsContainer(user(SECOND), info(), "dev-mcp")).toBe(false);
-    expect(
-      ownsContainer(user(), { ...info(), Name: "/someone-else" }, "dev-mcp"),
-    ).toBe(false);
-    const primary = {
+    expect(ownsContainer(user(), info())).toBe(true);
+    expect(ownsContainer(user(SECOND), info())).toBe(false);
+    expect(ownsContainer(user(), { ...info(), Name: "/someone-else" })).toBe(
+      false,
+    );
+    // A container that merely carries the Compose runner labels (for example
+    // the legacy shared runner) belongs to no account.
+    const legacy = {
       ...info(),
+      Name: "/dev-mcp-runner-1",
       Config: {
         Labels: {
           "com.docker.compose.project": "dev-mcp",
@@ -286,12 +289,8 @@ describe("collector ownership and storage isolation", () => {
         },
       },
     };
-    expect(
-      ownsContainer({ ...user(), runner: "primary" }, primary, "dev-mcp"),
-    ).toBe(true);
-    expect(
-      ownsContainer({ ...user(), runner: "primary" }, primary, "other-project"),
-    ).toBe(false);
+    expect(ownsContainer({ ...user(), runner: "primary" }, legacy)).toBe(false);
+    expect(ownsContainer(user(), legacy)).toBe(false);
     const api = new DockerApi("/socket-never-accessed");
     expect(() => api.request("DELETE", `/containers/${ID}`)).toThrow(
       "not allowed",

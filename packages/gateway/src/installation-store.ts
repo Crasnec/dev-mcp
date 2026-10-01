@@ -17,7 +17,9 @@ export interface WorkspaceRootStatus {
 }
 export interface InstallationObservation {
   workspaceRoot?: WorkspaceRootStatus;
-  primaryWorkspace?: string;
+  // Host workspaces of runners outside the root, such as an administrator
+  // environment migrated from an older installation.
+  reservedWorkspaces?: string[];
   observedAt?: number;
 }
 
@@ -64,6 +66,16 @@ export function insideOrEqual(child: string, parent: string): boolean {
   return child === parent || child.startsWith(parent + "/");
 }
 
+export function reservedContaining(
+  root: string,
+  reserved: string[] | undefined,
+): string | undefined {
+  return (Array.isArray(reserved) ? reserved : []).find(
+    (workspace) =>
+      typeof workspace === "string" && insideOrEqual(root, workspace),
+  );
+}
+
 export class InstallationStore {
   private readonly store: JsonStore<Installation>;
   constructor(
@@ -105,10 +117,12 @@ export class InstallationStore {
   // authoritative comparison of kernel-resolved mount locations.
   async setWorkspaceRoot(value: string | undefined): Promise<Installation> {
     const root = value === undefined ? undefined : validateWorkspaceRoot(value);
-    const primary = (await this.observed()).primaryWorkspace;
-    if (root && primary && insideOrEqual(root, primary)) {
+    const reserved = root
+      ? reservedContaining(root, (await this.observed()).reservedWorkspaces)
+      : undefined;
+    if (reserved) {
       throw new Error(
-        `기본 실행 환경의 작업 공간(${primary}) 안이나 같은 경로는 쓸 수 없습니다. 기본 실행 환경이 다른 계정의 파일에 접근하지 않도록 바깥 경로를 지정해 주세요.`,
+        `다른 실행 환경이 쓰는 호스트 작업 공간(${reserved}) 안이나 같은 경로는 쓸 수 없습니다. 그 실행 환경이 다른 계정의 파일에 접근하지 않도록 바깥 경로를 지정해 주세요.`,
       );
     }
     return this.store.update((current) => {

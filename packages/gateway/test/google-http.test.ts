@@ -5,10 +5,11 @@ import path from "node:path";
 import inject from "light-my-request";
 import { createApp } from "../src/app.ts";
 import { UserStore } from "../src/user-store.ts";
+import { adminAccount } from "./accounts.ts";
 import { SettingsStore } from "../src/settings-store.ts";
 import { AuthStore } from "../src/auth-store.ts";
 import { GoogleLogin } from "../src/google-login.ts";
-import { hashPassword, pkceChallenge } from "../src/crypto.ts";
+import { pkceChallenge } from "../src/crypto.ts";
 
 const temporary: string[] = [];
 afterEach(async () => {
@@ -61,9 +62,8 @@ function post(
 async function fixture() {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "mcp-google-"));
   temporary.push(dataDir);
-  const adminPasswordHash = await hashPassword("admin-test-password");
-  const users = new UserStore(dataDir, adminPasswordHash);
-  const admin = (await users.list())[0]!;
+  const users = new UserStore(dataDir);
+  const admin = await adminAccount(users, dataDir);
   const real = new GoogleLogin(
     { clientId: "test-client", clientSecret: "test-secret" },
     base + "/auth/google/callback",
@@ -77,9 +77,7 @@ async function fixture() {
       port: 3000,
       publicBaseUrl: base,
       dataDir,
-      runnerSocket: path.join(dataDir, "none.sock"),
       userRunnerSocketDir: path.join(dataDir, "runners"),
-      adminPasswordHash,
     },
     { users, google },
   );
@@ -189,17 +187,15 @@ describe("Google-only registration and browser login", () => {
     expect(callback.statusCode).toBe(200);
     expect(callback.payload).toContain("승인");
     expect(cookies(callback)).not.toContain("__Host-dev-mcp-session=");
-    const user = (await users.list()).find((user) => user.googleLinked)!;
+    const user = (await users.list()).find(
+      (user) => user.email === identity.email,
+    )!;
     expect(user).toMatchObject({
       role: "user",
       status: "pending",
       runner: user.id,
       email: identity.email,
-      passwordLogin: false,
     });
-    expect(
-      await users.authenticate(user.username, "admin-test-password"),
-    ).toBeUndefined();
     const stored = JSON.parse(
       await readFile(path.join(dataDir, "users.json"), "utf8"),
     );
@@ -290,61 +286,28 @@ describe("Google-only registration and browser login", () => {
     );
   });
 
-  it("links Google explicitly to an authenticated legacy admin without changing its workspace or role", async () => {
-    const { app, users, admin, auth } = await fixture();
-    const session = await users.createSession(admin);
-    const adminCookie = "__Host-dev-mcp-session=" + session.token;
-    const client = await auth.registerClient("test", [
-      "https://chat.example/callback",
-    ]);
-    const issued = await auth.issueTokens(client.clientId, ["workspace:read"], {
-      userId: admin.id,
-      authVersion: admin.authVersion,
-    });
-    const flow = await start(app, { mode: "link" }, adminCookie, "/account");
-    const linked = await get(app, flow.callback, flow.jar);
-    expect(linked.statusCode).toBe(303);
-    expect(linked.headers.location).toBe("/account");
-    expect(await users.list()).toHaveLength(1);
-    expect(await users.get(admin.id)).toMatchObject({
-      role: "admin",
-      runner: "primary",
-      email: identity.email,
-      googleLinked: true,
-    });
-    expect(await users.session(session.token)).toBeUndefined();
-    expect(
-      await users.valid((await auth.access(issued.accessToken))!),
-    ).toBeUndefined();
-    const login = await start(app);
-    const result = await get(app, login.callback, login.jar);
-    expect(result.headers.location).toBe("/admin");
-    expect((await get(app, "/admin", cookies(result))).statusCode).toBe(200);
-  });
-
-  it("rejects linking after session revocation and never merges different Google subjects by email", async () => {
+  it("never links a signed-in account to another Google identity or merges by email", async () => {
     const { app, users, admin } = await fixture();
     const session = await users.createSession(admin);
-    const flow = await start(
-      app,
-      { mode: "link" },
-      "__Host-dev-mcp-session=" + session.token,
-      "/account",
-    );
-    await users.logout(session.token);
-    expect((await get(app, flow.callback, flow.jar)).statusCode).toBe(403);
-    const first = await users.googleAccount(identity, true);
-    const second = await users.googleAccount(
+    const cookie = "__Host-dev-mcp-session=" + session.token;
+    // The retired link mode is ignored: the callback signs in or registers the
+    // returned identity on its own.
+    const flow = await start(app, { mode: "link" }, cookie, "/account");
+    const callback = await get(app, flow.callback, flow.jar);
+    expect(callback.statusCode).toBe(200);
+    expect(callback.payload).toContain("승인");
+    expect(await users.get(admin.id)).toEqual(admin);
+    expect(await users.session(session.token)).toBeTruthy();
+    const created = (await users.list()).find(
+      (user) => user.email === identity.email,
+    )!;
+    expect(created).toMatchObject({ status: "pending", runner: created.id });
+    expect(created.id).not.toBe(admin.id);
+    const other = await users.googleAccount(
       { ...identity, sub: "other-sub" },
       true,
     );
-    expect(first.user.id).not.toBe(second.user.id);
-    await expect(
-      users.linkGoogle(
-        { userId: admin.id, authVersion: admin.authVersion },
-        identity,
-      ),
-    ).rejects.toThrow("이미 연결된");
+    expect(other.user.id).not.toBe(created.id);
   });
 
   it("resumes MCP consent after Google login and requires explicit browser-bound CSRF-protected approval", async () => {

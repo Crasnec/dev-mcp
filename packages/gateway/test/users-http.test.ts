@@ -6,9 +6,9 @@ import path from "node:path";
 import inject from "light-my-request";
 import { createApp } from "../src/app.ts";
 import { UserStore } from "../src/user-store.ts";
-import { legacyUser } from "./legacy-user.ts";
+import { adminAccount, pendingAccount } from "./accounts.ts";
 import { AuthStore } from "../src/auth-store.ts";
-import { hashPassword, pkceChallenge } from "../src/crypto.ts";
+import { pkceChallenge } from "../src/crypto.ts";
 
 const temporary: string[] = [];
 afterEach(async () => {
@@ -23,17 +23,14 @@ const sessionStores = new WeakMap<ReturnType<typeof createApp>, UserStore>();
 async function fixture() {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "mcp-users-http-"));
   temporary.push(dataDir);
-  const adminPasswordHash = await hashPassword(password);
-  const users = new UserStore(dataDir, adminPasswordHash);
-  const admin = (await users.list())[0]!;
+  const users = new UserStore(dataDir);
+  const admin = await adminAccount(users, dataDir);
   const app = createApp(
     {
       port: 3000,
       publicBaseUrl: "https://dev.example.test",
       dataDir,
-      runnerSocket: path.join(dataDir, "primary.sock"),
       userRunnerSocketDir: path.join(dataDir, "runners"),
-      adminPasswordHash,
       google: { clientId: "test-client", clientSecret: "test-secret" },
     },
     { users },
@@ -87,7 +84,7 @@ describe("multi-user accounts and administration", () => {
       headers: { cookie: signedIn.cookie },
     });
     const token = csrf(page.payload);
-    const target = await legacyUser(users, dataDir, "runner-user", password);
+    const target = await pendingAccount(users, dataDir, "runner-user");
     const url = "/admin/runners/" + target.id + "/operations";
     const limits = {
       action: "apply",
@@ -109,6 +106,7 @@ describe("multi-user accounts and administration", () => {
       (await post(app, url, { ...limits, action: "start" }, signedIn.cookie))
         .statusCode,
     ).toBe(400);
+    // The administrator's runner follows the same rules as any account.
     expect(
       (
         await post(
@@ -118,7 +116,7 @@ describe("multi-user accounts and administration", () => {
           signedIn.cookie,
         )
       ).statusCode,
-    ).toBe(400);
+    ).toBe(303);
     for (const bad of [
       { memoryMiB: "1" },
       { storageMiB: "-1" },
@@ -258,7 +256,7 @@ describe("multi-user accounts and administration", () => {
     expect(account.payload).toContain('class="account-grid"');
     expect(account.payload).toContain('class="context-message"');
     expect(account.payload).not.toContain('class="notice"');
-    const alice = await legacyUser(users, dataDir, "alice", password);
+    const alice = await pendingAccount(users, dataDir, "alice");
     await users.update(admin.id, alice.id, { status: "active", role: "user" });
     const ordinary = await sessionFor(app, "alice");
     const ordinaryAccount = await inject(app, {
@@ -323,7 +321,7 @@ describe("multi-user accounts and administration", () => {
   it("sorts admin lists and keeps filters when changing sort direction", async () => {
     const { app, users, admin, dataDir } = await fixture();
     for (const username of ["alpha", "zeta"]) {
-      const created = await legacyUser(users, dataDir, username, password);
+      const created = await pendingAccount(users, dataDir, username);
       await users.update(admin.id, created.id, {
         status: "active",
         role: "user",
@@ -337,12 +335,13 @@ describe("multi-user accounts and administration", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.payload.indexOf(">zeta</a>")).toBeLessThan(
-      response.payload.indexOf(">alpha</a>"),
-    );
-    expect(response.payload.indexOf(">alpha</a>")).toBeLessThan(
-      response.payload.indexOf(">admin</a>"),
-    );
+    const position = (name: string) => {
+      const index = response.payload.indexOf(`>${name}@example.test</a>`);
+      expect(index).toBeGreaterThan(-1);
+      return index;
+    };
+    expect(position("zeta")).toBeLessThan(position("alpha"));
+    expect(position("alpha")).toBeLessThan(position("admin"));
     expect(response.payload).toContain('aria-sort="descending"');
     expect(response.payload).toContain(
       'class="button refresh-link" href="/admin/users?q=a&amp;status=active&amp;page=2&amp;sort=username&amp;direction=desc"',
@@ -475,7 +474,7 @@ describe("multi-user accounts and administration", () => {
 
   it("routes project and process actions to their owner, checks deletion confirmation and escapes runner data", async () => {
     const { app, users, admin, dataDir } = await fixture();
-    const alice = await legacyUser(users, dataDir, "alice", password);
+    const alice = await pendingAccount(users, dataDir, "alice");
     const calls: Array<{
       method: string;
       actor: string;
@@ -635,7 +634,6 @@ describe("multi-user accounts and administration", () => {
 
   it("never authenticates passwords through the retired login endpoint", async () => {
     const { app, users } = await fixture();
-    const authenticate = vi.spyOn(users, "authenticate");
     const createSession = vi.spyOn(users, "createSession");
     const page = await inject(app, { method: "GET", url: "/login" });
     expect(page.payload).toContain('action="/auth/google"');
@@ -652,7 +650,6 @@ describe("multi-user accounts and administration", () => {
       expect(response.payload).toContain("Google로 로그인해 주세요");
       expect(response.headers["set-cookie"]).toBeUndefined();
     }
-    expect(authenticate).not.toHaveBeenCalled();
     expect(createSession).not.toHaveBeenCalled();
   });
 
@@ -675,7 +672,7 @@ describe("multi-user accounts and administration", () => {
     expect((await users.list()).some((user) => user.username === "alice")).toBe(
       false,
     );
-    const alice = await legacyUser(users, dataDir, "alice", password);
+    const alice = await pendingAccount(users, dataDir, "alice");
     expect(alice).toMatchObject({
       role: "user",
       status: "pending",
@@ -801,14 +798,11 @@ describe("multi-user accounts and administration", () => {
       client_id: client.clientId,
     });
     expect(refresh.statusCode).toBe(200);
-    const reloaded = new UserStore(dataDir, await hashPassword(password));
-    expect(await reloaded.authenticate("admin", password)).toBeTruthy();
-    expect(await reloaded.authenticate("admin", newPassword)).toBeUndefined();
   });
 
   it("binds OAuth grants to each approved user and rejects cached refreshes after disabling an account", async () => {
     const { app, users, auth, admin, dataDir } = await fixture();
-    const alice = await legacyUser(users, dataDir, "alice", password);
+    const alice = await pendingAccount(users, dataDir, "alice");
     await users.update(admin.id, alice.id, { status: "active", role: "user" });
     const client = await auth.registerClient("shared-client", [
       "https://chat.example/callback",

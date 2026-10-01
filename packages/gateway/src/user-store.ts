@@ -2,12 +2,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { JsonStore } from "./json-store.ts";
 import type { GoogleIdentity } from "./google-login.ts";
-import {
-  hashPassword,
-  randomToken,
-  tokenHash,
-  verifyPassword,
-} from "./crypto.ts";
+import { randomToken, tokenHash } from "./crypto.ts";
 
 export interface User {
   id: string;
@@ -19,11 +14,13 @@ export interface User {
   createdAt: number;
   googleLinked?: boolean;
   email?: string;
-  passwordLogin?: boolean;
 }
+// Every account is created by Google sign-in and owns a dedicated runner
+// (runner === id). Records from older versions may still carry a legacy
+// passwordHash or runner "primary" until scripts/migrate-primary-runner.sh runs.
 interface StoredUser extends User {
-  passwordHash?: string;
   googleSub?: string;
+  passwordHash?: string;
 }
 export interface Principal {
   userId: string;
@@ -41,38 +38,15 @@ interface Database {
 
 export class UserStore {
   private readonly store: JsonStore<Database>;
-  private ready: Promise<void> | undefined;
 
-  constructor(
-    dataDir: string,
-    private readonly bootstrapPasswordHash: string,
-  ) {
+  constructor(dataDir: string) {
     this.store = new JsonStore(path.join(dataDir, "users.json"), () => ({
       users: [],
       sessions: {},
     }));
   }
 
-  initialize(): Promise<void> {
-    this.ready ??= this.store.update((db) => {
-      if (db.users.length === 0) {
-        db.users.push({
-          id: randomUUID(),
-          username: "admin",
-          role: "admin",
-          status: "active",
-          runner: "primary",
-          authVersion: 1,
-          createdAt: Date.now(),
-          passwordHash: this.bootstrapPasswordHash,
-        });
-      }
-    });
-    return this.ready;
-  }
-
   async list(): Promise<User[]> {
-    await this.initialize();
     return (await this.store.read()).users.map(publicUser);
   }
 
@@ -92,7 +66,6 @@ export class UserStore {
     identity: GoogleIdentity,
     registrationOpen: boolean,
   ): Promise<{ user: User; created: boolean }> {
-    await this.initialize();
     return this.store.update((db) => {
       const existing = db.users.find((user) => user.googleSub === identity.sub);
       if (existing) {
@@ -119,54 +92,30 @@ export class UserStore {
     });
   }
 
-  async linkGoogle(
-    principal: Principal,
-    identity: GoogleIdentity,
-  ): Promise<User> {
-    await this.initialize();
+  // Local installer onboarding (or the offline CLI fallback) approves the first
+  // administrator; there is no seeded account to act as the approver.
+  async promoteFirstAdmin(id: string): Promise<User> {
     return this.store.update((db) => {
-      const user = db.users.find((entry) => entry.id === principal.userId);
-      if (
-        !user ||
-        user.status !== "active" ||
-        user.authVersion !== principal.authVersion
-      ) {
-        throw new Error("계정 상태가 변경되었습니다. 다시 로그인해 주세요.");
+      if (db.users.some(signInAdmin)) {
+        throw new Error("이미 활성 관리자가 있습니다.");
       }
+      const user = db.users.find((entry) => entry.id === id);
       if (
-        user.googleSub ||
-        db.users.some((entry) => entry.googleSub === identity.sub)
+        !user?.googleSub ||
+        user.status !== "pending" ||
+        user.role !== "user" ||
+        user.runner !== user.id
       ) {
         throw new Error(
-          "이미 연결된 Google 계정입니다. 기존 연결은 자동으로 변경하거나 병합하지 않습니다.",
+          "승인 대기 중인 Google 계정만 첫 관리자로 정할 수 있습니다.",
         );
       }
-      user.googleSub = identity.sub;
-      user.email = identity.email;
+      user.role = "admin";
+      user.status = "active";
       user.authVersion += 1;
-      revokeSessions(db, user.id);
+      revokeSessions(db, id);
       return publicUser(user);
     });
-  }
-
-  async authenticate(
-    username: string,
-    password: string,
-  ): Promise<User | undefined> {
-    await this.initialize();
-    const db = await this.store.read();
-    const user = db.users.find(
-      (entry) => entry.username === username.trim().toLowerCase(),
-    );
-    // Keep unknown-account password work comparable to a known-account failure.
-    const verified = await verifyPassword(
-      password,
-      user?.passwordHash ?? this.bootstrapPasswordHash,
-    );
-    if (!user?.passwordHash || !verified || user.status !== "active") {
-      return undefined;
-    }
-    return publicUser(user);
   }
 
   async update(
@@ -177,39 +126,21 @@ export class UserStore {
       status: User["status"];
     },
   ): Promise<User> {
-    await this.initialize();
     return this.store.update((db) => {
       requireAdmin(db, actorId);
       const user = db.users.find((entry) => entry.id === id);
       if (!user) {
         throw new Error("사용자를 찾을 수 없습니다.");
       }
+      // Only administrators who can sign in count; a leftover legacy account
+      // without a Google identity cannot recover access.
       if (
-        user.role === "admin" &&
-        user.status === "active" &&
+        signInAdmin(user) &&
         (changes.role !== "admin" || changes.status !== "active") &&
-        db.users.filter(
-          (entry) => entry.role === "admin" && entry.status === "active",
-        ).length === 1
+        db.users.filter(signInAdmin).length === 1
       ) {
         throw new Error(
           "마지막 관리자는 비활성화하거나 일반 사용자로 변경할 수 없습니다.",
-        );
-      }
-      if (
-        user.role === "admin" &&
-        user.status === "active" &&
-        user.googleSub &&
-        (changes.role !== "admin" || changes.status !== "active") &&
-        db.users.filter(
-          (entry) =>
-            entry.role === "admin" &&
-            entry.status === "active" &&
-            entry.googleSub,
-        ).length === 1
-      ) {
-        throw new Error(
-          "마지막 Google 로그인 관리자는 비활성화하거나 일반 사용자로 변경할 수 없습니다.",
         );
       }
       Object.assign(user, changes);
@@ -219,33 +150,7 @@ export class UserStore {
     });
   }
 
-  async changePassword(
-    id: string,
-    current: string,
-    password: string,
-  ): Promise<void> {
-    const user = await this.get(id);
-    if (!user || !(await this.authenticate(user.username, current))) {
-      throw new Error("현재 비밀번호가 올바르지 않습니다.");
-    }
-    const passwordHash = await hashPassword(password);
-    await this.store.update((db) => {
-      const target = db.users.find((entry) => entry.id === id);
-      if (
-        !target ||
-        target.authVersion !== user.authVersion ||
-        target.status !== "active"
-      ) {
-        throw new Error("계정 상태가 변경되었습니다. 다시 로그인해 주세요.");
-      }
-      target.passwordHash = passwordHash;
-      target.authVersion += 1;
-      revokeSessions(db, id);
-    });
-  }
-
   async revokeAccess(actorId: string, id: string): Promise<void> {
-    await this.initialize();
     await this.store.update((db) => {
       requireAdmin(db, actorId);
       const user = db.users.find((entry) => entry.id === id);
@@ -258,7 +163,6 @@ export class UserStore {
   }
 
   async createSession(user: User): Promise<{ token: string; csrf: string }> {
-    await this.initialize();
     const token = randomToken();
     const csrf = randomToken();
     await this.store.update((db) => {
@@ -289,7 +193,6 @@ export class UserStore {
   async session(
     token: string,
   ): Promise<{ user: User; csrf: string } | undefined> {
-    await this.initialize();
     const db = await this.store.read();
     const session = db.sessions[tokenHash(token)];
     if (!session || session.expiresAt <= Date.now()) {
@@ -307,7 +210,6 @@ export class UserStore {
   }
 
   async logout(token: string): Promise<void> {
-    await this.initialize();
     await this.store.update((db) => {
       delete db.sessions[tokenHash(token)];
     });
@@ -316,7 +218,6 @@ export class UserStore {
   async browserSessions(): Promise<
     Array<{ id: string; userId: string; createdAt?: number; expiresAt: number }>
   > {
-    await this.initialize();
     const db = await this.store.read();
     return Object.entries(db.sessions).flatMap(([key, session]) => {
       const user = db.users.find((entry) => entry.id === session.userId);
@@ -339,7 +240,6 @@ export class UserStore {
   }
 
   async revokeBrowserSession(actorId: string, id: string): Promise<void> {
-    await this.initialize();
     await this.store.update((db) => {
       requireAdmin(db, actorId);
       const key = Object.keys(db.sessions).find((key) => tokenHash(key) === id);
@@ -353,11 +253,11 @@ export class UserStore {
 
 function publicUser(user: StoredUser): User {
   const { passwordHash: _, googleSub, ...safe } = user;
-  return {
-    ...safe,
-    googleLinked: !!googleSub,
-    passwordLogin: !!user.passwordHash,
-  };
+  return { ...safe, googleLinked: !!googleSub };
+}
+
+function signInAdmin(user: StoredUser): boolean {
+  return user.role === "admin" && user.status === "active" && !!user.googleSub;
 }
 
 function requireAdmin(db: Database, actorId: string): void {

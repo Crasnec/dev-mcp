@@ -6,11 +6,10 @@ import path from "node:path";
 import inject from "light-my-request";
 import { createApp } from "../src/app.ts";
 import { AuditLogger } from "../src/audit.ts";
-import { hashPassword } from "../src/crypto.ts";
 import { IpcClient } from "../src/ipc-client.ts";
 import { fail, type ToolResult } from "../src/protocol.ts";
 import { UserStore } from "../src/user-store.ts";
-import { legacyUser } from "./legacy-user.ts";
+import { adminAccount, pendingAccount } from "./accounts.ts";
 
 const temporary: string[] = [];
 const password = "a-long-audit-test-password";
@@ -38,20 +37,17 @@ function logBlocks(html: string): string[] {
 async function fixture() {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "mcp-audit-live-"));
   temporary.push(dataDir);
-  const adminPasswordHash = await hashPassword(password);
-  const users = new UserStore(dataDir, adminPasswordHash);
-  const admin = (await users.list())[0]!;
-  const owner = await legacyUser(users, dataDir, "audit-owner", password);
+  const users = new UserStore(dataDir);
+  const admin = await adminAccount(users, dataDir);
+  const owner = await pendingAccount(users, dataDir, "audit-owner");
   await users.update(admin.id, owner.id, { status: "active", role: "user" });
   const app = createApp(
     {
       port: 3000,
       publicBaseUrl: "https://dev.example.test",
       dataDir,
-      runnerSocket: path.join(dataDir, "primary.sock"),
       userRunnerSocketDir: path.join(dataDir, "runners"),
       runnerStatusDir: path.join(dataDir, "status"),
-      adminPasswordHash,
       google: { clientId: "test-client", clientSecret: "test-secret" },
     },
     { users },

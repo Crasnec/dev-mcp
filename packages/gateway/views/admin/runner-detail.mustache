@@ -66,7 +66,6 @@
       <p class="help">64 MiB 이상을 권장합니다. 제한을 설정하면 swap을 사용할 수 없으며, 메모리를 초과한 프로세스는 종료될 수 있습니다.</p>
       <label>CPU 상한 (코어)<input name="cpus" type="number" min="0" max="1024" step="0.01" required value="{{limits.cpus}}"></label>
       <label>프로세스 수 상한<input name="pids" type="number" min="0" max="1048576" step="1" required value="{{limits.pids}}"></label>
-      {{^primary}}
       {{^hostWorkspace}}
       <label>총 저장공간 상한 (MiB)<input name="storageMiB" type="number" min="0" max="102400" step="1" required value="{{limits.storageMiB}}"></label>
       <p class="help">작업공간과 실행 데이터의 합계입니다. 64 MiB 이상으로 설정하면 초과 쓰기가 즉시 차단됩니다. 사용량보다 작은 값은 적용되지 않습니다. 처음 설정할 때 작업을 중지하고 저장소를 이전하며, 원본 볼륨은 보존합니다.</p>
@@ -74,8 +73,6 @@
       {{#hostWorkspace}}<input type="hidden" name="storageMiB" value="0"><p class="help">호스트 디렉터리 작업 공간에는 저장공간 상한을 적용할 수 없습니다.</p>{{/hostWorkspace}}
       <label>파일 하나당 최대 크기 (MiB)<input name="fileSizeMiB" type="number" min="0" max="1048576" step="1" required value="{{limits.fileSizeMiB}}"></label>
       <p class="help">파일 크기 제한 변경이나 메모리·CPU 제한 해제는 컨테이너를 재생성하므로 실행 중인 작업이 종료됩니다.</p>
-      {{/primary}}
-      {{#primary}}<input type="hidden" name="storageMiB" value="0"><input type="hidden" name="fileSizeMiB" value="0"><p class="help">기본 환경은 기존 호스트 공유 디렉터리를 사용합니다. 설정한 메모리·CPU 제한 해제는 Compose에서 재생성해야 합니다. 저장공간과 파일 크기 제한은 전용 사용자 환경에서 설정할 수 있습니다.</p>{{/primary}}
       <p class="help">숫자 제한의 0은 무제한입니다. 저장 후 실제 적용 결과를 확인해 주세요.</p>
       <button class="primary" type="submit">설정 적용</button>
     </form>

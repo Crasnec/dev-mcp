@@ -1,29 +1,29 @@
 # dev-mcp
 
-`dev-mcp` is a self-contained Docker Compose deployment that lets ChatGPT use MCP tools to work with files, shell commands, background processes, and Git in one host directory. It does not use an OpenAI API key, run Codex CLI, or expose the Docker socket to the gateway or runners. A separate trusted provisioner uses Docker access to create approved users' containers. An optional trusted telemetry collector observes the host and runners without restarting them.
+`dev-mcp` is a self-contained Docker Compose deployment that lets ChatGPT use MCP tools to work with files, shell commands, background processes, and Git in each account's own workspace. It does not use an OpenAI API key, run Codex CLI, or expose the Docker socket to the gateway or runners. A separate trusted provisioner uses Docker access to create one runner container per approved account. An optional trusted telemetry collector observes the host and runners without restarting them.
 
 ```text
 Internet / ChatGPT
         │ HTTPS :443
         ▼
-      Caddy ── internal HTTP ──▶ gateway ── Unix socket ──▶ runner
-                                   │                         │
-                              gateway-data              /workspace:rw
-                           (users + OAuth)               runner-data
+      Caddy ── internal HTTP ──▶ gateway ── signed IPC ──▶ dev-mcp-user-<id>   (one per account,
+                                   │      (per-account          │                 administrators
+                              gateway-data  socket + key)  /workspace:rw          included)
+                           (users + OAuth)                 dev-mcp-user-<id>-data
 ```
 
-The gateway cannot see `/workspace`. The runner cannot see OAuth state or the administrator password hash. The gateway and runner use separate Docker networks and share the runner's Unix socket volume. Trusted control-plane services publish status and telemetry through `runner-status`, mounted read-only in the gateway.
+There is no shared or "primary" runner: an administrator's environment is created and managed exactly like any other account's. The gateway cannot see any `/workspace`. Runners cannot see OAuth state, other accounts' files or keys. Every request is HMAC-signed with the account's own key, and runners refuse unsigned requests. The gateway and runners use separate Docker networks. Trusted control-plane services publish status and telemetry through `runner-status`, mounted read-only in the gateway.
 
-New users have dedicated runner containers, workspace/log storage, IPC keys, and Docker bridge networks. When the installer chooses a host workspace root during local onboarding, each new account's `/workspace` is a subdirectory of that root, so the same files can be edited from VS Code on the host. The existing runner belongs to the initial administrator. Project access follows workspace ownership: users can access every project in their own runner, and cannot access another user's workspace. Sharing an individual project between users is not supported.
+Each approved account gets a dedicated runner container, workspace and runtime storage, an IPC key and a Docker bridge network. When the installer chooses a host workspace root during local onboarding, every account's `/workspace`, the administrator's included, is a subdirectory of that root, so the same files can be edited from VS Code on the host. Project access follows workspace ownership: users can access every project in their own runner, and cannot access another user's workspace. Sharing an individual project between users is not supported. Installations from before this layout move their shared runner account with [the one-time migration](#migrating-an-older-installations-primary-runner).
 
 ## Accounts and administration
 
 - `/signup`: Google-only registration; new accounts remain pending until approved. Password signup is rejected server-side.
-- `/login` and `/account`: Google sign-in, project overview, and explicit Google linking for existing accounts. Username/password login and password-change endpoints have been removed. OAuth consent also requires an existing session or Google sign-in.
+- `/login` and `/account`: Google sign-in and project overview. Every account is created by Google sign-in, so there is no password login, password change or account linking. OAuth consent also requires an existing session or Google sign-in.
 - `/admin`: ERP-style dashboard with a persistent navigation sidebar. Each management area and detail view has its own URL (see below).
-- Existing Google-linked accounts keep their account IDs, roles and workspaces. A fresh installation completes the [local onboarding](#local-installer-onboarding) before the first administrator can sign in. `ADMIN_PASSWORD_HASH` remains a legacy configuration/storage field; it no longer enables browser or OAuth password authentication.
+- A fresh installation has no accounts until the [local onboarding](#local-installer-onboarding) approves the first Google account as administrator. No account is seeded, and `ADMIN_PASSWORD_HASH` is no longer read.
 - Existing OAuth credentials without a user identity are rejected after upgrading. Reconnect each MCP client, sign in with Google, and explicitly approve its requested permissions.
-- Browser session tokens are stored as hashes and sent in HttpOnly, SameSite=Lax cookies (Secure on HTTPS). Forms require CSRF tokens. The final active administrator, and the final active Google-linked administrator, cannot be disabled or demoted.
+- Browser session tokens are stored as hashes and sent in HttpOnly, SameSite=Lax cookies (Secure on HTTPS). Forms require CSRF tokens. The final active administrator who can sign in cannot be disabled or demoted.
 - Account status/role changes and “revoke all” invalidate previous browser sessions, OAuth codes/tokens, and MCP session reuse. Already running commands are not killed automatically.
 
 ### Google login setup
@@ -37,7 +37,7 @@ New users have dedicated runner containers, workspace/log storage, IPC keys, and
    ```
 
    Continue including the overlay for subsequent Compose operations. If Docker runs in another filesystem namespace, set `GOOGLE_CLIENT_ID_SOURCE` and `GOOGLE_CLIENT_SECRET_SOURCE` to the copied files' absolute paths **on the Docker host**. Do not point the container at an unreadable owner-only source file or make plan-app's original files public.
-4. Existing Google-linked administrators can sign in immediately. On a fresh installation, register the intended administrator through Google, then approve that verified pending account in the [local onboarding](#local-installer-onboarding). Existing authenticated users can still use **내 계정 → Google 계정 연결** to connect an unlinked account explicitly. Linking preserves its account ID, role and workspace and invalidates old sessions/MCP credentials. Accounts are never auto-merged by email.
+4. Existing administrators can sign in immediately. On a fresh installation, register the intended administrator through Google, then approve that verified pending account in the [local onboarding](#local-installer-onboarding). Accounts are identified by Google's `sub` and never merged by email.
 
 Copied files live inside a mode-0700 `data/google` directory; individual files are read-only and readable by the non-root gateway through Compose secret mounts. Neither the directory nor the source filenames are included in Git or the Docker build context. Only the gateway receives these mounts. Never print `docker compose config` with credentials supplied as literal environment values. For non-Docker runs, configure `GOOGLE_CLIENT_ID_FILE` and `GOOGLE_CLIENT_SECRET_FILE` (or the corresponding environment values, but never both).
 
@@ -57,8 +57,8 @@ docker compose logs gateway | grep onboarding_available   # one-time code
 
 Each gateway start prints a new random code to its log; only users with Docker access can read it. The page also answers only `localhost`, `127.0.0.1` and `[::1]` Host headers, uses its own SameSite=Strict session cookie and CSRF token, rejects cross-origin posts and limits code guesses. It has three steps:
 
-1. **First administrator:** sign up at `https://<MCP_DOMAIN>/signup` with the intended Google account, then choose that pending account. This applies the same checks as the CLI bootstrap below, inside the running gateway. Skipped when an active Google administrator exists.
-2. **Workspace root (optional):** an absolute path on the Docker host, for example `/srv/dev-mcp/workspaces`. It must already exist and be writable by `DEV_UID`. It must not be the primary runner's `WORKSPACE_DIR` or lie inside it, so the primary runner can never reach other accounts' files. A root that contains the primary workspace, such as `/srv/dev-mcp/workspaces` with `WORKSPACE_DIR=/srv/dev-mcp/workspaces/admin`, is allowed. The provisioner verifies the root and the page refreshes until the result is shown. Leave it unset to keep Docker volumes.
+1. **First administrator:** sign up at `https://<MCP_DOMAIN>/signup` with the intended Google account, then choose that pending account. This applies the same checks as the CLI bootstrap below, inside the running gateway. The provisioner then creates the administrator's runner like any other account's. Skipped when an active administrator exists.
+2. **Workspace root (optional):** an absolute path on the Docker host, for example `/srv/dev-mcp/workspaces`. It must already exist and be writable by `DEV_UID`. Every account's workspace, the administrator's included, becomes `<root>/<name>`. It must not lie inside another runner's host workspace, such as a [migrated administrator environment](#migrating-an-older-installations-primary-runner), so no runner can reach other accounts' files. The provisioner verifies the root and the page refreshes until the result is shown. Leave it unset to keep Docker volumes.
 3. **Complete:** available once an administrator exists and any configured root is verified. Afterwards the root cannot be changed and later gateway starts do not open the listener. Set `ONBOARDING_PORT=0` in the gateway environment to disable it entirely.
 
 An existing installation sees the onboarding once after upgrading; it skips the administrator step and only asks for the optional workspace root.
@@ -87,13 +87,13 @@ docker compose -f compose.yaml -f compose.google.yaml run --rm --no-deps gateway
 docker compose -f compose.yaml -f compose.google.yaml up -d gateway provisioner
 ```
 
-The bootstrap rejects an incorrect email, an unverified/non-pending account, or an installation that already has an active Google administrator. It approves the selected Google account with its own runner identity and records an audit event; it does not merge it with the legacy primary-workspace account. Sign in with Google again after completion. Never run the bootstrap concurrently with the gateway: account updates use a process-local queue.
+The bootstrap rejects an incorrect email, an unverified/non-pending account, or an installation that already has an active administrator. It approves the selected Google account, which keeps its own runner, and records an audit event. Sign in with Google again after completion. Never run the bootstrap concurrently with the gateway: account updates use a process-local queue.
 
 ### Management pages
 
 | URL | Management functions |
 | --- | --- |
-| `/account` | Current user's runner, projects, and Google link |
+| `/account` | Current user's runner, projects, and Google identity |
 | `/admin` | User/approval/session/client counts, pending approvals, recent activity |
 | `/admin/users` | Search and status filters; account detail, approval, suspension, role changes, revoke all authentication |
 | `/admin/projects` | Owner-specific project list and search; register existing directories; Git status; unregister or permanently delete with name confirmation |
@@ -128,9 +128,9 @@ Include your usual Compose overlays. On a host sharing an existing reverse proxy
 ./scripts/provision-user.sh <user-uuid>
 ```
 
-Run it with Docker access (`sudo` if required), after rebuilding and starting the updated gateway and primary runner. It uses the running primary runner's image. No request falls back to the primary runner when a user runner is missing.
+Run it with Docker access (`sudo` if required), after building the runner image (`docker compose build runner`) and starting the updated gateway. It uses `RUNNER_IMAGE` (default `dev-mcp-runner:latest`). No request falls back to another runner when an account's runner is missing. For accounts with a host-directory workspace, use the web controller instead: the manual helper creates volume workspaces only.
 
-The helper creates `dev-mcp-user-<uuid>`, two persistent volumes (`-workspace`, `-data`), a dedicated bridge network, and a per-user authenticated Unix socket. It does not publish ports or mount Docker credentials, the primary workspace, or other users' sockets. Git commits default to a per-user UUID identity. Each user's projects can be cloned via MCP or copied into their workspace volume by the operator.
+The helper creates `dev-mcp-user-<uuid>`, two persistent volumes (`-workspace`, `-data`), a dedicated bridge network, and a per-user authenticated Unix socket. It does not publish ports or mount Docker credentials, any other workspace, or other users' sockets. Git commits default to a per-user UUID identity. Each user's projects can be cloned via MCP or copied into their workspace volume by the operator.
 
 Set `USER_RUNNER_IPC_DIR` to a dedicated absolute path on the Docker host if the daemon uses a different filesystem namespace. Otherwise it defaults to `./data/user-ipc`. Back up this directory (including the `.key` files), `gateway-data`, and each user's workspace/data volumes.
 
@@ -140,7 +140,7 @@ The provisioner and optional telemetry collector have Docker access; the gateway
 docker stop dev-mcp-user-<uuid>
 ```
 
-After updating the runner image, stop and remove that user's container, then rerun the provisioning command. Preserve the named volumes to retain projects and logs. Do not remove volumes as part of an upgrade. Running and intentionally stopped containers are left untouched; use `docker start` to resume a stopped environment. A container left in the `created` state by a failed start is retried. Stop the provisioner during maintenance if you need to keep an active user's container absent. Dedicated runners are separate from the main Compose stack and must be stopped/backed up explicitly.
+After rebuilding the runner image, existing runners keep their old image until recreated: stop and remove a user's container and the provisioner recreates it, keeping its workspace and data. Preserve the named volumes and host workspace directories. Do not remove volumes as part of an upgrade. Running and intentionally stopped containers are left untouched; use `docker start` to resume a stopped environment. A container left in the `created` state by a failed start is retried. Stop the provisioner during maintenance if you need to keep an active user's container absent. Runners are separate from the main Compose stack and must be stopped/backed up explicitly.
 
 ## Requirements
 
@@ -164,15 +164,14 @@ cd dev-mcp
 
 The interactive setup command:
 
-- creates the host workspace directory;
-- detects the host UID and GID;
 - asks for the public domain and ACME email;
-- generates the legacy bootstrap scrypt field for configuration compatibility (this does not enable password login);
+- detects the host UID and GID;
+- prepares a host directory for account workspaces (default `~/dev-mcp-workspaces`), to confirm as the workspace root during onboarding;
 - writes a mode-`0600` `.env` file with absolute host paths;
-- builds the Fedora runner, gateway, and Caddy stack;
+- builds the runner image (`docker compose build runner`), then the gateway, provisioner and Caddy stack;
 - starts the services with Docker Compose and prints how to open the local onboarding.
 
-Host Node.js is optional. If Node.js 22 is unavailable, setup uses a temporary `node:22-alpine` container only for password hashing.
+No runner container starts with the stack: the provisioner creates the first one when onboarding approves the administrator. Host Node.js is not required.
 
 Setup uses Let's Encrypt staging by default. Once DNS, HTTPS, OAuth, and MCP tool calls work, switch to production certificates:
 
@@ -181,7 +180,7 @@ Setup uses Let's Encrypt staging by default. Once DNS, HTTPS, OAuth, and MCP too
 ./scripts/verify-deployment.sh
 ```
 
-`--force` intentionally replaces the host-specific `.env`; the OAuth and runner named volumes are preserved. Use `--no-start` to create and validate `.env` without starting containers.
+`--force` intentionally replaces the host-specific `.env`; the OAuth state and runner volumes are preserved. Use `--no-start` to create and validate `.env` without starting containers.
 
 Certificate issuance requires correct DNS and public access to ports 80 and 443. See the [Caddy HTTPS quick-start](https://caddyserver.com/docs/quick-starts/https) for the external requirements.
 
@@ -201,16 +200,13 @@ After any deployment that changes tool names, descriptions, annotations, or OAut
 
 The repository contains everything needed to rebuild the service. On the new host, clone it and run `./scripts/setup.sh`; do not copy `node_modules`, build output, a local development image, SSH credentials, or Codex state.
 
-Host-specific configuration stays in the ignored `.env` file. OAuth clients/tokens, the project registry, process logs, and Caddy certificates live in Docker named volumes and are not part of Git. A fresh host therefore starts with fresh OAuth state; refresh or recreate the ChatGPT app after DNS points to the new deployment.
+Host-specific configuration stays in the ignored `.env` file. OAuth clients/tokens, account records, runner state, project registries, process logs, and Caddy certificates live in Docker named volumes and host directories that are not part of Git. A fresh host therefore starts with fresh OAuth state; refresh or recreate the ChatGPT app after DNS points to the new deployment.
 
-To migrate state instead of starting clean, back up and restore these volumes using your normal Docker volume procedure:
+To migrate state instead of starting clean, stop the stack and runners, then back up and restore these using your normal Docker volume procedure:
 
-- `dev-mcp_gateway-data`
-- `dev-mcp_runner-data`
-- `dev-mcp_caddy-data`
-- `dev-mcp_caddy-config`
-
-Do not copy the transient `runner-ipc` volume.
+- `dev-mcp_gateway-data`, `dev-mcp_runner-status` and the `USER_RUNNER_IPC_DIR` directory (including the `.key` files)
+- each account's `dev-mcp-user-<id>-data` volume, and its `-workspace` volume or host workspace directory
+- `dev-mcp_caddy-data`, `dev-mcp_caddy-config`
 
 ## Manual configuration
 
@@ -219,20 +215,14 @@ If you do not want the setup script:
 ```bash
 cp .env.example .env
 chmod 600 .env
-npm run password-hash  # requires local Node.js 22 and a TTY
 $EDITOR .env
 docker compose config --quiet
+docker compose build runner
 docker compose up -d --build
 ./scripts/verify-deployment.sh
 ```
 
-Set `WORKSPACE_DIR` and `CADDYFILE_PATH` to absolute paths visible to the Docker daemon. Set `DEV_UID` and `DEV_GID` to the owner of the workspace files.
-
-For optional resource limits, add the example override explicitly:
-
-```bash
-docker compose -f compose.yaml -f compose.limits.yaml.example up -d --build
-```
+Set `CADDYFILE_PATH` to an absolute path visible to the Docker daemon. Set `DEV_UID` and `DEV_GID` to the host owner of workspace files; they are built into the runner image. Resource limits are set per account in **실행 환경 → 사용자 상세**.
 
 ## MCP tools
 
@@ -290,14 +280,15 @@ Each tool publishes its OAuth policy. Insufficient-scope results include an MCP 
 
 ## Security boundary
 
-- Only the runner receives `${WORKSPACE_DIR}` as `/workspace:rw`. The workspace root itself cannot be registered as a project.
+- Each runner receives only its own account's workspace as `/workspace:rw`. The workspace root itself cannot be registered as a project.
+- Runners accept only requests HMAC-signed with their account's key, read from a per-account file; the gateway chooses the runner from the authenticated account.
 - File paths receive lexical checks followed by `realpath` checks. Absolute paths, parent traversal, symlink escapes, and patch escapes are rejected.
 - Public cloning accepts credential-free HTTPS URLs from GitHub, GitLab, and Bitbucket. SSH, URL credentials, loopback, and private targets are rejected.
 - Neither service receives the Docker socket, SSH keys, host home, `~/.codex`, or Codex credentials.
 - Child processes receive a clean `PATH`, runner-only `HOME`, locale, and optional Git author values. Gateway variables and OAuth tokens are not inherited.
 - Gateway and runner use read-only root filesystems, dropped capabilities, non-root users, and `no-new-privileges`.
 - The runner image includes Bash, Git, ripgrep, Node.js, Python, Rust, and common native build tools, but no Docker CLI, Codex CLI, or `sudo`.
-- Compose applies no default CPU, memory, or command-duration limit. It limits synchronous commands to four and background processes to eight by default; `.env` can change these values.
+- Runners have no default CPU, memory, or command-duration limit; set limits per account on the runner page. Each runner allows four synchronous commands and eight background processes.
 - Audit records are stored in `gateway-data/audit.jsonl`. Patch bodies and continuation/token values are omitted; command strings are limited to 2,000 characters.
 
 This service deliberately exposes arbitrary shell execution and destructive file operations to an OAuth-authorized client. Secure administrator Google accounts and consider firewall, rate limiting, or an additional access-control layer.
@@ -347,7 +338,7 @@ Administrators can use **실행 환경 → 사용자 상세** to create, start, 
 
 The gateway writes requests into `gateway-data/runner-controls.json`. The provisioner validates account/container ownership, executes fixed Docker operations and atomically publishes observations into the separate `runner-status` volume (read-only in the gateway). It still has no HTTP listener. User processes never receive the control/status volumes or Docker socket. Restart requests are not replayed after an ambiguous controller crash; check the actual state and submit a new request.
 
-Network blocking disconnects the runner from Docker networks; authenticated Unix-socket management remains available. Nonzero memory limits disable swap. CPU and PID limits are enforced by Docker/cgroups. Reducing memory can terminate processes. File size limits use `RLIMIT_FSIZE`. Changing these or resetting an existing memory/CPU limit to unlimited requires container replacement; volumes are preserved. Storage limit changes can stop running jobs. The existing primary runner's host bind mount is never automatically migrated; persistent storage and per-file limits apply to dedicated user runners. Resetting an already-set primary memory/CPU limit to unlimited requires an operator-managed Compose recreation; the web controller rejects that change before mutating it.
+Network blocking disconnects the runner from Docker networks; authenticated Unix-socket management remains available. Nonzero memory limits disable swap. CPU and PID limits are enforced by Docker/cgroups. Reducing memory can terminate processes. File size limits use `RLIMIT_FSIZE`. Changing these or resetting an existing memory/CPU limit to unlimited requires container replacement; volumes and host workspace directories are preserved. Storage limit changes can stop running jobs. These operations work the same for administrators' runners.
 
 #### Host-directory workspaces (VS Code)
 
@@ -357,7 +348,30 @@ An account whose container was removed but whose `-workspace` volume remains kee
 
 To open workspaces directly, set **운영 설정 → VS Code 연결**. The SSH host is a Remote - SSH host or `~/.ssh/config` alias. The optional path mapping rewrites a host path prefix for editors that see the files elsewhere, such as a dev container. The page then shows a `vscode://vscode-remote/ssh-remote+<host><path>` link. Ordinary users never see host paths.
 
-The primary runner must never see dedicated workspaces. Saving a root inside, or equal to, its `WORKSPACE_DIR` is rejected. The provisioner also compares the kernel-resolved locations of both mounts from `/proc/self/mountinfo` inside the helper, so a symlink or bind alias cannot hide an overlap. It repeats that comparison before every start, restart and recreation. While the primary workspace is mounted read-only in the helper for that comparison, its files are never read. A root that contains the primary workspace is allowed: the primary runner then sees only its own subdirectory.
+No runner may see another account's workspace. A host workspace outside the root, such as a migrated administrator environment (recorded as `{path, legacy: true}`), is reserved. A root inside or equal to a reserved workspace is rejected on save. The provisioner also compares the kernel-resolved locations of the root and every reserved workspace from `/proc/self/mountinfo` inside the helper, so a symlink or bind alias cannot hide an overlap. It repeats that comparison before every start, restart and recreation. Reserved workspaces are mounted read-only in the helper only for that comparison; their files are never read. A reserved workspace inside the root is allowed: its runner sees only its own directory, and existing directories are never assigned.
+
+### Migrating an older installation's primary runner
+
+Installations from before this layout ran a shared Compose `runner` (the "primary runner") with `${WORKSPACE_DIR}` and an account whose `runner` is `"primary"`. The new gateway and provisioner skip such an account, so run the one-time migration when deploying this version. It requires exactly one active, Google-linked account on the primary runner, and keeps the same host directory as that account's workspace.
+
+```bash
+docker compose build runner gateway provisioner        # include your overlays
+docker compose ... stop gateway provisioner
+./scripts/migrate-primary-runner.sh                     # dry run: prints the plan
+./scripts/migrate-primary-runner.sh --apply
+docker compose ... up -d --no-deps gateway provisioner
+```
+
+`--apply` does the following:
+
+- stops the old runner container;
+- copies its runtime volume (project registry and IDs, process logs, output cursors, home) into `dev-mcp-user-<id>-data`;
+- records the old workspace as a reserved host workspace;
+- sets the account's `runner` to its ID and drops the legacy password hash (backup: `users.json.pre-primary-migration`).
+
+The provisioner then creates `dev-mcp-user-<id>` with the old directory at `/workspace` and a new signed IPC key. Sessions and OAuth credentials stay valid. Running background processes are not restarted, Git commits use the per-account default identity, and the network becomes a per-account bridge.
+
+Nothing is deleted: the old container, its runtime volume and the original `users.json` remain for rollback. The script prints the rollback steps. Remove them only after the new runner is verified.
 
 #### Persistent storage hard quota
 

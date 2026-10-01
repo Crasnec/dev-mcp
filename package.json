@@ -15,8 +15,7 @@
     "style": "node scripts/check-style.mjs && prettier --check 'packages/**/*.{ts,json,css}' 'scripts/*.mjs' '*.{json,ts}'",
     "typecheck": "tsc -b --pretty false",
     "start:gateway": "node packages/gateway/dist/index.js",
-    "start:runner": "node packages/runner/dist/index.js",
-    "password-hash": "node scripts/hash-password.mjs"
+    "start:runner": "node packages/runner/dist/index.js"
   },
   "engines": {
     "node": ">=22"

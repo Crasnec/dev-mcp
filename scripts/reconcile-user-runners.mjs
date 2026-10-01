@@ -26,7 +26,7 @@ const statusDir = process.env.RUNNER_STATUS_DIR ?? "/runner-status";
 const statusFile = path.join(statusDir, "status.json");
 const helper = fileURLToPath(new URL("./provision-user.sh", import.meta.url));
 const once = process.argv.includes("--once");
-let gatewayId, primaryId;
+let gatewayId;
 const docker = async (...args) =>
   (
     await execute("docker", args, { timeout: 300_000, maxBuffer: 1024 * 1024 })
@@ -66,7 +66,7 @@ const operations = new RunnerOperations(
       env: {
         ...process.env,
         GATEWAY_CONTAINER_ID: gatewayId,
-        PRIMARY_CONTAINER_ID: primaryId,
+        RUNNER_IMAGE_ID: await operations.runnerImage(),
         RUNNER_MEMORY_MIB: String(limits?.memoryMiB ?? 0),
         RUNNER_CPUS: String(limits?.cpus ?? 0),
         RUNNER_PIDS: String(limits?.pids ?? 0),
@@ -89,19 +89,14 @@ const operations = new RunnerOperations(
 
 async function reconcile() {
   const accounts = await users();
-  if (!accounts.length) {
-    return true;
-  }
-  gatewayId = await serviceId("gateway");
-  primaryId = await serviceId("runner");
-  const desired = await readJson(controlsFile, { entries: {} });
   const status = await readJson(statusFile, { entries: {} });
   let ok = true;
-  // Installation-level observations for the local onboarding and settings.
+  // Installation-level observations for the local onboarding and settings,
+  // also before the first account exists.
   try {
     status.installation = {
-      workspaceRoot: await operations.probeRoot(primaryId),
-      primaryWorkspace: await operations.primaryWorkspace(primaryId),
+      workspaceRoot: await operations.probeRoot(),
+      reservedWorkspaces: await operations.reservedWorkspaces(),
       observedAt: Date.now(),
     };
   } catch {
@@ -110,6 +105,11 @@ async function reconcile() {
     log("installation_observation_failed");
   }
   await writeJson(statusFile, status);
+  if (!accounts.length) {
+    return ok;
+  }
+  gatewayId = await serviceId("gateway");
+  const desired = await readJson(controlsFile, { entries: {} });
   for (const user of accounts) {
     let previous = status.entries[user.id] ?? {};
     const request = desired.entries[user.id];
@@ -131,7 +131,7 @@ async function reconcile() {
         status.entries[user.id] = previous;
         await writeJson(statusFile, status);
         try {
-          await operations.apply(current, request, primaryId);
+          await operations.apply(current, request);
           previous.phase = "applied";
           previous.message = "운영 요청을 적용했습니다.";
           log("runner_operation_applied", user.id);
@@ -151,17 +151,16 @@ async function reconcile() {
         previous.message =
           "관리 서비스가 작업 도중 재시작되었습니다. 실제 상태를 확인한 뒤 다시 요청해 주세요.";
       }
-      const { info, name } = await operations.owned(current, primaryId);
+      const { info, name } = await operations.owned(current);
       if (
         request?.action !== "stop" &&
-        current.runner !== "primary" &&
         current.status === "active" &&
         (!info || (!request && info.State.Status === "created"))
       ) {
         // Legacy automatic creation, including retry on the next pass.
         const latest = (await users()).find((entry) => entry.id === user.id);
         if (latest?.status === "active") {
-          await operations.create(current, request?.limits, primaryId);
+          await operations.create(current, request?.limits);
           log("user_runner_provisioned", user.id);
         }
       }
@@ -179,7 +178,7 @@ async function reconcile() {
           await docker("start", name);
         }
       }
-      const observation = await operations.observe(current, primaryId);
+      const observation = await operations.observe(current);
       if (
         request?.action === "apply" &&
         previous.phase === "applied" &&

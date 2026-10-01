@@ -30,13 +30,12 @@
   {{#rootReady}}<p class="context-message" role="status"><code>{{root}}</code> · {{rootMessage}}</p>{{/rootReady}}
   {{#rootInvalid}}<p class="error-banner" role="alert"><code>{{root}}</code> · {{rootMessage}}</p>{{/rootInvalid}}
   {{/root}}
-  {{#overlap}}<p class="error-banner" role="alert">이 경로는 기본 실행 환경의 작업 공간(<code>{{primary}}</code>) 안에 있어 쓸 수 없습니다. 기본 실행 환경이 다른 계정의 파일에 접근하지 않도록 바깥 경로를 지정해 주세요.</p>{{/overlap}}
-  {{#primaryInside}}<p class="help">기본 실행 환경의 작업 공간(<code>{{primary}}</code>)이 이 루트 안에 있습니다. 이미 있는 디렉터리는 다른 계정에 배정되지 않습니다.</p>{{/primaryInside}}
+  {{#overlap}}<p class="error-banner" role="alert">이 경로는 다른 실행 환경이 쓰는 호스트 작업 공간(<code>{{overlap}}</code>) 안에 있어 쓸 수 없습니다. 그 실행 환경이 다른 계정의 파일에 접근하지 않도록 바깥 경로를 지정해 주세요.</p>{{/overlap}}
   <form method="post" action="/workspace-root">
     {{> partials/csrf}}
     <label for="workspace-root">Docker 호스트 기준 절대경로</label>
     <input id="workspace-root" type="text" name="workspaceRoot" maxlength="512" autocomplete="off" spellcheck="false" placeholder="/srv/dev-mcp/workspaces" value="{{rootInput}}">
-    <p class="field-hint">디렉터리는 호스트에 미리 있어야 하고, 실행 환경 사용자(DEV_UID)가 쓸 수 있어야 합니다. 기본 실행 환경의 작업 공간{{#primary}}(<code>{{primary}}</code>){{/primary}} 안은 쓸 수 없습니다.</p>
+    <p class="field-hint">디렉터리는 호스트에 미리 있어야 하고, 실행 환경 사용자(DEV_UID)가 쓸 수 있어야 합니다. 이미 있는 디렉터리는 계정에 배정되지 않고, 다른 실행 환경의 호스트 작업 공간 안은 쓸 수 없습니다.</p>
     <div class="settings-actions"><button class="primary" type="submit" name="mode" value="host">경로 저장하고 확인</button>{{#root}}<button type="submit" name="mode" value="none" formnovalidate>사용 안 함</button>{{/root}}</div>
   </form>
 </section>

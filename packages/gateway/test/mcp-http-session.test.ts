@@ -6,7 +6,7 @@ import inject from "light-my-request";
 import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
 import { createApp } from "../src/app.ts";
 import { UserStore } from "../src/user-store.ts";
-import { legacyUser } from "./legacy-user.ts";
+import { adminAccount, pendingAccount } from "./accounts.ts";
 import { AuthStore } from "../src/auth-store.ts";
 
 const temporary: string[] = [];
@@ -23,8 +23,8 @@ describe("MCP HTTP sessions", () => {
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "mcp-http-session-"));
     temporary.push(dataDir);
     const store = new AuthStore(dataDir);
-    const users = new UserStore(dataDir, "unused-in-this-test");
-    const admin = (await users.list())[0]!;
+    const users = new UserStore(dataDir);
+    const admin = await adminAccount(users, dataDir);
     const principal = { userId: admin.id, authVersion: admin.authVersion };
     const client = await store.registerClient("session-test", [
       "https://chat.example.test/oauth/callback",
@@ -38,8 +38,6 @@ describe("MCP HTTP sessions", () => {
       port: 3000,
       publicBaseUrl: "https://dev.example.test",
       dataDir,
-      runnerSocket: path.join(dataDir, "missing.sock"),
-      adminPasswordHash: "unused-in-this-test",
     });
 
     const initialized = await mcpPost(app, issued.accessToken, {
@@ -100,12 +98,7 @@ describe("MCP HTTP sessions", () => {
     );
     expect(afterRefresh.statusCode).toBe(200);
 
-    const other = await legacyUser(
-      users,
-      dataDir,
-      "another-user",
-      "another-long-password",
-    );
+    const other = await pendingAccount(users, dataDir, "another-user");
     const activeOther = await users.update(admin.id, other.id, {
       status: "active",
       role: "user",

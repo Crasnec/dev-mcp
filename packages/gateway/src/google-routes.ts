@@ -1,6 +1,6 @@
 import express, { type Express } from "express";
 import type { GatewayConfig } from "./config.ts";
-import type { UserStore, Principal } from "./user-store.ts";
+import type { UserStore } from "./user-store.ts";
 import type { SettingsStore } from "./settings-store.ts";
 import type { AuditLogger } from "./audit.ts";
 import type { GoogleProvider } from "./google-login.ts";
@@ -16,7 +16,6 @@ interface LoginFlow {
   verifier: string;
   expiresAt: number;
   returnTo: string;
-  link?: Principal & { csrf: string };
 }
 
 export function installGoogleRoutes(
@@ -64,14 +63,6 @@ export function installGoogleRoutes(
           "Google 로그인이 아직 설정되지 않았습니다. 관리자에게 문의해 주세요.",
         );
       }
-      const link = field(req, "mode") === "link";
-      if (link && (!session || session.user.googleLinked)) {
-        return fail(
-          res,
-          403,
-          "로그인한 기존 계정에서만 Google 계정을 연결할 수 있습니다.",
-        );
-      }
       const rateKey = "google-start:" + (req.ip ?? "unknown");
       if (limiter.blocked(rateKey)) {
         res.setHeader("Retry-After", "900");
@@ -105,15 +96,6 @@ export function installGoogleRoutes(
         verifier,
         expiresAt: Date.now() + 10 * 60_000,
         returnTo,
-        ...(link && session
-          ? {
-              link: {
-                userId: session.user.id,
-                authVersion: session.user.authVersion,
-                csrf: session.csrf,
-              },
-            }
-          : {}),
       });
       res.cookie(flowCookie, binding, {
         ...browser.cookieOptions,
@@ -165,35 +147,17 @@ export function installGoogleRoutes(
         flow.nonce,
         flow.verifier,
       );
-      let user;
-      if (flow.link) {
-        const current = await browser.current(req);
-        if (
-          !current ||
-          current.user.id !== flow.link.userId ||
-          current.csrf !== flow.link.csrf
-        ) {
-          return fail(
-            res,
-            403,
-            "계정을 연결하려면 같은 계정으로 로그인한 상태를 유지해 주세요.",
-          );
-        }
-        user = await users.linkGoogle(flow.link, identity);
-        await audit.write({ event: "user_google_linked", userId: user.id });
-      } else {
-        const result = await users.googleAccount(
-          identity,
-          (await settings.read()).registrationOpen,
-        );
-        user = result.user;
-        if (result.created) {
-          await audit.write({
-            event: "user_signup",
-            userId: user.id,
-            provider: "google",
-          });
-        }
+      const result = await users.googleAccount(
+        identity,
+        (await settings.read()).registrationOpen,
+      );
+      const user = result.user;
+      if (result.created) {
+        await audit.write({
+          event: "user_signup",
+          userId: user.id,
+          provider: "google",
+        });
       }
       if (user.status === "pending") {
         return sendPage(res, 200, pendingPage());
@@ -219,7 +183,7 @@ export function installGoogleRoutes(
       });
       return res.redirect(
         303,
-        flow.returnTo === "/account" && user.role === "admin" && !flow.link
+        flow.returnTo === "/account" && user.role === "admin"
           ? "/admin"
           : flow.returnTo,
       );

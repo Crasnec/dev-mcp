@@ -9,7 +9,7 @@ import { UserStore } from "./user-store.ts";
 
 const config = loadConfig();
 await mkdir(config.dataDir, { recursive: true, mode: 0o700 });
-const users = new UserStore(config.dataDir, config.adminPasswordHash);
+const users = new UserStore(config.dataDir);
 const settings = new SettingsStore(config.dataDir);
 const audit = new AuditLogger(config.dataDir);
 const installation = new InstallationStore(
@@ -31,7 +31,6 @@ const servers = [
 
 // Compose publishes this port on the host's loopback interface only; Caddy
 // never proxies it. Completed installations do not open it again.
-await users.initialize();
 if (
   config.onboardingPort &&
   !(await installation.read()).onboardingCompletedAt

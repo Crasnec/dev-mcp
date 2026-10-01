@@ -4,11 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import inject from "light-my-request";
 import { createApp } from "../src/app.ts";
-import { hashPassword } from "../src/crypto.ts";
 import { IpcClient } from "../src/ipc-client.ts";
 import { fail, type ToolResult } from "../src/protocol.ts";
 import { UserStore } from "../src/user-store.ts";
-import { legacyUser } from "./legacy-user.ts";
+import { adminAccount, pendingAccount } from "./accounts.ts";
 
 const temporary: string[] = [];
 const password = "a-long-live-test-password";
@@ -34,18 +33,15 @@ function success(data: unknown, extra: Partial<ToolResult> = {}): ToolResult {
 async function fixture() {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "mcp-live-http-"));
   temporary.push(dataDir);
-  const adminPasswordHash = await hashPassword(password);
-  const users = new UserStore(dataDir, adminPasswordHash);
-  const admin = (await users.list())[0]!;
+  const users = new UserStore(dataDir);
+  const admin = await adminAccount(users, dataDir);
   const app = createApp(
     {
       port: 3000,
       publicBaseUrl: "https://dev.example.test",
       dataDir,
-      runnerSocket: path.join(dataDir, "primary.sock"),
       userRunnerSocketDir: path.join(dataDir, "runners"),
       runnerStatusDir: path.join(dataDir, "status"),
-      adminPasswordHash,
       google: { clientId: "test-client", clientSecret: "test-secret" },
     },
     { users },
@@ -95,7 +91,7 @@ describe("automatic process and runner updates over HTTP", () => {
     expect(anonymous.headers.location).toBeUndefined();
     expect(ipc).not.toHaveBeenCalled();
 
-    const regular = await legacyUser(users, dataDir, "regular", password);
+    const regular = await pendingAccount(users, dataDir, "regular");
     await users.update(admin.id, regular.id, {
       role: "user",
       status: "active",
@@ -108,7 +104,7 @@ describe("automatic process and runner updates over HTTP", () => {
 
   it("reads only the requested owner's process and refuses missing owners or processes before logs", async () => {
     const { users, admin, dataDir, ipc, state, process, get } = await fixture();
-    const owner = await legacyUser(users, dataDir, "alice", password);
+    const owner = await pendingAccount(users, dataDir, "alice");
     const url = "/admin/processes/" + owner.id + "/" + process.id + "/live";
     const response = await get(url);
     expect(response.statusCode).toBe(200);

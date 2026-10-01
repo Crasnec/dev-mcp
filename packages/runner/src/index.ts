@@ -6,12 +6,12 @@ import { RunnerRuntime } from "./runtime.ts";
 const config = loadConfig();
 const runtime = new RunnerRuntime(config);
 await runtime.initialize();
-const secret = config.ipcSecretFile
-  ? (await readFile(config.ipcSecretFile, "utf8")).trim()
-  : undefined;
-if (secret !== undefined && !/^[a-f0-9]{64}$/.test(secret)) {
-  throw new Error("Invalid runner IPC key");
+// The provisioner issues one key per account runner; unsigned IPC is never
+// accepted.
+if (!config.ipcSecretFile) {
+  throw new Error("RUNNER_IPC_SECRET_FILE is required");
 }
+const secret = (await readFile(config.ipcSecretFile, "utf8")).trim();
 const server = await startIpcServer(config.socketPath, runtime, secret);
 console.log(
   JSON.stringify({ event: "runner_ready", socket: config.socketPath }),

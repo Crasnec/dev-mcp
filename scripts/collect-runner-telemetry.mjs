@@ -275,21 +275,19 @@ export function validAccount(user) {
     user &&
     typeof user.id === "string" &&
     UUID.test(user.id) &&
-    (user.runner === "primary" || user.runner === user.id) &&
+    user.runner === user.id &&
     ["active", "pending", "disabled"].includes(user.status)
   );
 }
-export function ownsContainer(user, info, project) {
+export function ownsContainer(user, info) {
   if (!validAccount(user) || !info || !ID.test(info.Id ?? "")) {
     return false;
   }
   const labels = info.Config?.Labels ?? {};
-  return user.runner === "primary"
-    ? labels["com.docker.compose.project"] === project &&
-        labels["com.docker.compose.service"] === "runner" &&
-        labels["com.docker.compose.oneoff"] === "False"
-    : info.Name === "/dev-mcp-user-" + user.id &&
-        labels["dev-mcp.user"] === user.id;
+  return (
+    info.Name === "/dev-mcp-user-" + user.id &&
+    labels["dev-mcp.user"] === user.id
+  );
 }
 
 export function aggregateMember(user, hasContainer) {
@@ -477,19 +475,10 @@ export class Collector {
         readBoundedJson(path.join(this.statusDirectory, "status.json")),
       ),
       optional(async () => {
-        const [primary, dedicated] = await Promise.all([
-          this.docker.list({
-            label: [
-              `com.docker.compose.project=${this.project}`,
-              "com.docker.compose.service=runner",
-              "com.docker.compose.oneoff=False",
-            ],
-          }),
-          this.docker.list({ label: ["dev-mcp.user"] }),
-        ]);
-        if (!Array.isArray(primary) || !Array.isArray(dedicated))
+        const dedicated = await this.docker.list({ label: ["dev-mcp.user"] });
+        if (!Array.isArray(dedicated))
           throw new Error("Invalid Docker container list");
-        return { primary, dedicated };
+        return { dedicated };
       }),
     ]);
     const databaseReady = Array.isArray(db?.users);
@@ -498,11 +487,9 @@ export class Collector {
       ...new Map(accounts.map((user) => [user.id, user])).values(),
     ];
     const candidates = (user) =>
-      user.runner === "primary"
-        ? (containers?.primary ?? [])
-        : (containers?.dedicated ?? []).filter((entry) =>
-            entry.Names?.includes("/dev-mcp-user-" + user.id),
-          );
+      (containers?.dedicated ?? []).filter((entry) =>
+        entry.Names?.includes("/dev-mcp-user-" + user.id),
+      );
     const included = unique.filter((user) =>
       aggregateMember(user, candidates(user).length > 0),
     );
@@ -524,7 +511,7 @@ export class Collector {
         if (matches.length !== 1 || !ID.test(matches[0].Id ?? ""))
           throw new Error("Ambiguous runner identity");
         const info = await this.docker.inspect(matches[0].Id);
-        if (!ownsContainer(user, info, this.project))
+        if (!ownsContainer(user, info))
           throw new Error("Runner identity mismatch");
         let stats = null;
         if (info.State.Running) {
@@ -534,7 +521,7 @@ export class Collector {
           // Restart between inspect and stats must not produce a cross-generation delta.
           const after = await this.docker.inspect(info.Id);
           if (
-            !ownsContainer(user, after, this.project) ||
+            !ownsContainer(user, after) ||
             after.State.StartedAt !== info.State.StartedAt ||
             after.State.Running !== info.State.Running
           )
@@ -690,7 +677,7 @@ export class Collector {
         if (
           !this.stopping &&
           this.epochs.get(user.id) === epoch &&
-          ownsContainer(user, after, this.project) &&
+          ownsContainer(user, after) &&
           after.Id + ":" + after.State.StartedAt === epoch
         ) {
           this.storage.set(user.id, {

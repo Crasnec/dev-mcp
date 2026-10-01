@@ -13,12 +13,10 @@ export interface GatewayConfig {
   port: number;
   publicBaseUrl: string;
   dataDir: string;
-  runnerSocket: string;
   userRunnerSocketDir?: string;
   runnerStatusDir?: string;
   // Local-only onboarding listener; 0 disables it.
   onboardingPort?: number;
-  adminPasswordHash: string;
   google?: { clientId: string; clientSecret: string };
 }
 
@@ -54,9 +52,6 @@ export function loadConfig(
       "PUBLIC_BASE_URL must use HTTPS (HTTP is allowed only for local tests)",
     );
   }
-  if (!env.ADMIN_PASSWORD_HASH) {
-    throw new Error("ADMIN_PASSWORD_HASH is required");
-  }
   const clientId = credential(env, "GOOGLE_CLIENT_ID");
   const clientSecret = credential(env, "GOOGLE_CLIENT_SECRET");
   if (!!clientId !== !!clientSecret) {
@@ -66,13 +61,11 @@ export function loadConfig(
     port,
     publicBaseUrl,
     dataDir: path.resolve(env.GATEWAY_DATA_DIR ?? "/var/lib/dev-mcp"),
-    runnerSocket: path.resolve(env.RUNNER_SOCKET ?? "/ipc/runner.sock"),
     userRunnerSocketDir: path.resolve(
       env.USER_RUNNER_SOCKET_DIR ?? "/user-ipc",
     ),
     runnerStatusDir: path.resolve(env.RUNNER_STATUS_DIR ?? "/runner-status"),
     onboardingPort,
-    adminPasswordHash: env.ADMIN_PASSWORD_HASH,
     ...(clientId && clientSecret ? { google: { clientId, clientSecret } } : {}),
   };
 }

@@ -6,11 +6,15 @@ import type { RpcRequest, RpcResponse } from "./protocol.ts";
 import { MAX_IPC_MESSAGE_BYTES, fail } from "./protocol.ts";
 import type { RunnerRuntime } from "./runtime.ts";
 
+// Every request must be HMAC-signed with the runner's own key.
 export async function startIpcServer(
   socketPath: string,
   runtime: RunnerRuntime,
-  secret?: string,
+  secret: string,
 ): Promise<net.Server> {
+  if (!/^[a-f0-9]{64}$/.test(secret)) {
+    throw new Error("Invalid runner IPC key");
+  }
   await mkdir(path.dirname(socketPath), { recursive: true, mode: 0o777 });
   await rm(socketPath, { force: true });
   const server = net.createServer((socket) => {
@@ -59,31 +63,29 @@ export async function startIpcServer(
 async function handleLine(
   line: string,
   runtime: RunnerRuntime,
-  secret?: string,
+  secret: string,
 ): Promise<RpcResponse> {
   let request: RpcRequest;
   try {
     request = JSON.parse(line) as RpcRequest;
-    if (secret) {
-      const payload = request.params?.payload;
-      const signature = request.params?.signature;
-      if (
-        request.method !== "__authenticated_call" ||
-        typeof payload !== "string" ||
-        typeof signature !== "string"
-      ) {
-        throw new Error("Runner authentication required");
-      }
-      const expected = createHmac("sha256", secret).update(payload).digest();
-      const actual = Buffer.from(signature, "hex");
-      if (
-        actual.length !== expected.length ||
-        !timingSafeEqual(actual, expected)
-      ) {
-        throw new Error("Invalid runner authentication");
-      }
-      request = JSON.parse(payload) as RpcRequest;
+    const payload = request.params?.payload;
+    const signature = request.params?.signature;
+    if (
+      request.method !== "__authenticated_call" ||
+      typeof payload !== "string" ||
+      typeof signature !== "string"
+    ) {
+      throw new Error("Runner authentication required");
     }
+    const expected = createHmac("sha256", secret).update(payload).digest();
+    const actual = Buffer.from(signature, "hex");
+    if (
+      actual.length !== expected.length ||
+      !timingSafeEqual(actual, expected)
+    ) {
+      throw new Error("Invalid runner authentication");
+    }
+    request = JSON.parse(payload) as RpcRequest;
     if (
       !request ||
       typeof request.id !== "string" ||

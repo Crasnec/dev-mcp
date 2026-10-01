@@ -31,10 +31,13 @@ type Answers = {
   mkdir?: (name: string) => string;
   verify?: string;
   volumes?: string;
-  primary?: string | null;
+  owned?: string;
   fail?: (args: string[]) => boolean;
 };
-const primaryWorkspace = "/home/me/workspace";
+const runnerImage = "sha256:" + "a".repeat(64);
+// An administrator environment migrated from an older installation.
+const legacyWorkspace = "/home/me/workspace";
+const otherId = "00000000-0000-4000-8000-000000000002";
 async function fixture(
   answers: Answers = {},
   workspaceRoot: string | null = root,
@@ -60,19 +63,8 @@ async function fixture(
     if (answers.fail?.(args)) {
       throw new Error("docker failed");
     }
-    if (args[0] === "inspect" && args[1] === "--format") {
-      return "sha256:runner-image";
-    }
-    if (args[0] === "inspect") {
-      const source =
-        answers.primary === undefined ? primaryWorkspace : answers.primary;
-      return JSON.stringify([
-        {
-          Mounts: source
-            ? [{ Type: "bind", Source: source, Destination: "/workspace" }]
-            : [],
-        },
-      ]);
+    if (args[0] === "image" && args[1] === "inspect") {
+      return runnerImage;
     }
     if (args[0] === "volume" && args[1] === "ls") {
       return answers.volumes ?? "";
@@ -86,7 +78,9 @@ async function fixture(
           ? (answers.mkdir?.(target!) ?? "created")
           : operation === "verify"
             ? (answers.verify ?? "ok")
-            : "removed";
+            : operation === "owned"
+              ? (answers.owned ?? "ok")
+              : "removed";
     }
     return "";
   });
@@ -178,7 +172,7 @@ it("creates new runners in an exclusive host directory under a verified root", a
   const { ops, provision, registry, helperCalls, docker } = await fixture({
     mkdir: (target) => (target === "mina.kim" ? "exists" : "created"),
   });
-  await ops.create(user, undefined, "primary-id");
+  await ops.create(user, undefined);
   const dir = root + "/mina.kim-2";
   expect(provision).toHaveBeenCalledWith(user, undefined, false, false, dir);
   expect(await registry()).toEqual({
@@ -194,7 +188,7 @@ it("creates new runners in an exclusive host directory under a verified root", a
       "ALL",
       "no-new-privileges:true",
       `type=bind,source=${root},target=/workspace-root`,
-      "sha256:runner-image",
+      runnerImage,
     ]),
   );
   expect(helper).not.toContain("--privileged");
@@ -206,7 +200,7 @@ it("keeps an existing workspace volume instead of hiding its data", async () => 
   const { ops, provision, helperCalls } = await fixture({
     volumes: name + "-workspace",
   });
-  await ops.create(user, undefined, "primary-id");
+  await ops.create(user, undefined);
   expect(provision).toHaveBeenCalledWith(
     user,
     undefined,
@@ -219,15 +213,13 @@ it("keeps an existing workspace volume instead of hiding its data", async () => 
 
 it("does not fall back to volumes while a configured root is unusable", async () => {
   const { ops, provision } = await fixture({ probe: "not_writable" });
-  await expect(ops.create(user, undefined, "primary-id")).rejects.toThrow(
-    "작업 공간 루트",
-  );
+  await expect(ops.create(user, undefined)).rejects.toThrow("작업 공간 루트");
   expect(provision).not.toHaveBeenCalled();
 });
 
 it("keeps volume behaviour when no root is configured", async () => {
   const { ops, provision, helperCalls } = await fixture({}, null);
-  await ops.create(user, undefined, "primary-id");
+  await ops.create(user, undefined);
   expect(provision).toHaveBeenCalledWith(
     user,
     undefined,
@@ -251,15 +243,14 @@ it("keeps host directories across recreation and rejects storage quotas", async 
     fileSizeMiB: 64,
     storageMiB: 0,
   };
-  await ops.apply(user, { action: "apply", limits }, "primary-id");
+  await ops.apply(user, { action: "apply", limits });
   expect(provision).toHaveBeenCalledWith(user, limits, false, false, dir);
   expect(helperCalls("verify")).toHaveLength(1);
   await expect(
-    ops.apply(
-      user,
-      { action: "apply", limits: { ...limits, storageMiB: 1024 } },
-      "primary-id",
-    ),
+    ops.apply(user, {
+      action: "apply",
+      limits: { ...limits, storageMiB: 1024 },
+    }),
   ).rejects.toThrow("저장공간 상한");
 });
 
@@ -267,23 +258,19 @@ it("refuses to start a host workspace that is no longer a plain owned directory"
   const { ops, docker, info } = await fixture({ verify: "invalid" });
   await ops.recordWorkspace(user, { root, name: "mina" });
   hostInfo(info, root + "/mina");
-  await expect(
-    ops.apply(user, { action: "restart" }, "primary-id"),
-  ).rejects.toThrow("실제 디렉터리");
+  await expect(ops.apply(user, { action: "restart" })).rejects.toThrow(
+    "실제 디렉터리",
+  );
   expect(docker.mock.calls.some((args) => args[0] === "restart")).toBe(false);
   hostInfo(info, "/elsewhere");
-  await expect(
-    ops.apply(user, { action: "start" }, "primary-id"),
-  ).rejects.toThrow("일치하지");
+  await expect(ops.apply(user, { action: "start" })).rejects.toThrow(
+    "일치하지",
+  );
 });
 
 it("moves a volume workspace to a host directory and keeps the original volume", async () => {
   const { ops, docker, provision, registry } = await fixture();
-  await ops.apply(
-    user,
-    { action: "workspace", workspace: { name: "mina" } },
-    "primary-id",
-  );
+  await ops.apply(user, { action: "workspace", workspace: { name: "mina" } });
   const dir = root + "/mina";
   const sequence = docker.mock.calls
     .map((args) =>
@@ -293,7 +280,7 @@ it("moves a volume workspace to a host directory and keeps the original volume",
           : "helper:" + args[args.indexOf("-e") + 2]
         : args[0],
     )
-    .filter((step) => step !== "inspect");
+    .filter((step) => step !== "inspect" && step !== "image");
   expect(sequence).toEqual([
     "helper:probe",
     "helper:mkdir",
@@ -330,11 +317,7 @@ it("restores the previous container and removes the new directory when a move fa
   const { ops, docker, provision, directory, helperCalls } = await fixture();
   provision.mockRejectedValueOnce(new Error("create failed"));
   await expect(
-    ops.apply(
-      user,
-      { action: "workspace", workspace: { name: "mina" } },
-      "primary-id",
-    ),
+    ops.apply(user, { action: "workspace", workspace: { name: "mina" } }),
   ).rejects.toThrow("create failed");
   expect(docker).toHaveBeenCalledWith("rm", "--force", name);
   expect(docker).toHaveBeenCalledWith("rename", name + "-previous", name);
@@ -345,74 +328,108 @@ it("restores the previous container and removes the new directory when a move fa
   ).rejects.toThrow();
 });
 
-it("rejects moves for the primary, quota and existing host workspaces and taken names", async () => {
+it("rejects moves for quota and existing host workspaces and taken names", async () => {
   const request = { action: "workspace", workspace: { name: "mina" } };
   const { ops, info } = await fixture({ mkdir: () => "exists" });
-  await expect(
-    ops.apply({ ...user, runner: "primary" }, request, "primary-id"),
-  ).rejects.toThrow("기본 환경");
-  await expect(ops.apply(user, request, "primary-id")).rejects.toThrow(
-    "다른 이름",
-  );
+  await expect(ops.apply(user, request)).rejects.toThrow("다른 이름");
   info.Config.Labels["dev-mcp.storage"] = "quota";
-  await expect(ops.apply(user, request, "primary-id")).rejects.toThrow(
-    "저장공간 상한",
-  );
+  await expect(ops.apply(user, request)).rejects.toThrow("저장공간 상한");
   delete info.Config.Labels["dev-mcp.storage"];
   hostInfo(info, root + "/mina");
-  await expect(ops.apply(user, request, "primary-id")).rejects.toThrow(
-    "이미 호스트",
-  );
+  await expect(ops.apply(user, request)).rejects.toThrow("이미 호스트");
 });
 
 it("reports the workspace mode and host path in observations", async () => {
   const { ops, info } = await fixture();
-  expect(await ops.observe(user, "primary-id")).toMatchObject({
+  expect(await ops.observe(user)).toMatchObject({
     workspaceMode: "volume",
   });
   hostInfo(info, root + "/mina");
-  expect(await ops.observe(user, "primary-id")).toMatchObject({
+  expect(await ops.observe(user)).toMatchObject({
     workspaceMode: "host",
     workspaceHostPath: root + "/mina",
   });
 });
 
-it("keeps the primary runner's workspace out of every workspace root", async () => {
+it("keeps other runners' host workspaces out of every workspace root", async () => {
   const { ops, helperCalls } = await fixture();
-  await ops.probeRoot("primary-id");
-  // The primary workspace is mounted read-only only for the mount comparison.
+  await ops.recordWorkspace(
+    { id: otherId },
+    { path: legacyWorkspace, legacy: true },
+  );
+  expect(await ops.reservedWorkspaces()).toEqual([legacyWorkspace]);
+  await ops.probeRoot();
+  // Reserved workspaces are mounted read-only only for the mount comparison.
   expect(helperCalls("probe")[0]).toEqual(
     expect.arrayContaining([
       `type=bind,source=${root},target=/workspace-root`,
-      `type=bind,source=${primaryWorkspace},target=/primary-workspace,readonly`,
+      `type=bind,source=${legacyWorkspace},target=/reserved-0,readonly`,
     ]),
   );
-  const inside = await fixture({ probe: "inside_primary" });
-  expect(await inside.ops.probeRoot("primary-id")).toMatchObject({
+  const inside = await fixture({ probe: "inside_reserved" });
+  expect(await inside.ops.probeRoot()).toMatchObject({
     state: "invalid",
-    message: expect.stringContaining("기본 실행 환경의 작업 공간"),
+    message: expect.stringContaining("다른 실행 환경이 쓰는 호스트 작업 공간"),
   });
-  await expect(
-    inside.ops.create(user, undefined, "primary-id"),
-  ).rejects.toThrow("작업 공간 루트");
+  await expect(inside.ops.create(user, undefined)).rejects.toThrow(
+    "작업 공간 루트",
+  );
   expect(inside.provision).not.toHaveBeenCalled();
   expect(inside.helperCalls("mkdir")).toHaveLength(0);
-  const unclear = await fixture({ primary: "/home/me/a,b" });
-  expect(await unclear.ops.probeRoot("primary-id")).toMatchObject({
-    state: "invalid",
-    message: expect.stringContaining("확인할 수 없어"),
-  });
-  expect(unclear.helperCalls("probe")).toHaveLength(0);
 });
 
-it("refuses to start a host workspace that has become visible to the primary runner", async () => {
-  const { ops, docker, info } = await fixture({ verify: "inside_primary" });
+it("refuses to start a host workspace that lies inside another runner's workspace", async () => {
+  const { ops, docker, info } = await fixture({ verify: "inside_reserved" });
   await ops.recordWorkspace(user, { root, name: "mina" });
-  info.Mounts = [
-    { Type: "bind", Source: root + "/mina", Destination: "/workspace" },
-  ];
-  await expect(
-    ops.apply(user, { action: "start" }, "primary-id"),
-  ).rejects.toThrow("기본 실행 환경의 작업 공간 안");
+  hostInfo(info, root + "/mina");
+  await expect(ops.apply(user, { action: "start" })).rejects.toThrow(
+    "다른 실행 환경의 호스트 작업 공간 안",
+  );
   expect(docker.mock.calls.some((args) => args[0] === "start")).toBe(false);
+});
+
+it("recreates a migrated administrator environment on its existing host path", async () => {
+  const { ops, provision, helperCalls, info } = await fixture();
+  await ops.recordWorkspace(user, { path: legacyWorkspace, legacy: true });
+  await ops.create(user, undefined);
+  expect(provision).toHaveBeenCalledWith(
+    user,
+    undefined,
+    false,
+    false,
+    legacyWorkspace,
+  );
+  // Only ownership is checked; the path itself is the reserved workspace.
+  const owned = helperCalls("owned")[0]!;
+  expect(owned).toContain(
+    `type=bind,source=${legacyWorkspace},target=/workspace-root`,
+  );
+  const mounts = owned.filter((_, index) => owned[index - 1] === "--mount");
+  expect(mounts).toEqual([
+    `type=bind,source=${legacyWorkspace},target=/workspace-root`,
+  ]);
+  expect(helperCalls("mkdir")).toHaveLength(0);
+  hostInfo(info, legacyWorkspace);
+  await expect(
+    ops.apply(user, { action: "workspace", workspace: { name: "x" } }),
+  ).rejects.toThrow("이미 호스트");
+  const refused = await fixture({ owned: "invalid" });
+  await refused.ops.recordWorkspace(user, {
+    path: legacyWorkspace,
+    legacy: true,
+  });
+  await expect(refused.ops.create(user, undefined)).rejects.toThrow(
+    "소유자가 다릅니다",
+  );
+});
+
+it("reports a missing runner image instead of starting helpers", async () => {
+  const { ops, helperCalls } = await fixture({
+    fail: (args) => args[0] === "image",
+  });
+  expect(await ops.probeRoot()).toMatchObject({
+    state: "invalid",
+    message: expect.stringContaining("docker compose build runner"),
+  });
+  expect(helperCalls("probe")).toHaveLength(0);
 });

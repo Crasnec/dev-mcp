@@ -5,10 +5,9 @@ import os from "node:os";
 import inject from "light-my-request";
 import { createApp } from "../src/app.ts";
 import { UserStore } from "../src/user-store.ts";
-import { hashPassword } from "../src/crypto.ts";
 import { RunnerTelemetryStore } from "../src/telemetry-store.ts";
 import { IpcClient } from "../src/ipc-client.ts";
-import { legacyUser } from "./legacy-user.ts";
+import { adminAccount, pendingAccount } from "./accounts.ts";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -23,15 +22,14 @@ async function fixture() {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "telemetry-http-"));
   directories.push(dataDir);
   const secret = "telemetry-test-password";
-  const passwordHash = await hashPassword(secret);
-  const users = new UserStore(dataDir, passwordHash);
-  const admin = (await users.list())[0]!;
-  const pending = await legacyUser(users, dataDir, "telemetry-user", secret);
+  const users = new UserStore(dataDir);
+  const admin = await adminAccount(users, dataDir);
+  const pending = await pendingAccount(users, dataDir, "telemetry-user");
   const owner = await users.update(admin.id, pending.id, {
     status: "active",
     role: "user",
   });
-  const otherPending = await legacyUser(users, dataDir, "another-user", secret);
+  const otherPending = await pendingAccount(users, dataDir, "another-user");
   const other = await users.update(admin.id, otherPending.id, {
     status: "active",
     role: "user",
@@ -74,8 +72,6 @@ async function fixture() {
       publicBaseUrl: "https://dev.example.test",
       dataDir,
       runnerStatusDir,
-      runnerSocket: path.join(dataDir, "unused.sock"),
-      adminPasswordHash: passwordHash,
     },
     { users, telemetry },
   );

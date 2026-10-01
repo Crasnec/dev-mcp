@@ -397,7 +397,6 @@ function installConsoleRoutes(
         ? (root?.message ?? "관리 서비스가 경로를 확인하고 있습니다.")
         : undefined,
       canMove:
-        owner.runner !== "primary" &&
         owner.status === "active" &&
         mode === "volume" &&
         root?.state === "ready",
@@ -841,7 +840,6 @@ function installConsoleRoutes(
       livePage: true,
       owner: userRow(owner),
       ...state,
-      primary: owner.runner === "primary",
       hostWorkspace: mode === "host",
       workspace: selfScope
         ? undefined
@@ -869,7 +867,7 @@ function installConsoleRoutes(
         : "확인 중 · 상태 정보 없음",
       observedLabel: dateLabel(observation?.observedAt),
       observedDateTime: dateIso(observation?.observedAt),
-      canCreate: owner.runner !== "primary" && owner.status === "active",
+      canCreate: owner.status === "active",
       canStart: owner.status === "active",
       limits: {
         network: limits?.network ?? true,

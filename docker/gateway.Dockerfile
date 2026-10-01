@@ -12,15 +12,14 @@ RUN npx tsc -b packages/gateway && npm prune --omit=dev
 
 FROM node:22-alpine
 RUN addgroup -S -g 10001 mcp && adduser -S -D -H -u 10001 -G mcp mcp \
-    && mkdir -p /app /ipc /var/lib/dev-mcp \
-    && chmod 0777 /ipc \
+    && mkdir -p /app /var/lib/dev-mcp \
     && chown -R mcp:mcp /app /var/lib/dev-mcp
 WORKDIR /app
 COPY --from=build --chown=mcp:mcp /src/package.json /src/package-lock.json ./
 COPY --from=build --chown=mcp:mcp /src/node_modules ./node_modules
 COPY --from=build --chown=mcp:mcp /src/packages/gateway ./packages/gateway
-COPY --chown=mcp:mcp scripts/telemetry-distribution.mjs scripts/bootstrap-google-admin.mjs ./scripts/
+COPY --chown=mcp:mcp scripts/telemetry-distribution.mjs scripts/bootstrap-google-admin.mjs scripts/migrate-primary-account.mjs ./scripts/
 USER 10001:10001
-ENV NODE_ENV=production PORT=3000 GATEWAY_DATA_DIR=/var/lib/dev-mcp RUNNER_SOCKET=/ipc/runner.sock
+ENV NODE_ENV=production PORT=3000 GATEWAY_DATA_DIR=/var/lib/dev-mcp
 EXPOSE 3000 3100
 CMD ["node", "packages/gateway/dist/index.js"]

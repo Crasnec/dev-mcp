@@ -9,7 +9,10 @@ import { fileURLToPath } from "node:url";
 import { bootstrapGoogleAdmin } from "../../../scripts/bootstrap-google-admin.mjs";
 import type { AuditLogger } from "./audit.ts";
 import type { UserStore } from "./user-store.ts";
-import { insideOrEqual, type InstallationStore } from "./installation-store.ts";
+import {
+  reservedContaining,
+  type InstallationStore,
+} from "./installation-store.ts";
 import { LoginLimiter } from "./login-limiter.ts";
 import { cookie, field } from "./browser-session.ts";
 import { dateLabel } from "./admin-view.ts";
@@ -146,7 +149,10 @@ export function createOnboardingApp(options: OnboardingOptions): Express {
       root && observed.workspaceRoot?.path === root
         ? observed.workspaceRoot
         : undefined;
-    const primary = observed.primaryWorkspace;
+    // Rejected on save; shown if the observation arrives later.
+    const overlap = root
+      ? reservedContaining(root, observed.reservedWorkspaces)
+      : undefined;
     const rootReady = rootStatus?.state === "ready";
     return {
       csrf,
@@ -160,18 +166,8 @@ export function createOnboardingApp(options: OnboardingOptions): Express {
       rootReady,
       rootInvalid: rootStatus?.state === "invalid",
       rootMessage: rootStatus?.message,
-      primary,
-      // Rejected on save; shown if the primary observation arrives later.
-      overlap: !!(root && primary && insideOrEqual(root, primary)),
-      primaryInside: !!(
-        root &&
-        primary &&
-        primary !== root &&
-        insideOrEqual(primary, root)
-      ),
-      canComplete:
-        !!admin &&
-        (!root || (rootReady && !(primary && insideOrEqual(root, primary)))),
+      overlap,
+      canComplete: !!admin && (!root || (rootReady && !overlap)),
       refreshSeconds: root && !rootStatus ? 5 : undefined,
     };
   };
@@ -243,6 +239,7 @@ export function createOnboardingApp(options: OnboardingOptions): Express {
         audit,
         userId: target.id,
         email: target.email,
+        actor: "local_installer",
       });
     } catch {
       throw new OnboardingError(

@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   RunnerOperations,
   validControl,
+  validUser,
 } from "../../../scripts/runner-operations.mjs";
 
 const id = "00000000-0000-4000-8000-000000000001";
@@ -56,20 +57,16 @@ it("validates the privileged worker's input independently of the web form", () =
 });
 it("applies live memory/CPU/PID and network limits without restarting jobs", async () => {
   const { ops, docker, provision } = await fixture();
-  await ops.apply(
-    user,
-    {
-      action: "apply",
-      limits: {
-        ...defaults,
-        memoryMiB: 512,
-        cpus: 0.5,
-        pids: 64,
-        network: false,
-      },
+  await ops.apply(user, {
+    action: "apply",
+    limits: {
+      ...defaults,
+      memoryMiB: 512,
+      cpus: 0.5,
+      pids: 64,
+      network: false,
     },
-    "primary",
-  );
+  });
   expect(docker).toHaveBeenCalledWith(
     "update",
     "--memory",
@@ -90,11 +87,10 @@ it("preserves original container and volumes if quota migration fails", async ()
   const { ops, docker, provision } = await fixture();
   vi.spyOn(ops, "quota").mockRejectedValue(new Error("disk full"));
   await expect(
-    ops.apply(
-      user,
-      { action: "apply", limits: { ...defaults, storageMiB: 1024 } },
-      "primary",
-    ),
+    ops.apply(user, {
+      action: "apply",
+      limits: { ...defaults, storageMiB: 1024 },
+    }),
   ).rejects.toThrow("disk full");
   expect(docker).toHaveBeenCalledWith("stop", "--time", "10", name);
   expect(
@@ -108,11 +104,10 @@ it("restores the original container name if replacement creation fails", async (
   const { ops, docker, provision } = await fixture();
   provision.mockRejectedValue(new Error("create failed"));
   await expect(
-    ops.apply(
-      user,
-      { action: "apply", limits: { ...defaults, fileSizeMiB: 64 } },
-      "primary",
-    ),
+    ops.apply(user, {
+      action: "apply",
+      limits: { ...defaults, fileSizeMiB: 64 },
+    }),
   ).rejects.toThrow("create failed");
   expect(docker).toHaveBeenCalledWith("rename", name, name + "-previous");
   expect(docker).toHaveBeenCalledWith("rename", name + "-previous", name);
@@ -122,7 +117,7 @@ it("does not restart stopped users when changing a file-size limit", async () =>
   const { ops, docker, provision, info } = await fixture();
   info.State = { Running: false, Status: "exited" };
   const limits = { ...defaults, fileSizeMiB: 64 };
-  await ops.apply(user, { action: "apply", limits }, "primary");
+  await ops.apply(user, { action: "apply", limits });
   expect(provision).toHaveBeenCalledWith(user, limits, false, false, undefined);
   expect(docker.mock.calls.some((args) => args[0] === "start")).toBe(false);
 });
@@ -131,22 +126,18 @@ it("rejects resource operations on a container labelled for another user", async
   info.Config.Labels["dev-mcp.user"] = "another-user";
   const ops = new RunnerOperations(docker, provision, "unused", "dev-mcp");
   vi.spyOn(ops, "inspect").mockResolvedValue(info);
-  await expect(ops.apply(user, { action: "stop" }, "primary")).rejects.toThrow(
-    "소유권",
-  );
+  await expect(ops.apply(user, { action: "stop" })).rejects.toThrow("소유권");
   expect(docker).not.toHaveBeenCalled();
 });
-it("does not start disabled accounts or migrate the primary host workspace", async () => {
+it("does not start disabled accounts", async () => {
   const { ops, docker } = await fixture();
   await expect(
-    ops.apply({ ...user, status: "disabled" }, { action: "start" }, "primary"),
+    ops.apply({ ...user, status: "disabled" }, { action: "start" }),
   ).rejects.toThrow("승인");
-  await expect(
-    ops.apply(
-      { ...user, runner: "primary" },
-      { action: "apply", limits: { ...defaults, storageMiB: 1024 } },
-      "primary",
-    ),
-  ).rejects.toThrow("호스트 공유");
   expect(docker).not.toHaveBeenCalled();
+});
+it("never manages records still on the legacy shared runner", () => {
+  expect(validUser(user)).toBe(true);
+  expect(validUser({ ...user, runner: "primary" })).toBe(false);
+  expect(validUser({ ...user, runner: "other" })).toBe(false);
 });

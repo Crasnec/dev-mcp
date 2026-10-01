@@ -5,9 +5,16 @@ import { pathToFileURL } from "node:url";
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-// Operator-only first setup. The gateway must be stopped because UserStore's
-// update queue protects one process, not concurrent writers in other processes.
-export async function bootstrapGoogleAdmin({ users, audit, userId, email }) {
+// First administrator for a new installation. The local onboarding calls this
+// inside the running gateway; the CLI fallback below requires the gateway to be
+// stopped because UserStore's update queue protects one process only.
+export async function bootstrapGoogleAdmin({
+  users,
+  audit,
+  userId,
+  email,
+  actor = "local_operator",
+}) {
   if (
     typeof userId !== "string" ||
     !uuid.test(userId) ||
@@ -38,23 +45,10 @@ export async function bootstrapGoogleAdmin({ users, audit, userId, email }) {
   ) {
     throw new Error("The selected pending Google account does not match.");
   }
-  const bootstrap = accounts.filter(
-    (user) =>
-      user.role === "admin" &&
-      user.status === "active" &&
-      user.runner === "primary" &&
-      !user.googleLinked,
-  );
-  if (bootstrap.length !== 1) {
-    throw new Error("Exactly one unlinked primary administrator is required.");
-  }
-  const user = await users.update(bootstrap[0].id, target.id, {
-    role: "admin",
-    status: "active",
-  });
+  const user = await users.promoteFirstAdmin(target.id);
   await audit.write({
     event: "bootstrap_google_admin",
-    actor: "local_operator",
+    actor,
     userId: user.id,
   });
   return user;
@@ -80,7 +74,7 @@ async function main() {
     import("../packages/gateway/dist/audit.js"),
   ]);
   const user = await bootstrapGoogleAdmin({
-    users: new UserStore(dataDir, process.env.ADMIN_PASSWORD_HASH ?? ""),
+    users: new UserStore(dataDir),
     audit: new AuditLogger(dataDir),
     userId,
     email,

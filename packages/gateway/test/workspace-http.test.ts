@@ -6,10 +6,10 @@ import inject from "light-my-request";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.ts";
 import { AuditLogger } from "../src/audit.ts";
-import { hashPassword } from "../src/crypto.ts";
 import { IpcClient } from "../src/ipc-client.ts";
 import { fail, type ToolResult } from "../src/protocol.ts";
 import { UserStore, type User } from "../src/user-store.ts";
+import { adminAccount } from "./accounts.ts";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -29,13 +29,8 @@ const success = (data: unknown): ToolResult => ({
 async function fixture() {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "mcp-workspace-http-"));
   directories.push(dataDir);
-  const adminPasswordHash = await hashPassword("workspace-fixture-password");
-  const users = new UserStore(dataDir, adminPasswordHash);
-  const initialAdmin = (await users.list())[0]!;
-  const admin = await users.linkGoogle(
-    { userId: initialAdmin.id, authVersion: initialAdmin.authVersion },
-    { sub: "workspace-admin", email: "admin@example.test" },
-  );
+  const users = new UserStore(dataDir);
+  const admin = await adminAccount(users, dataDir);
   async function account(name: string) {
     const pending = (
       await users.googleAccount(
@@ -94,12 +89,10 @@ async function fixture() {
       actor,
     ) {
       const socketPath = (this as unknown as { socketPath: string }).socketPath;
+      // The administrator's runner is reached like every other account's.
       const owner = [admin, alice, bob].find(
         (entry) =>
-          socketPath ===
-          (entry.id === admin.id
-            ? path.join(dataDir, "primary.sock")
-            : path.join(dataDir, "runners", entry.id, "runner.sock")),
+          socketPath === path.join(dataDir, "runners", entry.id, "runner.sock"),
       );
       if (!owner) {
         throw new Error("Unexpected runner socket: " + socketPath);
@@ -159,8 +152,6 @@ async function fixture() {
       port: 3000,
       publicBaseUrl: "https://dev.example.test",
       dataDir,
-      adminPasswordHash,
-      runnerSocket: path.join(dataDir, "primary.sock"),
       userRunnerSocketDir: path.join(dataDir, "runners"),
       runnerStatusDir: path.join(dataDir, "status"),
       google: { clientId: "fixture-google", clientSecret: "fixture-secret" },

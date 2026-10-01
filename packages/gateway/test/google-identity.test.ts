@@ -137,7 +137,6 @@ describe("Google OIDC verification", () => {
     await writeFile(secretFile, "fake-secret\n");
     const env = {
       PUBLIC_BASE_URL: "https://dev.example.test",
-      ADMIN_PASSWORD_HASH: "fake",
       GOOGLE_CLIENT_ID_FILE: idFile,
       GOOGLE_CLIENT_SECRET_FILE: secretFile,
     };

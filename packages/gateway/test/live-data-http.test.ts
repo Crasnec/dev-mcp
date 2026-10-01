@@ -5,6 +5,7 @@ import path from "node:path";
 import inject from "light-my-request";
 import { createApp } from "../src/app.ts";
 import { UserStore } from "../src/user-store.ts";
+import { adminAccount } from "./accounts.ts";
 import { AuditLogger } from "../src/audit.ts";
 import type { IpcClient } from "../src/ipc-client.ts";
 
@@ -19,8 +20,8 @@ afterEach(async () => {
 async function fixture() {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "mcp-live-data-"));
   directories.push(dataDir);
-  const users = new UserStore(dataDir, "unused-fixture-hash");
-  const admin = (await users.list())[0]!;
+  const users = new UserStore(dataDir);
+  const admin = await adminAccount(users, dataDir);
   const session = await users.createSession(admin);
   const pending = (
     await users.googleAccount(
@@ -86,9 +87,7 @@ async function fixture() {
       port: 3000,
       publicBaseUrl: "https://dev.example.test",
       dataDir,
-      runnerSocket: path.join(dataDir, "runner.sock"),
       runnerStatusDir,
-      adminPasswordHash: "unused-fixture-hash",
     },
     { users, ipc: { call } as unknown as IpcClient },
   );

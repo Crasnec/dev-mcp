@@ -4,10 +4,10 @@ import path from "node:path";
 const MiB = 1048576;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export class OperationError extends Error {}
+// Every account owns one dedicated runner. Records still on the legacy
+// "primary" runner are skipped until scripts/migrate-primary-runner.sh runs.
 export const validUser = (user) =>
-  user &&
-  uuid.test(user.id) &&
-  (user.runner === user.id || user.runner === "primary");
+  user && uuid.test(user.id) && user.runner === user.id;
 // Host paths become comma-separated --mount values; keep them unambiguous.
 export const validWorkspaceRoot = (root) =>
   typeof root === "string" &&
@@ -41,7 +41,8 @@ const [operation, name = ""] = process.argv.slice(1);
 const root = "/workspace-root";
 const target = root + "/" + name;
 // Compare kernel-resolved mount locations, so symlinks or bind aliases in host
-// paths cannot hide a root inside the primary runner's workspace.
+// paths cannot hide a root inside another runner's host workspace (mounted
+// read-only at /reserved-N; its files are never read).
 const unescape = (value) =>
   value.replace(/\\([0-7]{3})/g, (_, code) => String.fromCharCode(parseInt(code, 8)));
 const mounts = fs
@@ -53,22 +54,26 @@ const mounts = fs
     return { device: fields[2], root: unescape(fields[3]), point: unescape(fields[4]) };
   });
 const mountAt = (point) => mounts.filter((mount) => mount.point === point).at(-1);
-const insidePrimary = () => {
+const insideReserved = () => {
   const own = mountAt(root);
-  const primary = mountAt("/primary-workspace");
   return (
     !!own &&
-    !!primary &&
-    own.device === primary.device &&
-    (primary.root === "/" ||
-      own.root === primary.root ||
-      own.root.startsWith(primary.root + "/"))
+    mounts.some(
+      (reserved) =>
+        reserved.point.startsWith("/reserved-") &&
+        own.device === reserved.device &&
+        (reserved.root === "/" ||
+          own.root === reserved.root ||
+          own.root.startsWith(reserved.root + "/")),
+    )
   );
 };
 if (!fs.statSync(root).isDirectory()) {
   console.log("not_directory");
-} else if (insidePrimary()) {
-  console.log("inside_primary");
+} else if (insideReserved()) {
+  console.log("inside_reserved");
+} else if (operation === "owned") {
+  console.log(fs.statSync(root).uid === process.getuid() ? "ok" : "invalid");
 } else if (operation === "probe") {
   try {
     fs.accessSync(root, fs.constants.W_OK | fs.constants.X_OK);
@@ -103,13 +108,23 @@ if (!fs.statSync(root).isDirectory()) {
 `;
 const workspaceMount = (info) =>
   info?.Mounts?.find((mount) => mount.Destination === "/workspace");
+const parseWorkspaceEntry = (entry) =>
+  entry?.legacy === true && validWorkspaceRoot(entry.path)
+    ? { legacy: true, path: entry.path }
+    : validWorkspaceRoot(entry?.root) && validWorkspaceName(entry?.name)
+      ? {
+          root: entry.root,
+          name: entry.name,
+          path: entry.root + "/" + entry.name,
+        }
+      : undefined;
 const rootMessages = {
   ok: "작업 공간 루트를 사용할 수 있습니다.",
   not_directory: "지정한 경로가 디렉터리가 아닙니다.",
   not_writable:
     "실행 환경 사용자가 이 디렉터리에 쓸 수 없습니다. 호스트에서 소유자와 권한을 확인해 주세요.",
-  inside_primary:
-    "기본 실행 환경의 작업 공간 안이거나 같은 위치라서 쓸 수 없습니다. 기본 실행 환경이 다른 계정의 파일에 접근하지 않도록 바깥 경로를 지정해 주세요.",
+  inside_reserved:
+    "다른 실행 환경이 쓰는 호스트 작업 공간 안이거나 같은 위치라서 쓸 수 없습니다. 그 실행 환경이 다른 계정의 파일에 접근하지 않도록 바깥 경로를 지정해 주세요.",
   unavailable:
     "Docker 호스트에서 이 디렉터리를 찾거나 마운트하지 못했습니다. 호스트 기준 경로가 존재하는지 확인해 주세요.",
 };
@@ -165,12 +180,20 @@ export async function writeJson(filename, value) {
 }
 
 export class RunnerOperations {
-  constructor(docker, provision, statusDir, project, installationFile) {
+  constructor(
+    docker,
+    provision,
+    statusDir,
+    project,
+    installationFile,
+    runnerImage = process.env.RUNNER_IMAGE || project + "-runner:latest",
+  ) {
     this.docker = docker;
     this.provision = provision;
     this.statusDir = statusDir;
     this.project = project;
     this.installationFile = installationFile;
+    this.runnerImageName = runnerImage;
     this.pool = project + "-quota-pool";
     this.images = project + "-quota-images";
   }
@@ -190,23 +213,11 @@ export class RunnerOperations {
     return JSON.parse(await this.docker("inspect", name))[0];
   }
 
-  async owned(user, primaryId) {
-    const name =
-      user.runner === "primary" ? primaryId : "dev-mcp-user-" + user.id;
-    const info =
-      user.runner === "primary"
-        ? JSON.parse(await this.docker("inspect", primaryId))[0]
-        : await this.inspect(name);
-    if (info) {
-      const labels = info.Config.Labels ?? {};
-      const valid =
-        user.runner === "primary"
-          ? labels["com.docker.compose.project"] === this.project &&
-            labels["com.docker.compose.service"] === "runner"
-          : labels["dev-mcp.user"] === user.id;
-      if (!valid) {
-        throw new Error("컨테이너 소유권을 확인할 수 없습니다.");
-      }
+  async owned(user) {
+    const name = "dev-mcp-user-" + user.id;
+    const info = await this.inspect(name);
+    if (info && info.Config.Labels?.["dev-mcp.user"] !== user.id) {
+      throw new Error("컨테이너 소유권을 확인할 수 없습니다.");
     }
     return { name, info };
   }
@@ -306,11 +317,29 @@ export class RunnerOperations {
       : undefined;
   }
 
-  runnerImage(primaryId) {
-    return this.docker("inspect", "--format", "{{.Image}}", primaryId);
+  // Built by `docker compose build runner`; pinned by ID for each use.
+  async runnerImage() {
+    let id = "";
+    try {
+      id = await this.docker(
+        "image",
+        "inspect",
+        "--format",
+        "{{.Id}}",
+        this.runnerImageName,
+      );
+    } catch {
+      // Reported below.
+    }
+    if (!/^sha256:[0-9a-f]{64}$/.test(id)) {
+      throw new OperationError(
+        `실행 환경 이미지(${this.runnerImageName})가 없습니다. docker compose build runner를 실행해 주세요.`,
+      );
+    }
+    return id;
   }
 
-  async helper(primaryId, mounts, entrypoint, ...args) {
+  async helper(mounts, entrypoint, ...args) {
     return this.docker(
       "run",
       "--rm",
@@ -324,27 +353,22 @@ export class RunnerOperations {
       ...mounts.flatMap((mount) => ["--mount", mount]),
       "--entrypoint",
       entrypoint,
-      await this.runnerImage(primaryId),
+      await this.runnerImage(),
       ...args,
     );
   }
 
-  // The primary runner's workspace is mounted read-only only so the helper can
-  // compare mount locations; the script never reads its files.
-  async directory(primaryId, root, operation, name = "") {
-    const primary = await this.primaryWorkspace(primaryId);
-    if (primary !== undefined && !validWorkspaceRoot(primary)) {
-      throw new OperationError(
-        "기본 실행 환경의 작업 공간 경로를 확인할 수 없어 작업 공간 루트를 쓸 수 없습니다.",
-      );
-    }
+  // Other runners' host workspaces outside the root are mounted read-only
+  // only so the helper can compare mount locations.
+  async directory(root, operation, name = "", reserved) {
+    reserved ??= await this.reservedWorkspaces();
     return this.helper(
-      primaryId,
       [
         `type=bind,source=${root},target=/workspace-root`,
-        ...(primary
-          ? [`type=bind,source=${primary},target=/primary-workspace,readonly`]
-          : []),
+        ...reserved.map(
+          (workspace, index) =>
+            `type=bind,source=${workspace},target=/reserved-${index},readonly`,
+        ),
       ],
       "node",
       "-e",
@@ -356,14 +380,15 @@ export class RunnerOperations {
 
   // Probing starts a helper container, so keep a usable result for minutes and
   // retry a failing one quickly.
-  async probeRoot(primaryId) {
+  async probeRoot() {
     const root = await this.workspaceRoot();
     if (!root) {
       this.rootStatus = undefined;
       return undefined;
     }
+    const reserved = await this.reservedWorkspaces();
     const cached = this.rootStatus;
-    const key = root + "\n" + primaryId;
+    const key = [root, ...reserved].join("\n");
     if (
       this.rootStatusKey === key &&
       Date.now() - cached.observedAt <
@@ -373,7 +398,7 @@ export class RunnerOperations {
     }
     let result, message;
     try {
-      result = await this.directory(primaryId, root, "probe");
+      result = await this.directory(root, "probe", "", reserved);
     } catch (error) {
       result = "unavailable";
       message = error instanceof OperationError ? error.message : undefined;
@@ -388,35 +413,39 @@ export class RunnerOperations {
     return this.rootStatus;
   }
 
-  async primaryWorkspace(primaryId) {
-    const info = JSON.parse(await this.docker("inspect", primaryId))[0];
-    const mount = workspaceMount(info);
-    return mount?.Type === "bind" ? mount.Source : undefined;
-  }
-
   workspaceFile() {
     return path.join(this.statusDir, "workspace-dirs.json");
   }
 
+  // Assigned directories are {root, name} under the onboarding root; an
+  // environment migrated from the old primary runner keeps {path, legacy}.
   async workspaceEntry(user) {
     const data = await readJson(this.workspaceFile(), { users: {} });
-    const entry = data.users?.[user.id];
-    return validWorkspaceRoot(entry?.root) && validWorkspaceName(entry?.name)
-      ? { ...entry, path: entry.root + "/" + entry.name }
-      : undefined;
+    return parseWorkspaceEntry(data.users?.[user.id]);
+  }
+
+  // Host workspaces that are not under the root; no root may lie inside them.
+  async reservedWorkspaces() {
+    const data = await readJson(this.workspaceFile(), { users: {} });
+    return Object.values(data.users ?? {})
+      .map(parseWorkspaceEntry)
+      .filter((entry) => entry?.legacy)
+      .map((entry) => entry.path);
   }
 
   async recordWorkspace(user, entry) {
     const data = await readJson(this.workspaceFile(), { users: {} });
     data.users ??= {};
-    data.users[user.id] = { root: entry.root, name: entry.name };
+    data.users[user.id] = entry.legacy
+      ? { path: entry.path, legacy: true }
+      : { root: entry.root, name: entry.name };
     await writeJson(this.workspaceFile(), data);
   }
 
   // Exclusive creation never hands an existing host directory, such as an
   // administrator's project, to another account.
-  async assignWorkspace(user, primaryId, requested) {
-    const status = await this.probeRoot(primaryId);
+  async assignWorkspace(user, requested) {
+    const status = await this.probeRoot();
     if (status?.state !== "ready") {
       throw new OperationError(
         "작업 공간 루트를 사용할 수 없습니다. 설치 온보딩에서 정한 경로의 상태를 확인해 주세요.",
@@ -431,8 +460,7 @@ export class RunnerOperations {
     for (const name of requested ? [requested] : workspaceNames(user)) {
       if (
         !taken.has(name) &&
-        (await this.directory(primaryId, status.path, "mkdir", name)) ===
-          "created"
+        (await this.directory(status.path, "mkdir", name)) === "created"
       ) {
         return { root: status.path, name, path: status.path + "/" + name };
       }
@@ -445,16 +473,13 @@ export class RunnerOperations {
   }
 
   // Docker resolves symlinks in bind sources, so check before every mount.
-  async verifyWorkspace(primaryId, entry) {
-    const result = await this.directory(
-      primaryId,
-      entry.root,
-      "verify",
-      entry.name,
-    );
-    if (result === "inside_primary") {
+  async verifyWorkspace(entry) {
+    const result = entry.legacy
+      ? await this.directory(entry.path, "owned", "", [])
+      : await this.directory(entry.root, "verify", entry.name);
+    if (result === "inside_reserved") {
       throw new OperationError(
-        "작업 공간 디렉터리가 기본 실행 환경의 작업 공간 안에 있어 사용할 수 없습니다.",
+        "작업 공간 디렉터리가 다른 실행 환경의 호스트 작업 공간 안에 있어 사용할 수 없습니다.",
       );
     }
     if (result !== "ok") {
@@ -477,7 +502,7 @@ export class RunnerOperations {
 
   async hostWorkspace(user, info) {
     const mount = workspaceMount(info);
-    if (user.runner === "primary" || mount?.Type !== "bind") {
+    if (mount?.Type !== "bind") {
       return undefined;
     }
     const entry = await this.workspaceEntry(user);
@@ -489,7 +514,7 @@ export class RunnerOperations {
     return entry;
   }
 
-  async create(user, limits, primaryId) {
+  async create(user, limits) {
     const quotaStorage = await this.migrated(user);
     if (quotaStorage) {
       await this.storage();
@@ -503,28 +528,23 @@ export class RunnerOperations {
       (await this.workspaceRoot()) &&
       !(await this.volumeExists(`dev-mcp-user-${user.id}-workspace`))
     ) {
-      workspace = await this.assignWorkspace(user, primaryId);
+      workspace = await this.assignWorkspace(user);
       await this.recordWorkspace(user, workspace);
     }
     if (workspace) {
-      await this.verifyWorkspace(primaryId, workspace);
+      await this.verifyWorkspace(workspace);
       if (limits) {
         limits = { ...limits, storageMiB: 0 };
       }
     }
     await this.provision(user, limits, quotaStorage, false, workspace?.path);
     if (limits) {
-      await this.apply(user, { action: "apply", limits }, primaryId);
+      await this.apply(user, { action: "apply", limits });
     }
     await this.docker("start", "dev-mcp-user-" + user.id);
   }
 
-  async moveWorkspace(user, request, primaryId, name, info) {
-    if (user.runner === "primary") {
-      throw new OperationError(
-        "기본 환경은 Compose 설정의 호스트 디렉터리를 그대로 사용합니다.",
-      );
-    }
+  async moveWorkspace(user, request, name, info) {
     const mount = workspaceMount(info);
     if (mount?.Type === "bind") {
       throw new OperationError("이미 호스트 디렉터리를 사용하고 있습니다.");
@@ -551,18 +571,13 @@ export class RunnerOperations {
     }
     const limits = { ...this.limits(info), storageMiB: 0 };
     const wasRunning = info.State.Running;
-    const workspace = await this.assignWorkspace(
-      user,
-      primaryId,
-      request.workspace.name,
-    );
+    const workspace = await this.assignWorkspace(user, request.workspace.name);
     let renamed = false;
     try {
       if (wasRunning) {
         await this.docker("stop", "--time", "10", name);
       }
       await this.helper(
-        primaryId,
         [
           `type=volume,source=${volume},target=/source,readonly`,
           `type=bind,source=${workspace.path},target=/target`,
@@ -572,7 +587,7 @@ export class RunnerOperations {
         "/source/.",
         "/target/",
       );
-      await this.verifyWorkspace(primaryId, workspace);
+      await this.verifyWorkspace(workspace);
       // Retain the old container until the replacement has been created.
       // The original named volume always remains.
       await this.docker("rename", name, previousName);
@@ -580,18 +595,15 @@ export class RunnerOperations {
       await this.provision(user, limits, false, false, workspace.path);
     } catch (error) {
       if (renamed) {
-        const replacement = await this.owned(user, primaryId);
+        const replacement = await this.owned(user);
         if (replacement.info) {
           await this.docker("rm", "--force", name);
         }
         await this.docker("rename", previousName, name);
       }
-      await this.directory(
-        primaryId,
-        workspace.root,
-        "remove",
-        workspace.name,
-      ).catch(() => undefined);
+      await this.directory(workspace.root, "remove", workspace.name).catch(
+        () => undefined,
+      );
       if (wasRunning) {
         await this.docker("start", name).catch(() => undefined);
       }
@@ -663,8 +675,8 @@ export class RunnerOperations {
     };
   }
 
-  async observe(user, primaryId) {
-    const { info } = await this.owned(user, primaryId);
+  async observe(user) {
+    const { info } = await this.owned(user);
     if (!info) {
       return { state: "missing", observedAt: Date.now() };
     }
@@ -695,8 +707,8 @@ export class RunnerOperations {
     return state;
   }
 
-  async apply(user, request, primaryId) {
-    let { name, info } = await this.owned(user, primaryId);
+  async apply(user, request) {
+    let { name, info } = await this.owned(user);
     const action = request.action;
     if (
       user.status !== "active" &&
@@ -705,11 +717,8 @@ export class RunnerOperations {
       throw new Error("승인된 계정의 실행 환경만 시작할 수 있습니다.");
     }
     if (action === "create") {
-      if (user.runner === "primary") {
-        throw new Error("기본 환경은 Compose에서 생성해야 합니다.");
-      }
       if (!info) {
-        await this.create(user, request.limits, primaryId);
+        await this.create(user, request.limits);
       }
       return;
     }
@@ -721,7 +730,7 @@ export class RunnerOperations {
       return;
     }
     if (action === "workspace") {
-      await this.moveWorkspace(user, request, primaryId, name, info);
+      await this.moveWorkspace(user, request, name, info);
       return;
     }
     const workspace = await this.hostWorkspace(user, info);
@@ -730,20 +739,12 @@ export class RunnerOperations {
         await this.storage();
       }
       if (workspace) {
-        await this.verifyWorkspace(primaryId, workspace);
+        await this.verifyWorkspace(workspace);
       }
       await this.docker(action, name);
       return;
     }
     const limits = request.limits;
-    if (
-      user.runner === "primary" &&
-      (limits.storageMiB || limits.fileSizeMiB)
-    ) {
-      throw new Error(
-        "기본 환경의 호스트 공유 저장소는 자동 이전할 수 없습니다.",
-      );
-    }
     if (workspace && limits.storageMiB) {
       throw new OperationError(
         "호스트 디렉터리 작업 공간에는 저장공간 상한을 적용할 수 없습니다. 0으로 두고 다시 적용해 주세요.",
@@ -767,11 +768,6 @@ export class RunnerOperations {
     const resetResources =
       (current.memoryMiB > 0 && limits.memoryMiB === 0) ||
       (current.cpus > 0 && limits.cpus === 0);
-    if (user.runner === "primary" && resetResources) {
-      throw new OperationError(
-        "기본 환경의 메모리·CPU 제한 해제는 Compose에서 컨테이너를 재생성해야 합니다. 기존 제한은 유지됩니다.",
-      );
-    }
     const recreate =
       migrate || current.fileSizeMiB !== limits.fileSizeMiB || resetResources;
     const wasRunning = info.State.Running;
@@ -782,7 +778,7 @@ export class RunnerOperations {
       );
     }
     if (recreate && workspace) {
-      await this.verifyWorkspace(primaryId, workspace);
+      await this.verifyWorkspace(workspace);
     }
     if (recreate || storageChange) {
       if (wasRunning) {
@@ -815,7 +811,7 @@ export class RunnerOperations {
             await this.docker("start", name);
           }
         } catch (error) {
-          const replacement = await this.owned(user, primaryId);
+          const replacement = await this.owned(user);
           if (replacement.info) {
             await this.docker("rm", "--force", name);
           }
@@ -839,9 +835,8 @@ export class RunnerOperations {
         name,
       );
     }
-    info = (await this.owned(user, primaryId)).info;
-    const network =
-      user.runner === "primary" ? this.project + "_runner-egress" : name;
+    info = (await this.owned(user)).info;
+    const network = name;
     for (const attached of Object.keys(info.NetworkSettings.Networks)) {
       if (!limits.network || attached !== network) {
         await this.docker("network", "disconnect", attached, name);

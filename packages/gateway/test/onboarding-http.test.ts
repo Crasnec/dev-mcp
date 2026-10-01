@@ -25,7 +25,7 @@ async function fixture(googleEnabled = true) {
   temporary.push(dataDir);
   const statusDir = path.join(dataDir, "status");
   await mkdir(statusDir);
-  const users = new UserStore(dataDir, "unused-legacy-hash");
+  const users = new UserStore(dataDir);
   const installation = new InstallationStore(dataDir, statusDir);
   const code = onboardingCode();
   const app = createOnboardingApp({
@@ -207,17 +207,18 @@ describe("local installer onboarding", () => {
         message: "쓸 수 없습니다.",
         observedAt: 1,
       },
-      primaryWorkspace: "/srv/ws/admin",
+      reservedWorkspaces: ["/srv/ws/admin"],
     });
     const invalid = await get(session.cookie);
     expect(invalid.payload).toContain("쓸 수 없습니다.");
-    expect(invalid.payload).toContain("이 루트 안에 있습니다");
+    expect(invalid.payload).not.toContain("호스트 작업 공간(<code>");
     expect(
       (await post("/complete", { csrf: session.csrf }, session.cookie))
         .statusCode,
     ).toBe(400);
-    // A primary workspace that contains the root blocks completion even when
-    // its observation arrives after the root was saved.
+    // A reserved host workspace (for example a migrated administrator
+    // environment) that contains the root blocks completion even when its
+    // observation arrives after the root was saved.
     await observe({
       workspaceRoot: {
         path: "/srv/ws",
@@ -225,7 +226,7 @@ describe("local installer onboarding", () => {
         message: "사용할 수 있습니다.",
         observedAt: 1,
       },
-      primaryWorkspace: "/srv",
+      reservedWorkspaces: ["/srv"],
     });
     const overlapping = await get(session.cookie);
     expect(overlapping.payload).toContain("안에 있어 쓸 수 없습니다");
@@ -241,7 +242,7 @@ describe("local installer onboarding", () => {
         message: "사용할 수 있습니다.",
         observedAt: 1,
       },
-      primaryWorkspace: "/srv/ws/admin",
+      reservedWorkspaces: ["/srv/ws/admin"],
     });
     expect(
       (await post("/complete", { csrf: session.csrf }, session.cookie))
@@ -263,9 +264,9 @@ describe("local installer onboarding", () => {
     expect(audit).toContain('"event":"onboarding_completed"');
   });
 
-  it("rejects roots inside or equal to the primary runner's workspace", async () => {
+  it("rejects roots inside or equal to another runner's host workspace", async () => {
     const { signIn, post, observe, installation } = await fixture();
-    await observe({ primaryWorkspace: "/home/me/workspace" });
+    await observe({ reservedWorkspaces: ["/home/me/workspace"] });
     const session = await signIn();
     const form = (workspaceRoot: string) =>
       post(

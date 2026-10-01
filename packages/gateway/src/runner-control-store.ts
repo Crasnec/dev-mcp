@@ -79,23 +79,20 @@ export class RunnerControlStore {
     ) {
       throw new Error("올바른 실행 환경 작업을 선택해 주세요.");
     }
-    if (owner.runner !== "primary" && owner.runner !== owner.id) {
+    if (owner.runner !== owner.id) {
       throw new Error("실행 환경 소유자를 확인할 수 없습니다.");
     }
-    if (
-      action === "create" &&
-      (owner.runner === "primary" || owner.status !== "active")
-    ) {
-      throw new Error("승인된 사용자의 전용 환경만 생성할 수 있습니다.");
+    if (action === "create" && owner.status !== "active") {
+      throw new Error("승인된 계정의 실행 환경만 생성할 수 있습니다.");
     }
     if (["start", "restart"].includes(action) && owner.status !== "active") {
       throw new Error("승인된 계정의 실행 환경만 시작할 수 있습니다.");
     }
     const { observation } = await this.read(owner.id);
     if (action === "workspace") {
-      if (owner.runner === "primary" || owner.status !== "active") {
+      if (owner.status !== "active") {
         throw new Error(
-          "승인된 사용자의 전용 환경만 호스트 디렉터리로 이전할 수 있습니다.",
+          "승인된 계정의 실행 환경만 호스트 디렉터리로 이전할 수 있습니다.",
         );
       }
       if (!workspace || !workspaceNamePattern.test(workspace.name)) {
@@ -126,14 +123,6 @@ export class RunnerControlStore {
       ) {
         throw new Error(
           "제한값을 확인해 주세요. 메모리는 64 MiB 이상, 프로세스 수는 16 이상이며 0은 무제한입니다.",
-        );
-      }
-      if (
-        owner.runner === "primary" &&
-        (limits.storageMiB > 0 || limits.fileSizeMiB > 0)
-      ) {
-        throw new Error(
-          "기본 환경은 호스트 공유 디렉터리를 사용합니다. 저장공간·파일 크기 제한은 전용 사용자 환경에서 설정해 주세요.",
         );
       }
       if (observation?.workspaceMode === "host" && limits.storageMiB > 0) {

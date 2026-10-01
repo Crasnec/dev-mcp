@@ -10,13 +10,17 @@ if [[ "$#" != 1 || ! "$user_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 fi
 
 gateway_id="${GATEWAY_CONTAINER_ID:-$(docker compose ps -q gateway)}"
-primary_id="${PRIMARY_CONTAINER_ID:-$(docker compose ps -q runner)}"
-if [[ -z "$gateway_id" || -z "$primary_id" ]]; then
-  echo "Start the updated gateway and primary runner with Docker Compose first." >&2
+if [[ -z "$gateway_id" ]]; then
+  echo "Start the updated gateway with Docker Compose first." >&2
   exit 1
 fi
 ipc_root="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/user-ipc"}}{{.Source}}{{end}}{{end}}' "$gateway_id")"
-runner_image="$(docker inspect --format '{{.Image}}' "$primary_id")"
+# Built by `docker compose build runner`; the provisioner passes a pinned ID.
+runner_image="${RUNNER_IMAGE_ID:-$(docker image inspect --format '{{.Id}}' "${RUNNER_IMAGE:-dev-mcp-runner:latest}" 2>/dev/null || true)}"
+if [[ ! "$runner_image" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  echo "Build the runner image first: docker compose build runner" >&2
+  exit 1
+fi
 if [[ -z "$ipc_root" || "$ipc_root" == "/" || "$ipc_root" == *","* ]]; then
   echo "Gateway must mount a dedicated /user-ipc directory (path cannot contain commas)." >&2
   exit 1

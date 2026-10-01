@@ -51,7 +51,7 @@ if (args[0] === "ps") {
   code = state.containers[name] ? 0 : 1;
 } else if (args[0] === "inspect") {
   if (args.includes("--format")) {
-    output = args[2].includes("Mounts") ? "/host/user-ipc" : args[2].includes("Image") ? "sha256:runner-image" : state.containers[name];
+    output = args[2].includes("Mounts") ? "/host/user-ipc" : args[2].includes("Image") ? "sha256:" + "f".repeat(64) : state.containers[name];
   } else {
     const primary = name === "bbbbbbbbbbbb";
     output = JSON.stringify([{
@@ -61,6 +61,9 @@ if (args[0] === "ps") {
       State: {Status:primary ? "running" : state.containers[name], Running:primary || state.containers[name] === "running"},
     }]);
   }
+} else if (args[0] === "image" && args[1] === "inspect") {
+  // The runner image is built by Compose and pinned by ID.
+  output = "sha256:" + "f".repeat(64);
 } else if (args[0] === "network" && args[1] === "inspect") {
   code = 1;
 } else if ((args[0] === "run" && args.includes("--detach")) || args[0] === "create") {
@@ -131,7 +134,7 @@ it("creates only approved dedicated runners with isolated mounts and no publishe
       `type=volume,source=dev-mcp-user-${alice}-data,target=/var/lib/dev-mcp`,
       `type=bind,source=/host/user-ipc/${alice},target=/ipc`,
       `type=bind,source=/host/user-ipc/${alice}.key,target=/run/dev-mcp-ipc-key,readonly`,
-      "sha256:runner-image",
+      "sha256:" + "f".repeat(64),
     ]),
   );
   expect(creation).not.toContain("--publish");

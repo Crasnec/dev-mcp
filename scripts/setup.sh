@@ -84,12 +84,6 @@ prompt_required() {
   REPLY_VALUE="$value"
 }
 
-default_workspace="${WORKSPACE_DIR:-$HOME/workspace}"
-prompt_required "Host workspace directory" "$default_workspace"
-workspace_dir="$REPLY_VALUE"
-mkdir -p "$workspace_dir"
-workspace_dir="$(cd "$workspace_dir" && pwd -P)"
-
 prompt_required "Public MCP domain (hostname only)" "${MCP_DOMAIN:-}"
 mcp_domain="$REPLY_VALUE"
 if [[ ! "$mcp_domain" =~ ^[A-Za-z0-9.-]+$ || "$mcp_domain" != *.* ]]; then
@@ -119,50 +113,31 @@ if [[ ! "$dev_uid" =~ ^[1-9][0-9]*$ || ! "$dev_gid" =~ ^[1-9][0-9]*$ ]]; then
   exit 2
 fi
 
-temporary_directory="$(mktemp -d)"
-temporary_env=""
-cleanup() {
-  if [[ -n "$temporary_env" && -e "$temporary_env" ]]; then
-    rm -f "$temporary_env"
-  fi
-  rm -rf "$temporary_directory"
-}
-trap cleanup EXIT
-hash_file="$temporary_directory/admin-password.hash"
-
-node_usable=false
-if command -v node >/dev/null 2>&1; then
-  node_major="$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || true)"
-  if [[ "$node_major" =~ ^[0-9]+$ && "$node_major" -ge 22 ]]; then
-    node_usable=true
-  fi
+# Every account, the administrator included, gets <root>/<name> under this
+# directory. It is only prepared here; the root is chosen during onboarding.
+setup_user="${SUDO_USER:-$(id -un)}"
+user_home="$(getent passwd "$setup_user" 2>/dev/null | cut -d: -f6 || true)"
+default_root="${user_home:-$HOME}/dev-mcp-workspaces"
+prompt_required "Host directory for account workspaces (confirmed during onboarding)" "$default_root"
+workspace_root="$REPLY_VALUE"
+mkdir -p "$workspace_root"
+workspace_root="$(cd "$workspace_root" && pwd -P)"
+if [[ "$(id -u)" == 0 ]]; then
+  chown "$dev_uid:$dev_gid" "$workspace_root"
 fi
-
-if [[ "$node_usable" == true ]]; then
-  node scripts/hash-password.mjs --output "$hash_file"
-else
-  echo "Node.js 22 was not found; using a temporary container for password hashing."
-  "${docker_command[@]}" run --rm -it \
-    --user "$(id -u):$(id -g)" \
-    --mount "type=bind,src=$repository_root/scripts/hash-password.mjs,dst=/opt/hash-password.mjs,readonly" \
-    --mount "type=bind,src=$temporary_directory,dst=/output" \
-    node:22-alpine \
-    node /opt/hash-password.mjs --output /output/admin-password.hash
-fi
-
-admin_password_hash="$(tr -d '\r\n' <"$hash_file")"
-if [[ ! "$admin_password_hash" =~ ^scrypt: ]]; then
-  echo "Password hash generation failed." >&2
-  exit 1
-fi
-
-git_author_name="${GIT_AUTHOR_NAME:-$(git config --global user.name 2>/dev/null || true)}"
-git_author_email="${GIT_AUTHOR_EMAIL:-$(git config --global user.email 2>/dev/null || true)}"
 
 acme_ca="https://acme-staging-v02.api.letsencrypt.org/directory"
 if [[ "$production" == true ]]; then
   acme_ca="https://acme-v02.api.letsencrypt.org/directory"
 fi
+
+temporary_env=""
+cleanup() {
+  if [[ -n "$temporary_env" && -e "$temporary_env" ]]; then
+    rm -f "$temporary_env"
+  fi
+}
+trap cleanup EXIT
 
 env_quote() {
   local value="$1"
@@ -174,20 +149,12 @@ env_quote() {
 temporary_env="$(mktemp "$repository_root/.env.tmp.XXXXXX")"
 chmod 600 "$temporary_env"
 {
-  printf 'WORKSPACE_DIR=%s\n' "$(env_quote "$workspace_dir")"
   printf 'CADDYFILE_PATH=%s\n' "$(env_quote "$repository_root/Caddyfile")"
   printf 'DEV_UID=%s\n' "$dev_uid"
   printf 'DEV_GID=%s\n\n' "$dev_gid"
   printf 'MCP_DOMAIN=%s\n' "$mcp_domain"
   printf 'ACME_EMAIL=%s\n' "$acme_email"
-  printf 'ACME_CA=%s\n\n' "$acme_ca"
-  printf 'ADMIN_PASSWORD_HASH=%s\n\n' "$admin_password_hash"
-  printf 'MAX_CONCURRENT_COMMANDS=4\n'
-  printf 'MAX_CONCURRENT_PROCESSES=8\n'
-  printf 'DEFAULT_COMMAND_TIMEOUT_MS=0\n'
-  printf 'MAX_OUTPUT_BYTES=65536\n\n'
-  printf 'GIT_AUTHOR_NAME=%s\n' "$(env_quote "$git_author_name")"
-  printf 'GIT_AUTHOR_EMAIL=%s\n' "$(env_quote "$git_author_email")"
+  printf 'ACME_CA=%s\n' "$acme_ca"
 } >"$temporary_env"
 mv "$temporary_env" .env
 temporary_env=""
@@ -197,6 +164,8 @@ chmod 600 .env
 echo "Configuration written to $repository_root/.env"
 
 if [[ "$start" == true ]]; then
+  # The runner image is built only; the provisioner starts one runner per account.
+  "${docker_command[@]}" compose build runner
   "${docker_command[@]}" compose up -d --build
   "${docker_command[@]}" compose ps
   echo
@@ -213,6 +182,6 @@ if [[ "$start" == true ]]; then
   echo "       ssh -L 3100:127.0.0.1:3100 <this-host>"
   echo "  3. Enter the one-time code from:"
   echo "       ${docker_command[*]} compose logs gateway | grep onboarding_available"
-  echo "  4. Optionally set a workspace root, for example $(dirname "$workspace_dir")/dev-mcp-workspaces,"
-  echo "     so each account gets a host directory that VS Code can open."
+  echo "  4. Set the workspace root to $workspace_root so each account,"
+  echo "     the administrator included, gets a host directory that VS Code can open."
 fi

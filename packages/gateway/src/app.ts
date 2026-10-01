@@ -55,16 +55,10 @@ export function createApp(
   app.set("trust proxy", 1);
   const auth = new AuthStore(config.dataDir);
   const audit = dependencies.audit ?? new AuditLogger(config.dataDir);
-  const users =
-    dependencies.users ??
-    new UserStore(config.dataDir, config.adminPasswordHash);
+  const users = dependencies.users ?? new UserStore(config.dataDir);
   const runners = new RunnerRouter(config, dependencies.ipc);
   const loginLimiter = new LoginLimiter();
   const sessions = new Map<string, McpSession>();
-  app.use(async (_req, _res, next) => {
-    await users.initialize();
-    next();
-  });
 
   const forgetSession = (sessionId: string, session: McpSession): void => {
     if (sessions.get(sessionId) !== session) {

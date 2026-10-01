@@ -15,6 +15,8 @@ import {
   suggestWorkspaceName,
   type InstallationStore,
 } from "./installation-store.ts";
+import type { AppService } from "./apps.ts";
+import type { AppRecord, AppVisibility, NetworkIntent } from "./app-store.ts";
 import type { ProjectSummary } from "./account-pages.ts";
 import { browserSession, field } from "./browser-session.ts";
 import {
@@ -119,6 +121,7 @@ export function installAdminRoutes(
   audit: AuditLogger,
   settings: SettingsStore,
   installation: InstallationStore,
+  apps: AppService,
 ): void {
   installConsoleRoutes(
     app,
@@ -129,6 +132,7 @@ export function installAdminRoutes(
     audit,
     settings,
     installation,
+    apps,
     false,
   );
   installConsoleRoutes(
@@ -140,6 +144,7 @@ export function installAdminRoutes(
     audit,
     settings,
     installation,
+    apps,
     true,
   );
 }
@@ -153,6 +158,7 @@ function installConsoleRoutes(
   audit: AuditLogger,
   settings: SettingsStore,
   installation: InstallationStore,
+  apps: AppService,
   selfScope: boolean,
 ): void {
   const base = selfScope ? "/account" : "/admin";
@@ -1215,6 +1221,184 @@ function installConsoleRoutes(
     );
   });
 
+  // Apps: a project command run as a background process and published at
+  // https://<name>.<PREVIEW_DOMAIN>. Self scope sees only its own apps.
+  const callActor = (res: Response) =>
+    (selfScope ? "workspace:" : "admin:") + actor(res).id;
+  const appFor = async (slug: string, res: Response) => {
+    const app = await apps.store.get(slug);
+    if (!app || (selfScope && app.ownerId !== actor(res).id)) {
+      throw new AdminError("앱을 찾을 수 없습니다.", 404);
+    }
+    return { app, owner: await user(app.ownerId, res) };
+  };
+  const visibilityLabel = (value: AppVisibility) =>
+    value === "public" ? "링크가 있는 누구나" : "본인·관리자만";
+  const stateLabel = (value: string) =>
+    ({ running: "실행 중", stopped: "중지됨", unknown: "확인 실패" })[value] ??
+    value;
+  const appRow = async (app: AppRecord, owner: User, res: Response) => {
+    const status = await apps.status(owner, app, callActor(res));
+    return {
+      ...app,
+      owner: userRow(owner),
+      url: apps.url(app.slug),
+      visibilityLabel: visibilityLabel(app.visibility),
+      public: app.visibility === "public",
+      state: status.state,
+      stateLabel: stateLabel(status.state),
+      running: status.state === "running",
+      href: base + "/apps/" + app.slug,
+      processHref: app.processId
+        ? base +
+          "/processes/" +
+          owner.id +
+          "/" +
+          encodeURIComponent(app.processId)
+        : undefined,
+    };
+  };
+  const appInput = (req: Request) => {
+    const visibility = field(req, "visibility") as AppVisibility;
+    return {
+      slug: field(req, "name").trim().toLowerCase(),
+      projectId: field(req, "project_id"),
+      command: field(req, "command"),
+      cwd: field(req, "cwd").trim() || undefined,
+      port: /^\d{1,5}$/.test(field(req, "port"))
+        ? Number(field(req, "port"))
+        : NaN,
+      visibility,
+      networkIntent: (field(req, "network_intent") || "none") as NetworkIntent,
+    };
+  };
+  const requireVisibility = async (visibility: AppVisibility) => {
+    if (visibility === "public" && !(await settings.read()).publicApps) {
+      throw new AdminError(
+        "관리자가 공개 링크를 꺼 두었습니다. 본인·관리자만 볼 수 있게 배포해 주세요.",
+      );
+    }
+  };
+  const deployed = async (
+    res: Response,
+    owner: User,
+    result: Awaited<ReturnType<AppService["deploy"]>>,
+  ) => {
+    await record(res, "app_deployed", {
+      userId: owner.id,
+      app: result.app.slug,
+      projectId: result.app.projectId,
+      port: result.app.port,
+      visibility: result.app.visibility,
+      ok: result.result.ok,
+      params: { command: result.app.command },
+    });
+    if (!result.result.ok) {
+      throw new AdminError(
+        "앱 정의는 저장했지만 서버를 시작하지 못했습니다: " +
+          (result.result.error?.message ?? "알 수 없는 오류"),
+      );
+    }
+    return res.redirect(303, base + "/apps/" + result.app.slug + "?saved=1");
+  };
+  router.get("/apps", async (req, res) => {
+    const selection = await selected(req, res);
+    const all = await apps.store.list();
+    const visible = selfScope
+      ? all.filter((app) => app.ownerId === actor(res).id)
+      : all;
+    const rows = await Promise.all(
+      visible.map(async (app) => {
+        const owner = await users.get(app.ownerId);
+        return owner ? appRow(app, owner, res) : undefined;
+      }),
+    );
+    const projects = await projectsFor(selection.owner, res);
+    return adminView(req, res, "apps", "admin/apps", {
+      ...selection,
+      owner: userRow(selection.owner),
+      rows: rows.filter(Boolean),
+      previewDomain: config.previewDomain,
+      publicApps: (await settings.read()).publicApps,
+      ready: projects.ready,
+      projects: projects.projects,
+    });
+  });
+  router.post("/apps", async (req, res) => {
+    const owner = await user(
+      selfScope ? actor(res).id : field(req, "owner"),
+      res,
+    );
+    const input = appInput(req);
+    await requireVisibility(input.visibility);
+    const existing = await apps.store.get(input.slug);
+    if (existing) {
+      throw new AdminError(
+        "이미 있는 앱 이름입니다. 기존 앱은 앱 화면에서 다시 시작하거나 삭제해 주세요.",
+      );
+    }
+    await projectFor(owner, input.projectId, res);
+    try {
+      return await deployed(
+        res,
+        owner,
+        await apps.deploy(owner, input, callActor(res)),
+      );
+    } catch (error) {
+      if (error instanceof AdminError) {
+        throw error;
+      }
+      throw new AdminError(
+        error instanceof Error ? error.message : "앱을 만들지 못했습니다.",
+      );
+    }
+  });
+  router.get("/apps/:slug", async (req, res) => {
+    const { app, owner } = await appFor(String(req.params.slug), res);
+    return adminView(req, res, "apps", "admin/app-detail", {
+      app: await appRow(app, owner, res),
+      owner: userRow(owner),
+      previewDomain: config.previewDomain,
+      publicApps: (await settings.read()).publicApps,
+    });
+  });
+  router.post("/apps/:slug/start", async (req, res) => {
+    const { app, owner } = await appFor(String(req.params.slug), res);
+    await requireVisibility(app.visibility);
+    return deployed(res, owner, await apps.deploy(owner, app, callActor(res)));
+  });
+  router.post("/apps/:slug/stop", async (req, res) => {
+    const { app, owner } = await appFor(String(req.params.slug), res);
+    const result = await apps.stop(owner, app, callActor(res));
+    if (!result.ok) {
+      throw new AdminError(
+        result.error?.message ?? "앱을 중지하지 못했습니다.",
+      );
+    }
+    await record(res, "app_stopped", { userId: owner.id, app: app.slug });
+    return res.redirect(303, base + "/apps/" + app.slug + "?saved=1");
+  });
+  router.post("/apps/:slug/visibility", async (req, res) => {
+    const { app, owner } = await appFor(String(req.params.slug), res);
+    const visibility = field(req, "visibility") as AppVisibility;
+    await requireVisibility(visibility);
+    await apps.store.update(app.slug, owner.id, { visibility });
+    await record(res, "app_visibility_changed", {
+      userId: owner.id,
+      app: app.slug,
+      visibility,
+    });
+    return res.redirect(303, base + "/apps/" + app.slug + "?saved=1");
+  });
+  router.post("/apps/:slug/delete", async (req, res) => {
+    const { app, owner } = await appFor(String(req.params.slug), res);
+    if (field(req, "confirm") !== app.slug) {
+      throw new AdminError("삭제하려면 앱 이름을 정확히 입력해 주세요.");
+    }
+    await apps.remove(owner, app, callActor(res));
+    await record(res, "app_deleted", { userId: owner.id, app: app.slug });
+    return res.redirect(303, base + "/apps?saved=1");
+  });
   router.get("/connections", async (req, res) => {
     const all = await users.list();
     const names = new Map(
@@ -1503,6 +1687,7 @@ function installConsoleRoutes(
     return adminView(req, res, "settings", "admin/settings", {
       settings: await settings.read(),
       publicBaseUrl: config.publicBaseUrl,
+      previewDomain: config.previewDomain,
       installation: {
         root: current.workspaceRoot,
         rootMessage: current.workspaceRoot
@@ -1513,6 +1698,12 @@ function installConsoleRoutes(
           : undefined,
       },
     });
+  });
+  router.post("/settings/apps", async (req, res) => {
+    const publicApps = field(req, "publicApps") === "on";
+    await settings.save({ publicApps });
+    await record(res, "admin_app_settings_updated", { publicApps });
+    return res.redirect(303, base + "/settings?saved=1");
   });
   router.post("/settings/editor", async (req, res) => {
     const value = {
@@ -1726,13 +1917,13 @@ function relatedProcesses(
 function workspaceRequest(req: Request): boolean {
   const read = ["GET", "HEAD"].includes(req.method);
   if (read) {
-    return /^\/(?:projects(?:\/[^/]+\/[^/]+)?|processes(?:\/live|\/[^/]+\/[^/]+(?:\/live)?)?|runners(?:\/[^/]+(?:\/live)?)?|audit(?:\/live|\/[A-Za-z0-9_-]{20}\/(?:detail|live))?)\/?$/.test(
+    return /^\/(?:projects(?:\/[^/]+\/[^/]+)?|processes(?:\/live|\/[^/]+\/[^/]+(?:\/live)?)?|runners(?:\/[^/]+(?:\/live)?)?|apps(?:\/[a-z0-9-]{1,40})?|audit(?:\/live|\/[A-Za-z0-9_-]{20}\/(?:detail|live))?)\/?$/.test(
       req.path,
     );
   }
   return (
     req.method === "POST" &&
-    /^\/(?:projects(?:\/[^/]+\/[^/]+\/(?:unregister|delete))?|processes(?:\/[^/]+\/[^/]+\/stop)?)\/?$/.test(
+    /^\/(?:projects(?:\/[^/]+\/[^/]+\/(?:unregister|delete))?|processes(?:\/[^/]+\/[^/]+\/stop)?|apps(?:\/[a-z0-9-]{1,40}\/(?:start|stop|visibility|delete))?)\/?$/.test(
       req.path,
     )
   );

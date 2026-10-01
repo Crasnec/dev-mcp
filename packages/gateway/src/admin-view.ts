@@ -31,6 +31,7 @@ export function managementShell(
     "runners",
     "projects",
     "processes",
+    "apps",
     "usage",
     "audit",
     "account",

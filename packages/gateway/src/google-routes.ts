@@ -9,6 +9,7 @@ import { browserSession, cookie, field } from "./browser-session.ts";
 import { randomToken, tokenHash } from "./crypto.ts";
 import { errorPage, sendPage } from "./pages.ts";
 import { pendingPage } from "./account-pages.ts";
+import { previewAuthorizeReturn } from "./preview-routes.ts";
 
 interface LoginFlow {
   binding: string;
@@ -87,7 +88,9 @@ export function installGoogleRoutes(
         verifier = randomToken(48);
       const requested = field(req, "returnTo");
       const returnTo =
-        /^\/oauth\/consent\?transaction=[A-Za-z0-9_-]{40,128}$/.test(requested)
+        /^\/oauth\/consent\?transaction=[A-Za-z0-9_-]{40,128}$/.test(
+          requested,
+        ) || previewAuthorizeReturn.test(requested)
           ? requested
           : "/account";
       flows.set(tokenHash(state), {

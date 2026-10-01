@@ -17,6 +17,9 @@ export interface GatewayConfig {
   runnerStatusDir?: string;
   // Local-only onboarding listener; 0 disables it.
   onboardingPort?: number;
+  // Apps are served at https://<name>.<previewDomain> by a separate listener.
+  previewDomain?: string;
+  previewPort?: number;
   google?: { clientId: string; clientSecret: string };
 }
 
@@ -36,6 +39,15 @@ export function loadConfig(
   ) {
     throw new Error("ONBOARDING_PORT is invalid");
   }
+  const previewPort = Number(env.PREVIEW_PORT ?? "3200");
+  if (
+    !Number.isSafeInteger(previewPort) ||
+    previewPort < 0 ||
+    previewPort > 65535 ||
+    (previewPort !== 0 && [port, onboardingPort].includes(previewPort))
+  ) {
+    throw new Error("PREVIEW_PORT is invalid");
+  }
   const publicBaseUrl = (env.PUBLIC_BASE_URL ?? "").replace(/\/$/, "");
   if (!publicBaseUrl) {
     throw new Error("PUBLIC_BASE_URL is required");
@@ -52,6 +64,10 @@ export function loadConfig(
       "PUBLIC_BASE_URL must use HTTPS (HTTP is allowed only for local tests)",
     );
   }
+  const previewDomain = (env.PREVIEW_DOMAIN ?? "").trim().toLowerCase();
+  if (previewDomain) {
+    validatePreviewDomain(previewDomain, url.hostname);
+  }
   const clientId = credential(env, "GOOGLE_CLIENT_ID");
   const clientSecret = credential(env, "GOOGLE_CLIENT_SECRET");
   if (!!clientId !== !!clientSecret) {
@@ -66,6 +82,8 @@ export function loadConfig(
     ),
     runnerStatusDir: path.resolve(env.RUNNER_STATUS_DIR ?? "/runner-status"),
     onboardingPort,
+    previewPort,
+    ...(previewDomain ? { previewDomain } : {}),
     ...(clientId && clientSecret ? { google: { clientId, clientSecret } } : {}),
   };
 }
@@ -90,6 +108,31 @@ function credential(env: NodeJS.ProcessEnv, name: string): string {
     // Never include file contents or underlying errors in logs.
     throw new Error(
       name + " could not be loaded; check the credential configuration",
+    );
+  }
+}
+
+// App pages run arbitrary user code, so they must never share an origin, or a
+// parent/child host, with the console.
+export function validatePreviewDomain(domain: string, consoleHost: string) {
+  if (
+    !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{1,62}$/.test(
+      domain,
+    ) ||
+    domain.length > 200
+  ) {
+    throw new Error(
+      "PREVIEW_DOMAIN must be a hostname such as apps.example.net",
+    );
+  }
+  const host = consoleHost.toLowerCase();
+  if (
+    domain === host ||
+    domain.endsWith("." + host) ||
+    host.endsWith("." + domain)
+  ) {
+    throw new Error(
+      "PREVIEW_DOMAIN must not be the console host or a parent or child of it",
     );
   }
 }

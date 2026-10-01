@@ -21,6 +21,10 @@ import { installGoogleRoutes } from "./google-routes.ts";
 import { installTelemetryRoutes } from "./telemetry-routes.ts";
 import { RunnerTelemetryStore } from "./telemetry-store.ts";
 import { InstallationStore } from "./installation-store.ts";
+import { AppStore } from "./app-store.ts";
+import { AppService } from "./apps.ts";
+import { PreviewAuth } from "./preview-proxy.ts";
+import { installPreviewRoutes } from "./preview-routes.ts";
 
 const SESSION_IDLE_TIMEOUT_MS = 24 * 60 * 60_000;
 
@@ -44,6 +48,9 @@ export interface AppDependencies {
   settings?: SettingsStore;
   audit?: AuditLogger;
   installation?: InstallationStore;
+  // Shared with the preview listener (one-time codes are held in memory).
+  apps?: AppStore;
+  previewAuth?: PreviewAuth;
 }
 
 export function createApp(
@@ -57,6 +64,10 @@ export function createApp(
   const audit = dependencies.audit ?? new AuditLogger(config.dataDir);
   const users = dependencies.users ?? new UserStore(config.dataDir);
   const runners = new RunnerRouter(config, dependencies.ipc);
+  const appStore = dependencies.apps ?? new AppStore(config.dataDir);
+  const apps = new AppService(appStore, runners, config);
+  const previewAuth =
+    dependencies.previewAuth ?? new PreviewAuth(config.dataDir);
   const loginLimiter = new LoginLimiter();
   const sessions = new Map<string, McpSession>();
 
@@ -127,6 +138,7 @@ export function createApp(
     dependencies.telemetry ??
       new RunnerTelemetryStore(config.runnerStatusDir ?? "/runner-status"),
   );
+  installPreviewRoutes(app, config, users, appStore, previewAuth);
   installAdminRoutes(
     app,
     config,
@@ -136,6 +148,7 @@ export function createApp(
     audit,
     settings,
     installation,
+    apps,
   );
   installOAuthRoutes(app, config, auth, audit, users, !!google);
 
@@ -187,6 +200,11 @@ export function createApp(
         principal: { userId: token.userId, authVersion: token.authVersion },
         ipc: runners.forUser(token.user),
         audit,
+        apps: {
+          service: apps,
+          owner: token.user,
+          publicAllowed: async () => (await settings.read()).publicApps,
+        },
         resourceMetadataUrl: `${config.publicBaseUrl}/.well-known/oauth-protected-resource`,
       });
       session = {

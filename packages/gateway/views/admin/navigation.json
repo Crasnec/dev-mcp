@@ -64,6 +64,18 @@
     }
   },
   {
+    "key": "apps",
+    "href": "/admin/apps",
+    "label": "앱",
+    "mark": "◎",
+    "description": "실행 환경에서 서버를 올리고 앱 주소로 공개합니다.",
+    "self": {
+      "href": "/account/apps",
+      "label": "앱",
+      "description": "내 프로젝트의 서버를 올리고 앱 주소로 공개합니다."
+    }
+  },
+  {
     "key": "connections",
     "href": "/admin/connections",
     "label": "연결·세션",

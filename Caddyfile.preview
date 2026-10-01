@@ -1,0 +1,32 @@
+# Use with CADDYFILE_PATH=./Caddyfile.preview and PREVIEW_DOMAIN set in .env.
+# PREVIEW_DOMAIN must be a different registrable domain from MCP_DOMAIN, with
+# a wildcard DNS record (*.PREVIEW_DOMAIN) pointing at this host.
+{
+	email {$ACME_EMAIL}
+	acme_ca {$ACME_CA}
+	# Certificates for app hosts are issued on first visit, only for hosts the
+	# gateway confirms as existing apps.
+	on_demand_tls {
+		ask http://gateway:3200/__dev-mcp/tls-allowed
+	}
+}
+
+{$MCP_DOMAIN} {
+	encode zstd gzip
+	@authentication path /auth/google/callback /oauth/consent /oauth/authorize /preview/authorize
+	log_skip @authentication
+	reverse_proxy gateway:3000
+	log {
+		output stdout
+		format json
+	}
+}
+
+*.{$PREVIEW_DOMAIN} {
+	tls {
+		on_demand
+	}
+	reverse_proxy gateway:3200 {
+		flush_interval -1
+	}
+}

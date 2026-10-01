@@ -100,9 +100,10 @@ The bootstrap rejects an incorrect email, an unverified/non-pending account, or 
 | `/admin/usage` | Live and historical CPU, memory, disk and network charts; host, all runners or one owner; period averages, P50/P95/P99, sampled peaks and transfer totals |
 | `/admin/runners` | Per-user connectivity, lifecycle operations, network access, resource/quota controls, workspace location and moves to a host directory |
 | `/admin/processes` | Owner/status filters; process detail, paged logs, stop a running process |
+| `/admin/apps` | [Apps](#apps-simple-deployment): deploy a project command with a port, start/stop, visibility, delete; all owners (`/account/apps` for one's own) |
 | `/admin/connections` | Browser sessions and individual revocation; OAuth clients, callback URLs and grant counts; client removal with ID confirmation |
 | `/admin/audit` | Automatically refreshed, searchable audit records with inline details and live process logs; bounded to the most recent 1 MiB of the log |
-| `/admin/settings` | Open/close new registrations and edit the signup notice; VS Code link settings; read-only deployment, workspace root and onboarding information |
+| `/admin/settings` | Open/close new registrations and edit the signup notice; allow or disable public app links; VS Code link settings; read-only deployment, workspace root and onboarding information |
 
 Lists are paginated (25 records); browser sessions and OAuth clients have independent pagination on the connections screen. Administrators can manage all users' workspaces, but every operation still targets that owner's isolated runner. Normal users cannot enter administration. All administrative mutations require the administrator's authenticated session, CSRF token, and a matching Origin when present. Removing an OAuth client invalidates its access/refresh tokens and pending authorizations. Project deletion is permanent and does not stop running processes automatically.
 
@@ -248,8 +249,9 @@ Errors include `error.code`, `error.message`, and optional `error.details`.
 | Commands  | `command_run`, `command_output`                                                             |
 | Processes | `process_start`, `process_list`, `process_logs`, `process_stop`                             |
 | Git       | `git_read`, `git_commit`                                                                 |
+| Apps      | `app_list`, `app_deploy`, `app_stop`, `app_delete`                                          |
 
-The catalog has 17 tools. Use `git_read` with `operation: "status" | "diff" | "log"`; `staged` applies to diffs and `limit` to logs. This replaces `git_status`, `git_diff`, and `git_log`. Use `process_list` (optionally filtered by `project_id`) for current process state instead of `process_status`. Refresh the connected client's tool catalog after updating.
+The catalog has 21 tools. Use `git_read` with `operation: "status" | "diff" | "log"`; `staged` applies to diffs and `limit` to logs. This replaces `git_status`, `git_diff`, and `git_log`. Use `process_list` (optionally filtered by `project_id`) for current process state instead of `process_status`. Refresh the connected client's tool catalog after updating.
 
 The browser UI contains connection instructions, OAuth consent, and error pages. The separate `/security` introduction page has been removed; the security model is documented below.
 
@@ -258,6 +260,29 @@ The browser UI contains connection instructions, OAuth consent, and error pages.
 The `image_read` tool and its signed `/media` URLs have been removed. Refresh the connected client’s tool catalog after upgrading.
 
 Tool annotations distinguish reads, writes, destructive actions, and external communication. Shell calls always advertise `destructiveHint: true` and `openWorldHint: true`. The design follows the [OpenAI tool guidance](https://developers.openai.com/apps-sdk/plan/tools).
+
+## Apps (simple deployment)
+
+An app is a server started from a project, published at `https://<name>.<PREVIEW_DOMAIN>`. It consists of a name, a project, a start command, and the port the server listens on (on `localhost` or `0.0.0.0`) inside the account's runner. Apps are created on **앱** (`/admin/apps`, `/account/apps`) or by ChatGPT with `app_deploy`, which saves the app, (re)starts it as a tracked background process and returns the URL. `app_list`, `app_stop` and `app_delete` manage apps. App processes are not restarted automatically: after a runner restart or crash, start the app again. Each account can have 10 apps; names are global.
+
+Each app is either **private** (default: only its owner and administrators, after signing in) or **public** (anyone with the link). Administrators can disable public links in **운영 설정**; public apps then behave as private.
+
+**Domain.** Apps run arbitrary user code. They are therefore served on a different registrable domain from the console, never under it: a page on the console's origin could act with a visiting administrator's session. Set `PREVIEW_DOMAIN` (the gateway rejects the console host and its parents or children) and point a wildcard DNS record `*.PREVIEW_DOMAIN` at the host. A DuckDNS subdomain such as `example.duckdns.org` already resolves wildcards. Then use `CADDYFILE_PATH=./Caddyfile.preview`. Its wildcard site uses on-demand TLS, and the `ask` endpoint (`/__dev-mcp/tls-allowed`) lets certificates be issued only for existing app names. Without `PREVIEW_DOMAIN`, apps can still be defined and run but have no URL.
+
+**How requests reach the app.**
+
+- The gateway serves apps on a separate listener (`PREVIEW_PORT`, default 3200, reached only by the reverse proxy over the `edge` network) that has no console routes.
+- Gateway and runners still share no network. Each request opens a byte stream over the account's signed IPC socket: an `http_tunnel` request with a fresh timestamp, refused if replayed or older than 30 seconds. The runner then connects to `127.0.0.1:<port>`, falling back to `::1`, and pipes the bytes. HTTP and WebSocket upgrades (for example development hot reload) pass through. A runner allows 64 concurrent app connections.
+- The app receives `Host: localhost:<port>` (development servers often accept only that) plus `X-Forwarded-Host`, `X-Forwarded-Proto` and `X-Forwarded-For`.
+- Traffic tunnelled this way is not counted in the runner's network statistics.
+
+**Private access.**
+
+1. A visitor without a valid app cookie is redirected to the console's `/preview/authorize`, signing in with Google first if needed.
+2. The console checks that the viewer owns the app or is an administrator, then redirects back with a 60-second single-use code.
+3. The app host exchanges the code for its own host-only cookie (`__Host-dev-mcp-preview`, 12 hours). The cookie is HMAC-signed with `gateway-data/preview-secret`, bound to that app, and checked against the viewer's current credential version, so revoking access ends it.
+
+The proxy strips this cookie before forwarding and drops any upstream `Set-Cookie` with that name.
 
 ## OAuth scopes
 

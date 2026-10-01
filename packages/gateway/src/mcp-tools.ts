@@ -9,7 +9,10 @@ import { fail } from "./protocol.ts";
 import type { Scope } from "./config.ts";
 import type { IpcClient } from "./ipc-client.ts";
 import type { AuditLogger } from "./audit.ts";
-import type { Principal } from "./user-store.ts";
+import type { Principal, User } from "./user-store.ts";
+import type { AppService } from "./apps.ts";
+import type { AppRecord } from "./app-store.ts";
+import { appNamePattern } from "./app-store.ts";
 
 const resultShape = {
   ok: z.boolean(),
@@ -77,6 +80,11 @@ export function createMcpServer(options: {
   ipc: IpcClient;
   audit: AuditLogger;
   resourceMetadataUrl: string;
+  apps?: {
+    service: AppService;
+    owner: User;
+    publicAllowed: () => Promise<boolean>;
+  };
 }): McpServer {
   const server = new McpServer({ name: "dev-mcp", version: "0.1.0" });
   const add = <Shape extends z.ZodRawShape>(definition: {
@@ -87,6 +95,8 @@ export function createMcpServer(options: {
     scopes: Scope[] | ((params: Record<string, unknown>) => Scope[]);
     securityScopes?: Scope[];
     annotations: ToolAnnotations;
+    // Handled in the gateway instead of forwarding to the runner.
+    local?: (params: Record<string, unknown>) => Promise<ToolResult>;
   }): void => {
     const handler = async (
       typedParams: Record<string, unknown>,
@@ -112,6 +122,15 @@ export function createMcpServer(options: {
             createScopeChallenge(options.resourceMetadataUrl, missing),
           ],
         };
+      } else if (definition.local) {
+        try {
+          result = await definition.local(params);
+        } catch (error) {
+          result = fail(
+            "APP_ERROR",
+            error instanceof Error ? error.message : String(error),
+          );
+        }
       } else {
         result = await options.ipc.call(definition.name, params, options.actor);
       }
@@ -409,6 +428,147 @@ export function createMcpServer(options: {
     scopes: ["workspace:write"],
     annotations: write,
   });
+  const apps = async () => {
+    if (!options.apps) {
+      throw new Error("Apps are not available");
+    }
+    return options.apps;
+  };
+  const describe = async (app: AppRecord) => {
+    const { service, owner } = await apps();
+    const status = await service.status(owner, app, options.actor);
+    return {
+      name: app.slug,
+      url: service.url(app.slug) ?? null,
+      projectId: app.projectId,
+      command: app.command,
+      port: app.port,
+      visibility: app.visibility,
+      state: status.state,
+      processId: app.processId ?? null,
+    };
+  };
+  const ownApp = async (name: unknown) => {
+    const { service, owner } = await apps();
+    const app = await service.store.get(String(name));
+    if (!app || app.ownerId !== owner.id) {
+      throw new Error("Unknown app: " + String(name));
+    }
+    return app;
+  };
+  const appName = z
+    .string()
+    .regex(appNamePattern)
+    .describe(
+      "App name: lowercase letters, digits and -, up to 40 characters. The app is served at https://<name>.<preview domain>.",
+    );
+  add({
+    name: "app_list",
+    title: "List apps",
+    description:
+      "List this account's apps with their URL, port, visibility and whether their server is running.",
+    inputSchema: {},
+    scopes: ["command:run"],
+    annotations: readOnly,
+    local: async () => {
+      const { service, owner } = await apps();
+      const mine = (await service.store.list()).filter(
+        (app) => app.ownerId === owner.id,
+      );
+      return {
+        ok: true,
+        data: { apps: await Promise.all(mine.map(describe)) },
+        truncated: false,
+      };
+    },
+  });
+  add({
+    name: "app_deploy",
+    title: "Deploy app",
+    description:
+      "Save an app and (re)start its server as a tracked background process, then return its URL. The command must start a server listening on `port` (localhost or 0.0.0.0) inside the runner. Private apps open only for the owner and administrators; public apps for anyone with the link. Redeploying an existing app restarts it with the new settings.",
+    inputSchema: {
+      name: appName,
+      project_id: projectId,
+      command: z.string().min(1).max(2000),
+      port: z.number().int().min(1024).max(65535),
+      visibility: z.enum(["private", "public"]).optional(),
+      cwd: relativePath.optional(),
+      network_intent: networkIntent,
+    },
+    scopes: (p) => [
+      "command:run",
+      ...(p.network_intent === "none" ? [] : ["command:network" as const]),
+    ],
+    securityScopes: ["command:run", "command:network"],
+    annotations: shell,
+    local: async (p) => {
+      const { service, owner, publicAllowed } = await apps();
+      const visibility = (p.visibility as AppRecord["visibility"]) ?? "private";
+      if (visibility === "public" && !(await publicAllowed())) {
+        return fail(
+          "PUBLIC_APPS_DISABLED",
+          "An administrator has disabled public app links; deploy it as private.",
+        );
+      }
+      const { app, result } = await service.deploy(
+        owner,
+        {
+          slug: String(p.name),
+          projectId: String(p.project_id),
+          command: String(p.command),
+          ...(typeof p.cwd === "string" ? { cwd: p.cwd } : {}),
+          port: Number(p.port),
+          visibility,
+          networkIntent: p.network_intent as AppRecord["networkIntent"],
+        },
+        options.actor,
+      );
+      return result.ok
+        ? { ok: true, data: { app: await describe(app) }, truncated: false }
+        : result;
+    },
+  });
+  add({
+    name: "app_stop",
+    title: "Stop app",
+    description: "Stop an app's server process. Its definition and URL stay.",
+    inputSchema: { name: appName },
+    scopes: ["command:run"],
+    annotations: destructive,
+    local: async (p) => {
+      const { service, owner } = await apps();
+      const app = await ownApp(p.name);
+      const result = await service.stop(owner, app, options.actor);
+      return result.ok
+        ? {
+            ok: true,
+            data: { name: app.slug, stopped: true },
+            truncated: false,
+          }
+        : result;
+    },
+  });
+  add({
+    name: "app_delete",
+    title: "Delete app",
+    description:
+      "Stop an app's server and delete its definition and URL. Project files are not changed.",
+    inputSchema: { name: appName },
+    scopes: ["command:run"],
+    annotations: destructive,
+    local: async (p) => {
+      const { service, owner } = await apps();
+      const app = await ownApp(p.name);
+      await service.remove(owner, app, options.actor);
+      return {
+        ok: true,
+        data: { name: app.slug, deleted: true },
+        truncated: false,
+      };
+    },
+  });
+
   return server;
 }
 
@@ -448,6 +608,12 @@ function auditResult(
   tool: string,
   result: ToolResult,
 ): Record<string, unknown> {
+  if (tool.startsWith("app_") && result.ok) {
+    const data = result.data as
+      { app?: { name?: unknown; url?: unknown }; name?: unknown } | undefined;
+    const name = data?.app?.name ?? data?.name;
+    return typeof name === "string" ? { app: name } : {};
+  }
   if (tool !== "process_start" || !result.ok) {
     return {};
   }

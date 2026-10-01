@@ -1,0 +1,44 @@
+<div class="detail-heading"><div><a class="back-link" href="{{consoleBase}}/apps">← 앱 목록</a><h2>{{app.slug}}</h2><span class="badge {{app.state}}">{{app.stateLabel}}</span></div><a class="button" href="{{consoleBase}}/apps/{{app.slug}}">상태 새로고침 ↻</a></div>
+<div class="two-column">
+  <div class="stack">
+    <section class="panel padded">
+      <h2>앱 정보</h2>
+      <dl class="properties">
+        <div><dt>주소</dt><dd>{{#app.url}}<a href="{{app.url}}" target="_blank" rel="noopener noreferrer">{{app.url}}</a>{{/app.url}}{{^app.url}}미리보기 도메인 미설정{{/app.url}}</dd></div>
+        {{^selfScope}}<div><dt>소유자</dt><dd>{{owner.username}}</dd></div>{{/selfScope}}
+        <div><dt>공개 범위</dt><dd>{{app.visibilityLabel}}</dd></div>
+        <div><dt>포트</dt><dd>{{app.port}}</dd></div>
+        <div><dt>네트워크 사용</dt><dd>{{app.networkIntent}}</dd></div>
+      </dl>
+      <pre class="command-block">{{app.command}}</pre>
+      <div class="actions">
+        {{#app.url}}<a class="button primary" href="{{app.url}}" target="_blank" rel="noopener noreferrer">앱 열기</a>{{/app.url}}
+        {{#app.processHref}}<a class="button" href="{{app.processHref}}">실행 로그</a>{{/app.processHref}}
+      </div>
+    </section>
+    <section class="panel padded">
+      <h2>실행</h2>
+      <form method="post" action="{{consoleBase}}/apps/{{app.slug}}/start">{{> partials/csrf}}<div class="actions"><button class="primary" type="submit">{{#app.running}}다시 시작{{/app.running}}{{^app.running}}시작{{/app.running}}</button></div></form>
+      {{#app.running}}<form method="post" action="{{consoleBase}}/apps/{{app.slug}}/stop">{{> partials/csrf}}<div class="actions"><button class="danger" type="submit">중지</button></div></form>{{/app.running}}
+      <p class="help">시작하면 저장된 명령을 백그라운드 프로세스로 실행합니다. 실행 환경이 재시작되거나 프로세스가 끝나면 다시 시작해 주세요.</p>
+    </section>
+  </div>
+  <div class="stack">
+    <section class="panel padded">
+      <h2>공개 범위</h2>
+      <form method="post" action="{{consoleBase}}/apps/{{app.slug}}/visibility">{{> partials/csrf}}
+        <label>공개 범위<select name="visibility"><option value="private" {{^app.public}}selected{{/app.public}}>본인·관리자만 (로그인 필요)</option>{{#publicApps}}<option value="public" {{#app.public}}selected{{/app.public}}>링크가 있는 누구나</option>{{/publicApps}}</select></label>
+        {{^publicApps}}<p class="help">관리자가 공개 링크를 꺼 두었습니다.{{#app.public}} 이 앱은 지금 로그인한 본인·관리자만 열 수 있습니다.{{/app.public}}</p>{{/publicApps}}
+        <button type="submit">공개 범위 저장</button>
+      </form>
+    </section>
+    <section class="panel padded">
+      <h2>앱 삭제</h2>
+      <form method="post" action="{{consoleBase}}/apps/{{app.slug}}/delete">{{> partials/csrf}}
+        <label>확인을 위해 앱 이름 입력<input name="confirm" required autocomplete="off" spellcheck="false" placeholder="{{app.slug}}"></label>
+        <p class="help">서버 프로세스를 중지하고 앱 주소를 삭제합니다. 프로젝트 파일은 바뀌지 않습니다.</p>
+        <button class="danger" type="submit">삭제</button>
+      </form>
+    </section>
+  </div>
+</div>

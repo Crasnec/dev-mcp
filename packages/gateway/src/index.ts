@@ -6,6 +6,9 @@ import { InstallationStore } from "./installation-store.ts";
 import { createOnboardingApp, onboardingCode } from "./onboarding.ts";
 import { SettingsStore } from "./settings-store.ts";
 import { UserStore } from "./user-store.ts";
+import { AppStore } from "./app-store.ts";
+import { RunnerRouter } from "./runner-router.ts";
+import { createPreviewServer, PreviewAuth } from "./preview-proxy.ts";
 
 const config = loadConfig();
 await mkdir(config.dataDir, { recursive: true, mode: 0o700 });
@@ -16,7 +19,16 @@ const installation = new InstallationStore(
   config.dataDir,
   config.runnerStatusDir ?? "/runner-status",
 );
-const app = createApp(config, { users, settings, audit, installation });
+const apps = new AppStore(config.dataDir);
+const previewAuth = new PreviewAuth(config.dataDir);
+const app = createApp(config, {
+  users,
+  settings,
+  audit,
+  installation,
+  apps,
+  previewAuth,
+});
 const servers = [
   app.listen(config.port, "0.0.0.0", () => {
     console.log(
@@ -52,6 +64,31 @@ if (
           port: config.onboardingPort,
           code,
           hint: "Open http://127.0.0.1:<ONBOARDING_HOST_PORT>/ on the Docker host or through an SSH tunnel.",
+        }),
+      );
+    }),
+  );
+}
+
+// Published apps are served on their own listener, reached by the reverse
+// proxy for *.<PREVIEW_DOMAIN> only; it has no console routes.
+if (config.previewDomain && config.previewPort) {
+  const preview = createPreviewServer({
+    config,
+    apps,
+    users,
+    runners: new RunnerRouter(config),
+    settings,
+    auth: previewAuth,
+    audit,
+  });
+  servers.push(
+    preview.listen(config.previewPort, "0.0.0.0", () => {
+      console.log(
+        JSON.stringify({
+          event: "preview_ready",
+          port: config.previewPort,
+          previewDomain: config.previewDomain,
         }),
       );
     }),

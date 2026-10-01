@@ -25,6 +25,10 @@ services:
       USER_RUNNER_SOCKET_DIR: /user-ipc
       RUNNER_STATUS_DIR: /runner-status
       ONBOARDING_PORT: "3100"
+      # Apps are served at https://<name>.${PREVIEW_DOMAIN} on port 3200, which
+      # only the reverse proxy reaches over the edge network (Caddyfile.preview).
+      PREVIEW_DOMAIN: ${PREVIEW_DOMAIN:-}
+      PREVIEW_PORT: "3200"
     # Local onboarding only: published on the host loopback, never via Caddy.
     ports:
       - "127.0.0.1:${ONBOARDING_HOST_PORT:-3100}:3100"

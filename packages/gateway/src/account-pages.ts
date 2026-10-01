@@ -7,12 +7,14 @@ export function credentialsPage(
   csrf: string,
   settings?: { registrationOpen: boolean; registrationMessage: string },
   googleEnabled = false,
+  returnTo?: string,
 ): string {
   const signup = kind === "signup";
   return renderView("auth/credentials", {
     title: signup ? "회원가입" : "로그인",
     signup,
     csrf,
+    returnTo,
     closed: signup && settings?.registrationOpen === false,
     registrationMessage: signup ? settings?.registrationMessage : "",
     googleEnabled,

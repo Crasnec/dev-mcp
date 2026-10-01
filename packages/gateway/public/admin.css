@@ -2561,3 +2561,8 @@ tbody tr:hover {
     outline: 2px solid CanvasText;
   }
 }
+
+/* Apps */
+.app-name {
+  white-space: nowrap;
+}

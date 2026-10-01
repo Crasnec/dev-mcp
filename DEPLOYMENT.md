@@ -43,6 +43,14 @@ Rollback (printed by the migration script):
 4. Remove the entry from `workspace-dirs.json` in `dev-mcp_runner-status`.
 5. Start `dev-mcp-runner-1`, and redeploy the previous gateway and provisioner images. Tag them before step 2, e.g. `dev-mcp-gateway:rollback-<date>`.
 
+## Pending: apps (developed 2026-10-01, not deployed)
+
+Requires the pending per-account runner version above, deployed and migrated first. Then:
+
+1. Pick a preview domain on a different registrable domain from `dev.crasnec.com`. `crasnec.duckdns.org` already resolves `*.crasnec.duckdns.org` to this host. Set `PREVIEW_DOMAIN=crasnec.duckdns.org` in `.env` and recreate the gateway.
+2. Add the app site to plan-app's Caddy, which owns ports 80/443 here: the global `on_demand_tls { ask http://gateway:3200/__dev-mcp/tls-allowed }` and a `*.crasnec.duckdns.org { tls { on_demand } reverse_proxy gateway:3200 { flush_interval -1 } }` block, as in this repository's `Caddyfile.preview`. Then rebuild the `plan-app-caddy` image. The proxy already shares `dev-mcp_edge` with the gateway.
+3. Verify with an app in the administrator's account: open a private app, which goes through the console sign-in redirect. Then switch it to public and open it again.
+
 ## Automatic user runner creation (2026-09-22)
 
 Account approval previously saved only the runner identity; creating its container required the manual host helper. The separate `provisioner` service now polls active accounts every five seconds and creates missing dedicated runners with that helper. It also repairs already-approved accounts and retries failed creations. Running or deliberately stopped containers are preserved. Pending/disabled accounts are skipped.

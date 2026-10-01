@@ -4,6 +4,8 @@ import { JsonStore } from "./json-store.ts";
 export interface SiteSettings {
   registrationOpen: boolean;
   registrationMessage: string;
+  // Whether apps may be published to anyone with the link.
+  publicApps: boolean;
   // Only used to build "open in VS Code" links; not an access boundary.
   vscodeSshHost: string;
   vscodePathFrom: string;
@@ -13,6 +15,7 @@ export interface SiteSettings {
 const defaults = (): SiteSettings => ({
   registrationOpen: true,
   registrationMessage: "",
+  publicApps: true,
   vscodeSshHost: "",
   vscodePathFrom: "",
   vscodePathTo: "",
@@ -43,6 +46,9 @@ export class SettingsStore {
           value.registrationMessage.length > 1000))
     ) {
       throw new Error("가입 안내는 1,000자 이내로 입력해 주세요.");
+    }
+    if ("publicApps" in value && typeof value.publicApps !== "boolean") {
+      throw new Error("공개 링크 허용 여부를 확인해 주세요.");
     }
     if (
       "vscodeSshHost" in value &&

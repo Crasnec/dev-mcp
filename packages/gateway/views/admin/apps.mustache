@@ -1,0 +1,27 @@
+{{^previewDomain}}<p class="context-message">미리보기 도메인(<code>PREVIEW_DOMAIN</code>)이 설정되지 않아 앱 주소가 만들어지지 않습니다. 앱 정의와 실행은 그대로 쓸 수 있습니다.</p>{{/previewDomain}}
+<section class="panel">
+  {{^selfScope}}<form class="toolbar" method="get" action="{{consoleBase}}/apps">{{> partials/owner-filter}}<button class="primary" type="submit">새 앱 소유자 선택</button></form>{{/selfScope}}
+  <div class="table-scroll"><table><caption class="sr-only">앱 목록</caption><thead><tr><th>이름</th><th>주소</th>{{^selfScope}}<th>소유자</th>{{/selfScope}}<th>공개 범위</th><th>포트</th><th>상태</th></tr></thead><tbody>
+    {{#rows}}<tr><td><a class="strong-link app-name" href="{{href}}">{{slug}}</a></td><td>{{#url}}<a href="{{url}}" target="_blank" rel="noopener noreferrer">{{url}}</a>{{/url}}{{^url}}—{{/url}}</td>{{^selfScope}}<td>{{owner.username}}</td>{{/selfScope}}<td>{{visibilityLabel}}</td><td>{{port}}</td><td><span class="badge {{state}}">{{stateLabel}}</span></td></tr>{{/rows}}
+    {{^rows}}<tr><td colspan="6" class="empty-state">아직 만든 앱이 없습니다.</td></tr>{{/rows}}
+  </tbody></table></div>
+</section>
+<section class="panel padded">
+  <h2>새 앱 배포</h2>
+  {{#ready}}{{#projects.length}}
+  <p class="help">프로젝트에서 서버를 띄우는 명령과 그 서버가 실행 환경 안에서 듣는 포트를 입력하세요. 앱은 <code>https://&lt;이름&gt;.{{previewDomain}}</code>{{^previewDomain}}(미리보기 도메인 설정 후){{/previewDomain}} 에서 열립니다. 서버는 <code>localhost</code>나 <code>0.0.0.0</code>에서 들어야 합니다.</p>
+  <form method="post" action="{{consoleBase}}/apps">
+    {{> partials/csrf}}{{^selfScope}}<input type="hidden" name="owner" value="{{owner.id}}"><p class="help">소유자: {{owner.username}}</p>{{/selfScope}}
+    <label>앱 이름<input name="name" required maxlength="40" autocomplete="off" spellcheck="false" placeholder="my-app"></label>
+    <label>프로젝트<select name="project_id" required>{{#projects}}<option value="{{id}}">{{name}}</option>{{/projects}}</select></label>
+    <label>실행 명령<textarea name="command" required maxlength="2000" rows="3" placeholder="npm run dev -- --host 0.0.0.0 --port 5173" spellcheck="false"></textarea></label>
+    <label>포트<input name="port" type="number" min="1024" max="65535" step="1" required placeholder="5173"></label>
+    <label>공개 범위<select name="visibility"><option value="private">본인·관리자만 (로그인 필요)</option>{{#publicApps}}<option value="public">링크가 있는 누구나</option>{{/publicApps}}</select></label>
+    <label>네트워크 사용<select name="network_intent"><option value="none">사용 안 함</option><option value="read">읽기</option><option value="write">쓰기</option></select></label>
+    <button class="primary" type="submit">배포</button>
+  </form>
+  {{/projects.length}}
+  {{^projects.length}}<p class="help">앱을 만들 프로젝트를 먼저 등록해 주세요.</p><a class="button" href="{{consoleBase}}/projects{{^selfScope}}?owner={{owner.id}}{{/selfScope}}">프로젝트 등록 →</a>{{/projects.length}}
+  {{/ready}}
+  {{^ready}}<div class="context-message">실행 환경이 응답하지 않아 프로젝트를 불러오지 못했습니다. <a href="{{consoleBase}}/runners/{{owner.id}}">실행 환경 확인 →</a></div>{{/ready}}
+</section>

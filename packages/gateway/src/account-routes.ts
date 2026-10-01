@@ -6,6 +6,7 @@ import type { GatewayConfig } from "./config.ts";
 import type { UserStore } from "./user-store.ts";
 import type { RunnerRouter } from "./runner-router.ts";
 import { sendPage, errorPage } from "./pages.ts";
+import { previewAuthorizeReturn } from "./preview-routes.ts";
 import {
   credentialsPage,
   accountPage,
@@ -54,15 +55,27 @@ export function installAccountRoutes(
   };
   for (const kind of ["login", "signup"] as const) {
     app.get("/" + kind, async (req, res) => {
+      // Only an app authorization may be resumed after signing in here.
+      const returnTo =
+        typeof req.query.returnTo === "string" &&
+        previewAuthorizeReturn.test(req.query.returnTo)
+          ? req.query.returnTo
+          : undefined;
       if (await current(req)) {
-        return res.redirect(303, "/account");
+        return res.redirect(303, returnTo ?? "/account");
       }
       const csrf = randomToken();
       res.cookie(formCookie, csrf, { ...cookieOptions, maxAge: 60 * 60_000 });
       return sendPage(
         res,
         200,
-        credentialsPage(kind, csrf, await settings.read(), googleEnabled),
+        credentialsPage(
+          kind,
+          csrf,
+          await settings.read(),
+          googleEnabled,
+          returnTo,
+        ),
         forms,
       );
     });

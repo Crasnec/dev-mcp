@@ -36,7 +36,7 @@ describe("MCP tool catalog", () => {
     await server.connect(serverTransport);
     await client.connect(clientTransport);
     const catalog = await client.listTools();
-    expect(catalog.tools).toHaveLength(17);
+    expect(catalog.tools).toHaveLength(21);
     for (const tool of catalog.tools) {
       expect(tool.inputSchema.required).toContain("reason");
       expect(tool.inputSchema.properties?.reason).toMatchObject({
@@ -78,6 +78,9 @@ describe("MCP tool catalog", () => {
       "process_list",
       "process_logs",
       "process_stop",
+      "app_list",
+      "app_stop",
+      "app_delete",
     ]) {
       const tool = catalog.tools.find((entry) => entry.name === name)!;
       expect(tool._meta?.securitySchemes).toEqual([
@@ -93,6 +96,34 @@ describe("MCP tool catalog", () => {
         scopes: ["command:run", "command:network"],
       },
     ]);
+    const deploy = catalog.tools.find((tool) => tool.name === "app_deploy")!;
+    expect(deploy._meta?.securitySchemes).toEqual([
+      { type: "oauth2", scopes: ["command:run", "command:network"] },
+    ]);
+    expect(deploy.annotations).toMatchObject({
+      destructiveHint: true,
+      openWorldHint: true,
+    });
+    expect(deploy.inputSchema.required).toEqual(
+      expect.arrayContaining([
+        "name",
+        "project_id",
+        "command",
+        "port",
+        "network_intent",
+        "reason",
+      ]),
+    );
+    expect(
+      catalog.tools.find((tool) => tool.name === "app_list")!.annotations
+        ?.readOnlyHint,
+    ).toBe(true);
+    for (const name of ["app_stop", "app_delete"]) {
+      expect(
+        catalog.tools.find((tool) => tool.name === name)!.annotations
+          ?.destructiveHint,
+      ).toBe(true);
+    }
     const deletion = catalog.tools.find(
       (tool) => tool.name === "project_delete",
     )!;

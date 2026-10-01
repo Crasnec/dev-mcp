@@ -79,6 +79,7 @@ interface AuditRow {
   projectId?: string;
   command?: string;
   tool?: string;
+  reason?: string;
   at: string;
   sortAt: string;
   event: string;
@@ -1107,6 +1108,7 @@ function auditRow(entry: Record<string, unknown>, users: User[]): AuditRow {
     "role",
     "status",
     "tool",
+    "reason",
     "ok",
     "errorCode",
     "registrationOpen",
@@ -1130,6 +1132,7 @@ function auditRow(entry: Record<string, unknown>, users: User[]): AuditRow {
     projectId: stringValue(entry.projectId) ?? stringValue(params.project_id),
     command: stringValue(params.command),
     tool: stringValue(entry.tool),
+    reason: stringValue(entry.reason)?.trim() || undefined,
     at: dateLabel(typeof entry.at === "string" ? entry.at : undefined),
     sortAt: typeof entry.at === "string" ? entry.at : "",
     event: String(entry.event ?? "unknown"),

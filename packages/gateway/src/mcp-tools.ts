@@ -29,6 +29,14 @@ const resultSchema = z.object(resultShape);
 type StructuredToolResult = z.infer<typeof resultSchema>;
 
 const projectId = z.string().uuid().describe("Registered project identifier");
+const callReason = z
+  .string()
+  .trim()
+  .min(1)
+  .max(500)
+  .describe(
+    "Brief user-facing purpose of this call in one sentence (1–500 characters). Visible in the audit log; do not include secrets.",
+  );
 const relativePath = z
   .string()
   .max(4096)
@@ -87,7 +95,7 @@ export function createMcpServer(options: {
     const handler = async (
       typedParams: Record<string, unknown>,
     ): Promise<CallToolResult> => {
-      const params = typedParams;
+      const { reason, ...params } = typedParams;
       const required =
         typeof definition.scopes === "function"
           ? definition.scopes(params)
@@ -118,6 +126,7 @@ export function createMcpServer(options: {
         actor: options.actor,
         userId: options.principal.userId,
         tool: definition.name,
+        reason,
         requiredScopes: required,
         ok: result.ok,
         errorCode: result.error?.code,
@@ -149,12 +158,13 @@ export function createMcpServer(options: {
         `Dynamic scope tool ${definition.name} must declare securityScopes`,
       );
     }
-    server.registerTool<typeof resultShape, Shape>(
+    const inputSchema = { ...definition.inputSchema, reason: callReason };
+    server.registerTool<typeof resultShape, typeof inputSchema>(
       definition.name,
       {
         title: definition.title,
         description: definition.description,
-        inputSchema: definition.inputSchema,
+        inputSchema,
         outputSchema: resultShape,
         annotations: definition.annotations,
         _meta: {

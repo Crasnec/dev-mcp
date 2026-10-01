@@ -1359,6 +1359,28 @@ tbody tr:hover {
   font-weight: 600;
   overflow-wrap: anywhere;
 }
+.audit-event-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 3px 8px;
+}
+.audit-tool {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.audit-reason {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  margin: 5px 0 0;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
 .audit-actor {
   color: var(--ink-2);
 }
@@ -1418,6 +1440,17 @@ tbody tr:hover {
 .audit-detail-panel h3 {
   margin: 0 0 2px;
   font-size: 13px;
+}
+.audit-reason-section {
+  padding: 10px 0 14px;
+}
+.audit-reason-section p {
+  margin: 6px 0 0;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .audit-command-section {
   margin-top: 16px;
@@ -2371,6 +2404,15 @@ tbody tr:hover {
   }
   .usage-note-list {
     padding: 10px 16px 16px 32px;
+  }
+}
+@media (max-width: 380px) {
+  .audit-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "event action"
+      "time action"
+      "actor action";
   }
 }
 @media (max-width: 560px) {

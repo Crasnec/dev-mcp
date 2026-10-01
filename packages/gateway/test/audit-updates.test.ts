@@ -391,9 +391,12 @@ describe("inline audit details", () => {
     h.selection.isCollapsed = false;
     h.selection.anchorNode = h.selection.focusNode = originalFragment.raw;
     h.scroller.scrollLeft = 70;
-    h.fetch.mockResolvedValueOnce(
-      h.listResponse("new page", [auditRow("new")]),
-    );
+    const incoming = auditRow("new");
+    const reason = new Element("p");
+    reason.className = "audit-reason";
+    reason.textContent = "실패한 검증의 원인을 <그대로> 확인합니다.";
+    incoming.summary.append(reason);
+    h.fetch.mockResolvedValueOnce(h.listResponse("new page", [incoming]));
     h.start();
     const before = old.summary.getBoundingClientRect().top;
     await vi.advanceTimersByTimeAsync(2000);
@@ -403,6 +406,10 @@ describe("inline audit details", () => {
       ),
     ).toEqual(["new", "new", "old", "old"]);
     expect(old.summary.getBoundingClientRect().top).toBe(before);
+    expect(h.body.querySelector(".audit-reason")).toBe(reason);
+    expect(reason.textContent).toBe(
+      "실패한 검증의 원인을 <그대로> 확인합니다.",
+    );
     expect(h.window.scrollTo).toHaveBeenCalledWith({
       left: 0,
       top: 40,

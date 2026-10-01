@@ -107,6 +107,70 @@ async function fixture() {
 }
 
 describe("inline audit details and live updates over HTTP", () => {
+  it("shows escaped tool reasons in the list, makes them searchable, and preserves the full reason in inline and no-JavaScript details", async () => {
+    const { get, write, ipc } = await fixture();
+    const reason =
+      (
+        '실패 원인 <script>alert("reason")</script> & 입력값을 확인합니다. ' +
+        "공유 신호의 재현 경로와 실행 결과를 비교합니다. ".repeat(20)
+      ).slice(0, 490) + " 마지막검증지점끝";
+    const id = await write({ event: "tool_call", reason });
+    const list = await get(
+      "/admin/audit?q=" + encodeURIComponent("마지막검증지점끝"),
+    );
+    expect(list.statusCode).toBe(200);
+    expect(ipc).not.toHaveBeenCalled();
+    const row = new RegExp(
+      `<tr\\b[^>]*id="audit-row-${id}"[^>]*>([\\s\\S]*?)<\\/tr>`,
+    ).exec(list.payload)?.[1];
+    expect(row).toContain('<code class="audit-tool">process_start</code>');
+    expect(row).toContain('<p class="audit-reason">');
+    expect(row).toContain("&lt;script&gt;alert(&quot;reason&quot;)");
+    expect(row).toContain("마지막검증지점끝");
+    expect(row).not.toContain("<script>");
+    expect(row).toContain(`aria-controls="audit-detail-${id}"`);
+    expect(row).toContain('aria-expanded="false"');
+    for (const url of [
+      `/admin/audit/${id}/detail`,
+      `/admin/audit?detail=${id}`,
+    ]) {
+      const detail = await get(url);
+      expect(detail.statusCode).toBe(200);
+      const reasonSection =
+        /<section class="audit-reason-section">([\s\S]*?)<\/section>/.exec(
+          detail.payload,
+        )?.[1];
+      expect(reasonSection).toContain("작업 이유");
+      expect(reasonSection).toContain(
+        "&lt;script&gt;alert(&quot;reason&quot;)",
+      );
+      expect(reasonSection).toContain("마지막검증지점끝");
+      expect(reasonSection).not.toContain("<script>");
+      expect(detail.payload).toContain("&quot;reason&quot;:");
+    }
+  });
+
+  it("omits reason UI for legacy, blank and malformed records without inventing a reason from tool parameters", async () => {
+    const { get, write } = await fixture();
+    for (const reason of [undefined, null, "", "   ", 42, { note: "legacy" }]) {
+      const id = await write({
+        event: "tool_call",
+        reason,
+        tool: "project_list",
+        processId: undefined,
+        params: { reason: "legacy parameter is not a recorded reason" },
+      });
+      const detail = await get(`/admin/audit/${id}/detail`);
+      expect(detail.statusCode).toBe(200);
+      expect(detail.payload).not.toContain('class="audit-reason-section"');
+    }
+    const list = await get("/admin/audit");
+    expect(list.payload).toContain(
+      '<code class="audit-tool">project_list</code>',
+    );
+    expect(list.payload).not.toContain('class="audit-reason"');
+  });
+
   it("requires an admin session before any runner access", async () => {
     const { get, write, ipc, users, owner } = await fixture();
     const id = await write();

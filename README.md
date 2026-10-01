@@ -64,7 +64,7 @@ Lists are paginated (25 records); browser sessions and OAuth clients have indepe
 
 Runner and process pages refresh their status automatically while the browser tab is visible, preserving filters and unsaved settings. Process details append new log output and follow the bottom; scrolling up keeps the reading position. Polling drains the remaining output when a process exits, then stops. Manual refresh and paged logs remain available without JavaScript.
 
-Audit details expand in place. The list, related process state, and logs refresh while the tab is visible; incoming records retain open details and the current reading position. Raw record data stays collapsed until requested. Without JavaScript, detail links still render on the server.
+Audit details expand in place. Tool-call rows show the tool name and caller-provided reason; longer reasons are shown in full in the detail view and are searchable from the list. Older records without a reason remain readable. The list, related process state, and logs refresh while the tab is visible; incoming records retain open details and the current reading position. Raw record data stays collapsed until requested. Without JavaScript, detail links still render on the server.
 
 Page HTML lives in `packages/gateway/views/**/*.mustache`, separate from TypeScript route logic. Shared layouts and partials provide navigation, forms, notices, and pagination. Edit menu labels/order in `views/admin/navigation.json`; edit styles in `packages/gateway/public/{auth,admin}.css`. `src/views.ts` renders escaped data; only the already-rendered layout body is inserted as HTML. Production templates are cached until restart. Templates and CSS are copied into the gateway image; rebuild the image when changing them. Signup policy persists in `gateway-data/settings.json` and is included in gateway volume backups.
 
@@ -186,6 +186,8 @@ docker compose -f compose.yaml -f compose.limits.yaml.example up -d --build
 ```
 
 ## MCP tools
+
+Every tool requires a `reason` string explaining the purpose of that call in one short, user-facing sentence. It must contain 1–500 characters after trimming surrounding whitespace. For example, `project_list` accepts `{"reason":"작업할 프로젝트를 확인합니다."}`. The gateway records this text on the `tool_call` audit entry, including failed or scope-denied calls, and removes it before forwarding execution parameters to the runner. Omitted, blank, non-string or overlong reasons fail validation before execution. Keep credentials and other secrets out of this public-facing explanation. Refresh the connected client's tool catalog after upgrading, since clients with cached schemas may omit the new required argument.
 
 Every tool returns a short text summary and structured content in this form:
 

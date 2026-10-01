@@ -1,5 +1,5 @@
 <section class="panel audit-panel">
-  <form class="toolbar" method="get" action="/admin/audit">{{> partials/sort-fields}}<label class="filter-field grow">기록 검색<input type="search" name="q" value="{{q}}" placeholder="사용자·도구·대상 ID"></label><label class="filter-field">이벤트<select name="event"><option value="">전체 이벤트</option>{{#events}}<option value="{{value}}" {{#selected}}selected{{/selected}}>{{value}}</option>{{/events}}</select></label><button class="primary" type="submit">조회</button><a class="button quiet" href="/admin/audit">초기화</a></form>
+  <form class="toolbar" method="get" action="/admin/audit">{{> partials/sort-fields}}<label class="filter-field grow">기록 검색<input type="search" name="q" value="{{q}}" placeholder="이유·사용자·도구·대상 ID"></label><label class="filter-field">이벤트<select name="event"><option value="">전체 이벤트</option>{{#events}}<option value="{{value}}" {{#selected}}selected{{/selected}}>{{value}}</option>{{/events}}</select></label><button class="primary" type="submit">조회</button><a class="button quiet" href="/admin/audit">초기화</a></form>
   <div data-audit-clipped>{{#clipped}}<p class="audit-clipped">최근 1 MiB의 기록을 표시합니다. 이전 기록은 서버의 보관 로그에서 확인할 수 있습니다.</p>{{/clipped}}</div>
   <div class="table-scroll">
     <table class="audit-table" role="table">
@@ -10,7 +10,7 @@
         {{#rows}}
         <tr id="audit-row-{{id}}" data-audit-id="{{id}}" class="audit-row{{#expanded}} expanded{{/expanded}}" role="row">
           <td class="audit-time" role="cell">{{at}}</td>
-          <td class="audit-event" role="cell"><strong>{{event}}</strong></td>
+          <td class="audit-event" role="cell"><div class="audit-event-heading"><strong>{{event}}</strong>{{#tool}}<code class="audit-tool">{{tool}}</code>{{/tool}}</div>{{#reason}}<p class="audit-reason">{{reason}}</p>{{/reason}}</td>
           <td class="audit-actor" role="cell">{{actor}}</td>
           <td class="audit-action" role="cell"><a class="button small audit-detail-toggle" data-audit-toggle data-detail-url="/admin/audit/{{id}}/detail" href="{{detailHref}}" aria-expanded="{{expandedText}}" aria-controls="audit-detail-{{id}}">{{detailLabel}}</a></td>
         </tr>

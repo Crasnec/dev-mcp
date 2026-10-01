@@ -249,6 +249,7 @@ export class RunnerTelemetryStore {
   async read(
     scope: string,
     range: TelemetryRange = "1h",
+    options: { stableBuckets?: boolean } = {},
   ): Promise<TelemetryResponse> {
     if (
       !validTelemetryScope(scope) ||
@@ -279,9 +280,17 @@ export class RunnerTelemetryStore {
       now,
       fallback,
     );
-    const count = Math.min(720, Math.ceil(config.durationMs / config.stepMs));
+    // The compact feed needs stable point identities. Keep both partial edge
+    // buckets so statistics still describe the exact requested rolling window.
+    const bucketFrom = options.stableBuckets
+      ? Math.floor(from / config.stepMs) * config.stepMs
+      : from;
+    const count = Math.min(
+      options.stableBuckets ? 721 : 720,
+      Math.ceil((now - bucketFrom) / config.stepMs),
+    );
     const buckets = Array.from({ length: count }, (_, index) => ({
-      at: from + index * config.stepMs,
+      at: bucketFrom + index * config.stepMs,
       metrics: accumulators(),
       coverage: { expected: 0, observed: 0, complete: false },
       hasRows: false,
@@ -395,10 +404,13 @@ export class RunnerTelemetryStore {
           totals[key] = (totals[key] ?? 0) + row.deltas[key] * fraction;
         }
       }
-      const first = Math.max(0, Math.floor((begin - from) / config.stepMs));
+      const first = Math.max(
+        0,
+        Math.floor((begin - bucketFrom) / config.stepMs),
+      );
       const last = Math.min(
         count - 1,
-        Math.floor((end - from - 1) / config.stepMs),
+        Math.floor((end - bucketFrom - 1) / config.stepMs),
       );
       for (let index = first; index <= last; index += 1) {
         const bucket = buckets[index]!;

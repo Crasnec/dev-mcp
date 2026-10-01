@@ -12,7 +12,7 @@
           <td class="audit-time" role="cell"><time datetime="{{atDateTime}}" data-local-time>{{at}}</time></td>
           <td class="audit-event" role="cell"><div class="audit-event-heading"><strong>{{event}}</strong>{{#tool}}<code class="audit-tool">{{tool}}</code>{{/tool}}</div>{{#reason}}<p class="audit-reason">{{reason}}</p>{{/reason}}</td>
           <td class="audit-actor" role="cell">{{actor}}</td>
-          <td class="audit-action" role="cell"><a class="button small audit-detail-toggle" data-audit-toggle data-detail-url="/admin/audit/{{id}}/detail" href="{{detailHref}}" aria-expanded="{{expandedText}}" aria-controls="audit-detail-{{id}}">{{detailLabel}}</a></td>
+          <td class="audit-action" role="cell"><a class="button small audit-detail-toggle" data-audit-toggle data-detail-url="/admin/audit/{{id}}/live" href="{{detailHref}}" aria-expanded="{{expandedText}}" aria-controls="audit-detail-{{id}}">{{detailLabel}}</a></td>
         </tr>
         <tr id="audit-detail-{{id}}" data-audit-detail-row="{{id}}" class="audit-detail-row" role="row"{{^expanded}} hidden{{/expanded}}><td colspan="4" role="cell" aria-colspan="4"><div data-audit-detail-content>{{#expanded}}{{> partials/audit-detail}}{{/expanded}}</div></td></tr>
         {{/rows}}

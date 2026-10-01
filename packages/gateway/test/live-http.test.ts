@@ -91,8 +91,8 @@ describe("automatic process and runner updates over HTTP", () => {
   it("rejects unauthenticated and non-admin live requests before runner access", async () => {
     const { app, users, admin, dataDir, ipc, get, detailUrl } = await fixture();
     const anonymous = await get(detailUrl + "/live", "");
-    expect(anonymous.statusCode).toBe(303);
-    expect(anonymous.headers.location).toBe("/login");
+    expect(anonymous.statusCode).toBe(401);
+    expect(anonymous.headers.location).toBeUndefined();
     expect(ipc).not.toHaveBeenCalled();
 
     const regular = await legacyUser(users, dataDir, "regular", password);
@@ -174,7 +174,7 @@ describe("automatic process and runner updates over HTTP", () => {
         detailUrl + "/live?cursor=" + encodeURIComponent(page.input),
       );
       expect(response.statusCode).toBe(200);
-      expect(response.headers["cache-control"]).toBe("no-store");
+      expect(response.headers["cache-control"]).toBe("private, no-store");
       expect(response.headers["content-type"]).toContain("application/json");
       expect(response.json()).toEqual({
         process: {
@@ -265,7 +265,7 @@ describe("automatic process and runner updates over HTTP", () => {
 
     const failed = await get(detailUrl + "/live?cursor=last-good");
     expect(failed.statusCode).toBe(503);
-    expect(failed.headers["cache-control"]).toBe("no-store");
+    expect(failed.headers["cache-control"]).toBe("private, no-store");
 
     state.logs = success({ output: "recovered\n", cursor: "after-recovery" });
     const recovered = await get(detailUrl + "/live?cursor=last-good");

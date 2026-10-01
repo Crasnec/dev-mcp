@@ -28,6 +28,13 @@ try {
     ["/admin/usage", 303],
     ["/admin/telemetry", 401],
     ["/account/telemetry", 401],
+    ["/admin/telemetry?stream=1", 401],
+    ["/account/telemetry?stream=1", 401],
+    ["/admin/runners/live", 401],
+    ["/admin/runners/00000000-0000-0000-0000-000000000000/live", 401],
+    ["/admin/processes/live", 401],
+    ["/admin/audit/live", 401],
+    ["/admin/audit/00000000000000000000/live", 401],
     ["/admin/audit", 303],
     ["/admin/audit/00000000000000000000/detail", 303],
     ["/admin", 303],
@@ -36,6 +43,13 @@ try {
   ]) {
     const response = await request(route);
     assert.equal(response.status, status, route + " status");
+    if (route.endsWith("/live") || route.includes("stream=1")) {
+      assert(
+        response.headers.get("content-type")?.includes("application/json"),
+        route + " must return JSON",
+      );
+      assert(!response.headers.has("location"), route + " must not redirect");
+    }
     console.log("PASS " + route + " " + status);
   }
   const signup = await request("/signup");

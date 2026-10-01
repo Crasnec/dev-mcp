@@ -57,7 +57,15 @@ async function fixture(now = NOW) {
       );
     }
   };
-  return { root, store, json, history };
+  return {
+    root,
+    store,
+    json,
+    history,
+    advance: (ms: number) => {
+      now += ms;
+    },
+  };
 }
 function sample(ts: number, cpu: number | null, intervalMs = 5000) {
   return {
@@ -111,6 +119,31 @@ function rollup(
 }
 
 describe("read-only telemetry history", () => {
+  it("anchors compact series across polling jitter while preserving the exact rolling statistics and edge weights", async () => {
+    const h = await fixture();
+    await h.history("host", "raw", [
+      sample(NOW - 3600000 + 2500, 2),
+      sample(NOW - 5000, 3),
+      sample(NOW, 4),
+    ]);
+    const first = await h.store.read("host", "1h", { stableBuckets: true });
+    h.advance(1377);
+    const stable = await h.store.read("host", "1h", { stableBuckets: true });
+    const compatible = await h.store.read("host", "1h");
+    expect(stable.statistics).toEqual(compatible.statistics);
+    expect(stable.totals).toEqual(compatible.totals);
+    expect(stable.history).toEqual(compatible.history);
+    expect(stable.series).toHaveLength(721);
+    expect(compatible.series).toHaveLength(720);
+    expect(stable.series.every((point) => point.at % stable.stepMs === 0)).toBe(
+      true,
+    );
+    const at = NOW - 10000;
+    expect(stable.series.find((point) => point.at === at)).toEqual(
+      first.series.find((point) => point.at === at),
+    );
+    expect(stable.statistics.cpuUsedCores.observedMs).toBe(11123);
+  });
   it("returns elapsed weighted P50/P95/P99 from real samples across rollups and collector restarts", async () => {
     const h = await fixture();
     let writer = new CollectorStore(h.root);

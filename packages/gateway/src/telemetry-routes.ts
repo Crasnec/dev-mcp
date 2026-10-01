@@ -11,6 +11,7 @@ import {
   type TelemetryRange,
   type TelemetryMetric,
 } from "./telemetry-store.ts";
+import { TelemetryStream } from "./telemetry-stream.ts";
 
 export function installTelemetryRoutes(
   app: Express,
@@ -19,6 +20,39 @@ export function installTelemetryRoutes(
   telemetry: RunnerTelemetryStore,
 ): void {
   const browser = browserSession(config, users);
+  const stream = new TelemetryStream();
+
+  const respond = async (
+    req: Request,
+    res: Response,
+    viewer: string,
+    scope: string,
+    range: TelemetryRange,
+  ) => {
+    if (
+      (req.query.stream !== undefined && req.query.stream !== "1") ||
+      (req.query.since !== undefined &&
+        (req.query.stream !== "1" ||
+          typeof req.query.since !== "string" ||
+          !/^[A-Za-z0-9_-]{24}$/.test(req.query.since)))
+    ) {
+      return res.status(400).json({ error: "invalid_telemetry_query" });
+    }
+    const compact = req.query.stream === "1";
+    if (!compact && req.get("Sec-Fetch-Dest") === "empty") {
+      return res.status(409).json({ error: "refresh_required" });
+    }
+    const data = await telemetry.read(scope, range, { stableBuckets: compact });
+    if (!compact) {
+      return res.json(data);
+    }
+    const patch = stream.respond(
+      viewer,
+      data,
+      typeof req.query.since === "string" ? req.query.since : undefined,
+    );
+    return patch ? res.json(patch) : res.status(204).end();
+  };
 
   const authenticate = async (
     req: Request,
@@ -74,7 +108,8 @@ export function installTelemetryRoutes(
 
   app.get("/admin/telemetry", async (req, res) => {
     jsonHeaders(res);
-    if (!(await authenticate(req, res, true))) {
+    const session = await authenticate(req, res, true);
+    if (!session) {
       return;
     }
     const range = requestedRange(req);
@@ -90,7 +125,7 @@ export function installTelemetryRoutes(
     if (!selected) {
       return res.status(404).json({ error: "scope_not_found" });
     }
-    return res.json(await telemetry.read(selected.scope, range));
+    return respond(req, res, session.user.id, selected.scope, range);
   });
 
   app.get("/account/telemetry", async (req, res) => {
@@ -110,7 +145,7 @@ export function installTelemetryRoutes(
     if (!ownsRunner(session.user)) {
       return res.status(404).json({ error: "scope_not_found" });
     }
-    return res.json(await telemetry.read(session.user.id, range));
+    return respond(req, res, session.user.id, session.user.id, range);
   });
 
   app.get("/admin/usage", async (req, res) => {

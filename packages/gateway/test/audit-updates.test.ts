@@ -18,7 +18,12 @@ class Element {
   events = new Map<string, (event: unknown) => void>();
   className = "";
   textContent = "";
-  innerHTML = "";
+  get innerHTML(): string {
+    throw new Error("HTML parsing is forbidden for polling updates");
+  }
+  set innerHTML(_value: string) {
+    throw new Error("HTML parsing is forbidden for polling updates");
+  }
   hidden = false;
   connectedRoot = false;
   scrollTop = 0;
@@ -137,6 +142,16 @@ class Element {
 
   setAttribute(name: string, value: string) {
     this.attributes.set(name, value);
+    if (name.startsWith("data-")) {
+      const key = name
+        .slice(5)
+        .replace(/-([a-z])/g, (_match, letter: string) => letter.toUpperCase());
+      this.dataset[key] = value;
+    }
+  }
+
+  getAttribute(name: string) {
+    return this.attributes.get(name) ?? null;
   }
 
   removeAttribute(name: string) {
@@ -172,7 +187,9 @@ function processCard(id: string, running = true, more = false) {
   const log = new Element("pre", { auditLog: "", cursor: "initial-cursor" });
   log.textContent = "initial\n";
   const badge = new Element("span", { processStatus: "" });
-  card.append(badge, log);
+  const header = new Element("header", { auditProcessHeader: "" });
+  header.append(badge);
+  card.append(header, log);
   return { card, log, badge };
 }
 
@@ -181,7 +198,7 @@ function fragment(...cards: Element[]) {
   const raw = new Element("details");
   raw.setAttribute("open", "");
   const meta = new Element("div", { auditProcessMeta: "" });
-  meta.innerHTML = "connected";
+  meta.append(new Element("h3"));
   const list = new Element("div", { auditProcesses: "" });
   list.append(...cards);
   root.append(raw, meta, list);
@@ -192,9 +209,14 @@ function auditRow(id: string, expanded = false, detailFragment?: Element) {
   const summary = new Element("tr", { auditId: id });
   const toggle = new Element("a", {
     auditToggle: "",
-    detailUrl: `/admin/audit/${id}/detail`,
+    detailUrl: `/admin/audit/${id}/live`,
   });
   toggle.setAttribute("aria-expanded", String(expanded));
+  for (const name of ["time", "event", "actor"]) {
+    const cell = new Element("td");
+    cell.className = "audit-" + name;
+    summary.append(cell);
+  }
   summary.append(toggle);
   const detail = new Element("tr", { auditDetailRow: id });
   detail.height = 240;
@@ -222,13 +244,16 @@ function harness(initial: ReturnType<typeof auditRow>[]) {
     (event?: { persisted: boolean }) => void
   >();
   const documentEvents = new Map<string, () => void>();
-  const snapshots = new Map<string, Element>();
   const document = {
     hidden: false,
     activeElement: null as Element | null,
     querySelector: () => page,
     createTextNode: (textContent: string) => ({ textContent }),
-    createElement: (tag: string) => new Element(tag),
+    createElement: (tag: string) => {
+      const node = new Element(tag);
+      node.geometryScroll = () => window.scrollY;
+      return node;
+    },
     addEventListener: (name: string, handler: () => void) =>
       documentEvents.set(name, handler),
   };
@@ -264,23 +289,16 @@ function harness(initial: ReturnType<typeof auditRow>[]) {
     attach(row);
   }
   const fetch = vi.fn().mockImplementation(() => new Promise(() => {}));
-  const htmlResponse = (key: string, element: Element) => {
-    const root = new Element("document");
-    root.append(element);
-    snapshots.set(key, root);
-    return { ok: true, status: 200, text: async () => key };
-  };
-  const listResponse = (key: string, rows: ReturnType<typeof auditRow>[]) => {
-    const next = new Element("main", { liveAudit: "" });
-    const nextBody = new Element("tbody", { auditRows: "" });
-    for (const row of rows) {
-      row.summary.geometryScroll = row.detail.geometryScroll = () =>
-        window.scrollY;
-      nextBody.append(row.summary, row.detail);
-    }
-    next.append(nextBody);
-    return htmlResponse(key, next);
-  };
+  const listResponse = (
+    revision: string,
+    records: ReturnType<typeof record>[],
+  ) =>
+    deltaResponse("audit", revision, {
+      order: records.map((row) => row.id),
+      ...Object.fromEntries(records.map((row) => ["row:" + row.id, row])),
+      pagination: { total: records.length, page: 1, pages: 1, pageItems: [] },
+      clipped: false,
+    });
   const start = () =>
     runInNewContext(source, {
       page,
@@ -292,11 +310,6 @@ function harness(initial: ReturnType<typeof auditRow>[]) {
       setTimeout,
       clearTimeout,
       fetch,
-      DOMParser: class {
-        parseFromString(key: string) {
-          return snapshots.get(key)!;
-        }
-      },
     });
   const click = (row: ReturnType<typeof auditRow>, modifiers = {}) => {
     const event = {
@@ -321,9 +334,81 @@ function harness(initial: ReturnType<typeof auditRow>[]) {
     fetch,
     start,
     click,
-    htmlResponse,
     listResponse,
   };
+}
+
+function record(id: string, reason = "") {
+  return {
+    id,
+    at: "2026-10-01 12:00",
+    atDateTime: "2026-10-01T12:00:00Z",
+    event: "tool_call",
+    actor: "Admin",
+    tool: "terminal.exec",
+    reason,
+    detailHref: "/admin/audit?detail=" + id,
+  };
+}
+
+function processMetadata(id: string, status = "running") {
+  return {
+    id,
+    pid: 123,
+    command: "echo <literal>",
+    status,
+    statusLabel: status,
+    startedLabel: "2026-10-01 12:00",
+    startedDateTime: "2026-10-01T12:00:00Z",
+    href: "/admin/processes/owner/" + id,
+    liveUrl: "/admin/processes/owner/" + id + "/live",
+    runningText: String(status === "running"),
+    moreText: "true",
+  };
+}
+
+function deltaResponse(
+  kind: "audit" | "audit-detail",
+  revision: string,
+  changes: Record<string, unknown>,
+  reset = true,
+  removed: string[] = [],
+) {
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({
+      schemaVersion: 1,
+      kind,
+      revision,
+      changes,
+      reset,
+      removed,
+    }),
+  };
+}
+
+function detailResponse(
+  revision: string,
+  processes: ReturnType<typeof processMetadata>[] = [],
+) {
+  return deltaResponse("audit-detail", revision, {
+    record: {
+      ...record("a", "작업 <이유>"),
+      details: '{"literal":"<script>"}',
+      command: "echo <literal>",
+    },
+    meta: {
+      ownerLabel: "Admin",
+      processListHref: "/admin/processes",
+      message: "",
+      command: "echo <literal>",
+    },
+    order: processes.map((process) => process.id),
+    ...Object.fromEntries(
+      processes.map((process) => ["process:" + process.id, process]),
+    ),
+  });
 }
 
 function logResponse(
@@ -368,15 +453,14 @@ describe("inline audit details", () => {
     expect(row.detail.hidden).toBe(false);
     expect(row.content.attributes.get("aria-busy")).toBe("true");
     h.click(row);
-    resolve(h.htmlResponse("late detail", fragment().root));
+    expect(h.fetch.mock.calls[0][1].signal.aborted).toBe(true);
+    resolve(detailResponse("late detail"));
     await vi.advanceTimersByTimeAsync(1);
     expect(row.detail.hidden).toBe(true);
     expect(row.content.children).toHaveLength(0);
     expect(row.toggle.attributes.get("aria-expanded")).toBe("false");
     expect(row.content.attributes.has("aria-busy")).toBe(false);
-    h.fetch.mockResolvedValueOnce(
-      h.htmlResponse("fresh detail", fragment().root),
-    );
+    h.fetch.mockResolvedValueOnce(detailResponse("fresh detail"));
     h.click(row);
     await vi.advanceTimersByTimeAsync(1);
     expect(row.content.querySelector("[data-audit-fragment]")).not.toBeNull();
@@ -391,11 +475,7 @@ describe("inline audit details", () => {
     h.selection.isCollapsed = false;
     h.selection.anchorNode = h.selection.focusNode = originalFragment.raw;
     h.scroller.scrollLeft = 70;
-    const incoming = auditRow("new");
-    const reason = new Element("p");
-    reason.className = "audit-reason";
-    reason.textContent = "실패한 검증의 원인을 <그대로> 확인합니다.";
-    incoming.summary.append(reason);
+    const incoming = record("new", "실패한 검증의 원인을 <그대로> 확인합니다.");
     h.fetch.mockResolvedValueOnce(h.listResponse("new page", [incoming]));
     h.start();
     const before = old.summary.getBoundingClientRect().top;
@@ -406,8 +486,7 @@ describe("inline audit details", () => {
       ),
     ).toEqual(["new", "new", "old", "old"]);
     expect(old.summary.getBoundingClientRect().top).toBe(before);
-    expect(h.body.querySelector(".audit-reason")).toBe(reason);
-    expect(reason.textContent).toBe(
+    expect(h.body.querySelector(".audit-reason")?.textContent).toBe(
       "실패한 검증의 원인을 <그대로> 확인합니다.",
     );
     expect(h.window.scrollTo).toHaveBeenCalledWith({
@@ -435,12 +514,10 @@ describe("inline audit details", () => {
     const row = auditRow("a", true, detail.root);
     const h = harness([row]);
     let logCalls = 0;
-    const newProcess = processCard("second", false, true);
-    newProcess.log.dataset.cursor = "";
-    newProcess.log.textContent = "";
-    const truncated = new Element("p", { logTruncated: "" });
-    newProcess.card.append(truncated);
-    const metadata = fragment(processCard("first").card, newProcess.card);
+    const metadata = detailResponse("detail-1", [
+      processMetadata("first"),
+      processMetadata("second", "exited"),
+    ]);
     h.fetch.mockImplementation((url: URL) => {
       if (url.pathname.endsWith("/first/live")) {
         logCalls += 1;
@@ -453,9 +530,9 @@ describe("inline audit details", () => {
           logResponse("final\n", "cursor-final", "exited"),
         );
       }
-      if (url.pathname.endsWith("/detail")) {
-        expect(url.searchParams.get("metadata")).toBe("1");
-        return Promise.resolve(h.htmlResponse("metadata", metadata.root));
+      if (url.pathname === "/admin/audit/a/live") {
+        expect(url.searchParams.has("metadata")).toBe(false);
+        return Promise.resolve(metadata);
       }
       return new Promise(() => {});
     });
@@ -474,9 +551,13 @@ describe("inline audit details", () => {
     expect(existing.log.scrollTop).toBe(250);
     expect(existing.log.scrollLeft).toBe(20);
     expect(detail.raw.attributes.has("open")).toBe(true);
-    expect(newProcess.log.textContent).toBe("final\n");
-    expect(newProcess.badge.className).toBe("badge exited");
-    expect(truncated.isConnected).toBe(false);
+    const newProcess = row.content.querySelectorAll("[data-audit-process]")[1]!;
+    expect(newProcess.querySelector("[data-audit-log]")?.textContent).toBe(
+      "final\n",
+    );
+    expect(newProcess.querySelector("[data-process-status]")?.className).toBe(
+      "badge exited",
+    );
     await vi.advanceTimersByTimeAsync(2500);
     expect(
       h.fetch.mock.calls.filter(([url]) =>
@@ -489,7 +570,7 @@ describe("inline audit details", () => {
     const old = auditRow("old");
     const h = harness([old]);
     h.fetch.mockResolvedValueOnce(
-      h.listResponse("anchored page", [auditRow("new"), auditRow("old")]),
+      h.listResponse("anchored page", [record("new"), record("old")]),
     );
     const insert = h.body.insertBefore.bind(h.body);
     h.body.insertBefore = (node, before) => {
@@ -531,6 +612,7 @@ describe("inline audit details", () => {
     await vi.advanceTimersByTimeAsync(1);
     h.document.hidden = true;
     h.documentEvents.get("visibilitychange")!();
+    expect(h.fetch.mock.calls[0][1].signal.aborted).toBe(true);
     resolve(logResponse("recovered\n", "next-cursor"));
     await vi.advanceTimersByTimeAsync(1);
     expect(process.log.dataset.cursor).toBe("initial-cursor");
@@ -591,16 +673,212 @@ describe("inline audit details", () => {
     h.documentEvents.get("visibilitychange")!();
     await vi.advanceTimersByTimeAsync(1);
     expect(
-      h.fetch.mock.calls.filter(([url]) => url.pathname.endsWith("/detail")),
+      h.fetch.mock.calls.filter(
+        ([url]) =>
+          url.pathname.startsWith("/admin/audit/") &&
+          url.pathname !== "/admin/audit/live",
+      ),
     ).toHaveLength(3);
     expect(
-      h.fetch.mock.calls.filter(([url]) => url.pathname === "/admin/audit"),
+      h.fetch.mock.calls.filter(
+        ([url]) => url.pathname === "/admin/audit/live",
+      ),
     ).toHaveLength(1);
     h.windowEvents.get("pagehide")!();
     for (const [, options] of h.fetch.mock.calls) {
       expect(options.signal.aborted).toBe(true);
       expect(options.redirect).toBe("error");
     }
+  });
+
+  it("merges sparse revisions, retries protected fields on 204, and resets evicted history", async () => {
+    const original = auditRow("a");
+    const h = harness([original]);
+    const initial = record("a", "original reason");
+    const changed = record("a", "<img src=x onerror=alert(1)> literal reason");
+    const idle = {
+      ok: true,
+      status: 204,
+      json: vi.fn(() => {
+        throw new Error("204 has no body");
+      }),
+    };
+    h.fetch
+      .mockResolvedValueOnce(h.listResponse("one", [initial]))
+      .mockResolvedValueOnce(
+        deltaResponse("audit", "two", { "row:a": changed }, false),
+      )
+      .mockResolvedValueOnce(idle)
+      .mockResolvedValueOnce(
+        deltaResponse(
+          "audit",
+          "three",
+          { order: ["b"], "row:b": record("b") },
+          false,
+          ["row:a"],
+        ),
+      )
+      .mockResolvedValueOnce(h.listResponse("reset", [record("c")]));
+    h.start();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(original.summary.querySelector(".audit-reason")?.textContent).toBe(
+      "original reason",
+    );
+    h.selection.isCollapsed = false;
+    h.selection.anchorNode = h.selection.focusNode =
+      original.summary.querySelector(".audit-reason");
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(original.summary.querySelector(".audit-reason")?.textContent).toBe(
+      "original reason",
+    );
+    h.selection.isCollapsed = true;
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(original.summary.querySelector(".audit-reason")?.textContent).toBe(
+      changed.reason,
+    );
+    expect(original.summary.querySelector("img")).toBeNull();
+    expect(idle.json).not.toHaveBeenCalled();
+    expect(h.fetch.mock.calls[1][0].searchParams.get("since")).toBe("one");
+    expect(h.fetch.mock.calls[2][0].searchParams.get("since")).toBe("two");
+    expect(h.fetch.mock.calls[2][1].headers.Accept).toBe("application/json");
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(
+      h.body
+        .querySelectorAll("[data-audit-id]")
+        .map((node) => node.dataset.auditId),
+    ).toEqual(["b"]);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(
+      h.body
+        .querySelectorAll("[data-audit-id]")
+        .map((node) => node.dataset.auditId),
+    ).toEqual(["c"]);
+  });
+
+  it("renders literal initial details, fetches only metadata deltas, and preserves raw disclosures", async () => {
+    const row = auditRow("a");
+    const h = harness([row]);
+    let detailCalls = 0;
+    h.fetch.mockImplementation((url: URL) => {
+      if (url.pathname !== "/admin/audit/a/live") {
+        return new Promise(() => {});
+      }
+      detailCalls += 1;
+      if (detailCalls === 1) {
+        return Promise.resolve(detailResponse("detail-one"));
+      }
+      expect(url.searchParams.get("since")).toBe("detail-one");
+      return Promise.resolve(
+        deltaResponse(
+          "audit-detail",
+          "detail-two",
+          {
+            meta: {
+              ownerLabel: "Changed owner",
+              message: "<literal metadata>",
+            },
+            order: ["new-job"],
+            "process:new-job": processMetadata("new-job"),
+          },
+          false,
+        ),
+      );
+    });
+    h.start();
+    h.click(row);
+    await vi.advanceTimersByTimeAsync(1);
+    const raw = row.content.querySelector(".audit-raw")!;
+    raw.setAttribute("open", "");
+    expect(row.content.querySelector(".audit-json")?.textContent).toBe(
+      '{"literal":"<script>"}',
+    );
+    expect(row.content.querySelector(".audit-command")?.textContent).toBe(
+      "echo <literal>",
+    );
+    expect(row.content.querySelector("script")).toBeNull();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(row.content.querySelector(".audit-raw")).toBe(raw);
+    expect(raw.attributes.has("open")).toBe(true);
+    expect(row.content.querySelector(".audit-message")?.textContent).toBe(
+      "<literal metadata>",
+    );
+    expect(
+      row.content.querySelector("[data-audit-process]")?.dataset.auditProcess,
+    ).toBe("new-job");
+    const logCall = h.fetch.mock.calls.find(([url]) =>
+      url.pathname.endsWith("/new-job/live"),
+    );
+    expect(logCall?.[0].searchParams.has("cursor")).toBe(false);
+    expect(logCall?.[0].searchParams.get("status")).toBe("running");
+  });
+
+  it("keeps final log status when an earlier metadata request arrives late", async () => {
+    const process = processCard("first");
+    const row = auditRow("a", true, fragment(process.card).root);
+    const h = harness([row]);
+    let logCalls = 0;
+    let resolveMetadata!: (response: unknown) => void;
+    h.fetch.mockImplementation((url: URL) => {
+      if (url.pathname.endsWith("/first/live")) {
+        logCalls += 1;
+        return Promise.resolve(
+          logResponse("", "cursor", logCalls < 4 ? "running" : "exited"),
+        );
+      }
+      if (url.pathname === "/admin/audit/a/live") {
+        return new Promise((resolve) => {
+          resolveMetadata = resolve;
+        });
+      }
+      return new Promise(() => {});
+    });
+    h.start();
+    await vi.advanceTimersByTimeAsync(6001);
+    expect(process.badge.className).toBe("badge exited");
+    resolveMetadata(
+      detailResponse("old-running-metadata", [processMetadata("first")]),
+    );
+    await vi.advanceTimersByTimeAsync(1);
+    expect(process.card.querySelector("[data-process-status]")?.className).toBe(
+      "badge exited",
+    );
+    expect(
+      process.card.querySelector("[data-process-status]")?.textContent,
+    ).toBe("exited");
+    expect(process.log.dataset.cursor).toBe("cursor");
+  });
+
+  it("treats idle log 204 as empty and still receives final output and status", async () => {
+    const process = processCard("first");
+    const h = harness([auditRow("a", true, fragment(process.card).root)]);
+    const idle = {
+      ok: true,
+      status: 204,
+      json: vi.fn(() => {
+        throw new Error("No body");
+      }),
+    };
+    let calls = 0;
+    h.fetch.mockImplementation((url: URL) => {
+      if (!url.pathname.endsWith("/first/live")) {
+        return new Promise(() => {});
+      }
+      expect(url.searchParams.get("status")).toBe("running");
+      expect(url.searchParams.get("cursor")).toBe("initial-cursor");
+      calls += 1;
+      return Promise.resolve(
+        calls === 1 ? idle : logResponse("finished\n", "last", "exited"),
+      );
+    });
+    h.start();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(idle.json).not.toHaveBeenCalled();
+    expect(process.log.textContent).toBe("initial\n");
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(process.log.textContent).toBe("initial\nfinished\n");
+    expect(process.badge.className).toBe("badge exited");
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(calls).toBe(2);
   });
 
   it("stops all polling when authorization is lost without navigating", async () => {

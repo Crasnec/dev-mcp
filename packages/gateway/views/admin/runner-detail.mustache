@@ -1,15 +1,15 @@
-<div class="detail-heading"><div><a class="back-link" href="/admin/runners">← 실행 환경 목록</a><h2>{{owner.username}}님의 실행 환경</h2><span data-live-region="runner-connection">{{#ready}}<span class="badge active">연결됨</span>{{/ready}}{{^ready}}<span class="badge pending">연결 대기</span>{{/ready}}</span></div><a class="button" href="/admin/runners/{{owner.id}}">상태 새로고침 ↻</a></div>
+<div class="detail-heading" data-live-feed="runner" data-live-url="/admin/runners/{{owner.id}}/live"><div><a class="back-link" href="/admin/runners">← 실행 환경 목록</a><h2>{{owner.username}}님의 실행 환경</h2><span data-live-region="runner-connection"><span data-live-field="connection" class="badge {{#ready}}active{{/ready}}{{^ready}}pending{{/ready}}">{{#ready}}연결됨{{/ready}}{{^ready}}연결 대기{{/ready}}</span></span></div><a class="button" href="/admin/runners/{{owner.id}}">상태 새로고침 ↻</a></div>
 <div data-live-region="runner-operation">
-{{#operationPending}}<p class="context-message" role="status">운영 요청을 처리 중입니다.</p>{{/operationPending}}
-{{#operationMessage}}<p class="context-message" role="status">{{operationMessage}}</p>{{/operationMessage}}
+<p data-live-field="operationPending" class="context-message" role="status"{{^operationPending}} hidden{{/operationPending}}>운영 요청을 처리 중입니다.</p>
+<p data-live-field="operationMessage" class="context-message" role="status"{{^operationMessage}} hidden{{/operationMessage}}>{{operationMessage}}</p>
 </div>
 <div class="two-column">
   <div class="stack">
     <section class="panel padded">
       <h2>실행 환경 운영</h2>
       <div data-live-region="runner-state">
-      <dl class="properties"><div><dt>컨테이너 상태</dt><dd>{{containerState}}</dd></div><div><dt>마지막 확인</dt><dd><time datetime="{{observedDateTime}}" data-local-time>{{observedLabel}}</time></dd></div></dl>
-      {{^observationFresh}}<p class="help">관리 서비스의 상태 정보가 아직 없거나 오래되었습니다. 새 상태가 확인되면 여기에 표시됩니다.</p>{{/observationFresh}}
+      <dl class="properties"><div><dt>컨테이너 상태</dt><dd data-live-field="containerState">{{containerState}}</dd></div><div><dt>마지막 확인</dt><dd><time data-live-field="observed" datetime="{{observedDateTime}}" data-local-time>{{observedLabel}}</time></dd></div></dl>
+      <p data-live-field="observationMissing" class="help"{{#observationFresh}} hidden{{/observationFresh}}>관리 서비스의 상태 정보가 아직 없거나 오래되었습니다. 새 상태가 확인되면 여기에 표시됩니다.</p>
       </div>
       <form method="post" action="/admin/runners/{{owner.id}}/operations">
         {{> partials/csrf}}<input type="hidden" name="revision" value="{{revision}}">
@@ -25,11 +25,11 @@
     <section class="panel padded">
       <h2>실제 적용된 제한</h2>
       <div data-live-region="runner-limits">
-      {{#observed}}<dl class="properties"><div><dt>외부 네트워크</dt><dd>{{network}}</dd></div><div><dt>메모리 (MiB)</dt><dd>{{memory}}</dd></div><div><dt>CPU 코어</dt><dd>{{cpus}}</dd></div><div><dt>프로세스 수</dt><dd>{{pids}}</dd></div><div><dt>저장공간 (MiB)</dt><dd>{{storageUsed}} 사용 / {{storage}}</dd></div><div><dt>파일 하나당 크기 (MiB)</dt><dd>{{fileSize}}</dd></div></dl>{{/observed}}
-      {{^observed}}<p class="help">관리 서비스에서 컨테이너 정보를 확인한 후 표시됩니다.</p>{{/observed}}
+      <dl data-live-observed class="properties"{{^observed}} hidden{{/observed}}><div><dt>외부 네트워크</dt><dd data-live-limit="network">{{observed.network}}</dd></div><div><dt>메모리 (MiB)</dt><dd data-live-limit="memory">{{observed.memory}}</dd></div><div><dt>CPU 코어</dt><dd data-live-limit="cpus">{{observed.cpus}}</dd></div><div><dt>프로세스 수</dt><dd data-live-limit="pids">{{observed.pids}}</dd></div><div><dt>저장공간 (MiB)</dt><dd data-live-limit="storage">{{observed.storageUsed}} 사용 / {{observed.storage}}</dd></div><div><dt>파일 하나당 크기 (MiB)</dt><dd data-live-limit="fileSize">{{observed.fileSize}}</dd></div></dl>
+      <p data-live-observed-empty class="help"{{#observed}} hidden{{/observed}}>관리 서비스에서 컨테이너 정보를 확인한 후 표시됩니다.</p>
       </div>
     </section>
-    <section class="panel padded" data-live-region="runner-projects"><h2>프로젝트</h2><ul class="project-list">{{#projects}}<li><strong>{{name}}</strong><code>{{relativePath}}</code></li>{{/projects}}</ul>{{^projects}}<p class="help">{{#ready}}등록된 프로젝트가 없습니다.{{/ready}}{{^ready}}실행 환경에 연결한 뒤 확인할 수 있습니다.{{/ready}}</p>{{/projects}}<div class="actions"><a class="button" href="/admin/usage?scope={{owner.id}}">자원 사용량</a><a class="button" href="/admin/projects?owner={{owner.id}}">프로젝트 관리</a><a class="button" href="/admin/processes?owner={{owner.id}}">프로세스 관리</a></div></section>
+    <section class="panel padded" data-live-region="runner-projects"><h2>프로젝트</h2><ul data-live-projects class="project-list">{{#projects}}<li><strong>{{name}}</strong><code>{{relativePath}}</code></li>{{/projects}}</ul><p data-live-projects-empty class="help"{{#projects.length}} hidden{{/projects.length}}>{{#ready}}등록된 프로젝트가 없습니다.{{/ready}}{{^ready}}실행 환경에 연결한 뒤 확인할 수 있습니다.{{/ready}}</p><div class="actions"><a class="button" href="/admin/usage?scope={{owner.id}}">자원 사용량</a><a class="button" href="/admin/projects?owner={{owner.id}}">프로젝트 관리</a><a class="button" href="/admin/processes?owner={{owner.id}}">프로세스 관리</a></div></section>
   </div>
   <section class="panel padded">
     <h2>권한·자원 제한 설정</h2>

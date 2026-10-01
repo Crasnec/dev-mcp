@@ -38,7 +38,7 @@ async function fixture() {
   });
   const adminSession = await users.createSession(admin);
   const ownerSession = await users.createSession(owner);
-  const now = Date.parse("2026-10-01T12:00:00Z");
+  let now = Date.parse("2026-10-01T12:00:00Z");
   const runnerStatusDir = path.join(dataDir, "status");
   await mkdir(path.join(runnerStatusDir, "telemetry"), { recursive: true });
   const scope = (cpu: number) => ({
@@ -48,19 +48,21 @@ async function fixture() {
     metricObservedAt: { cpuUsedCores: now },
     coverage: { expected: 1, observed: 1, complete: true },
   });
-  await writeFile(
-    path.join(runnerStatusDir, "telemetry", "current.json"),
-    JSON.stringify({
-      schemaVersion: 1,
-      ts: now,
-      scopes: {
-        host: scope(12),
-        "all-runners": scope(4),
-        [owner.id]: scope(1),
-        [other.id]: scope(3),
-      },
-    }),
-  );
+  const writeCurrent = async (cpu = 12) =>
+    writeFile(
+      path.join(runnerStatusDir, "telemetry", "current.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        ts: now,
+        scopes: {
+          host: scope(cpu),
+          "all-runners": scope(4),
+          [owner.id]: scope(1),
+          [other.id]: scope(3),
+        },
+      }),
+    );
+  await writeCurrent();
   const ipc = vi
     .spyOn(IpcClient.prototype, "call")
     .mockRejectedValue(new Error("Telemetry must not use runner IPC"));
@@ -75,16 +77,123 @@ async function fixture() {
     },
     { users, telemetry: new RunnerTelemetryStore(runnerStatusDir, () => now) },
   );
-  const get = (url: string, token?: string) =>
+  const get = (
+    url: string,
+    token?: string,
+    headers: Record<string, string> = {},
+  ) =>
     inject(app, {
       method: "GET",
       url,
-      headers: token ? { cookie: "__Host-dev-mcp-session=" + token } : {},
+      headers: {
+        ...headers,
+        ...(token ? { cookie: "__Host-dev-mcp-session=" + token } : {}),
+      },
     });
-  return { users, admin, owner, other, adminSession, ownerSession, get, ipc };
+  return {
+    users,
+    admin,
+    owner,
+    other,
+    adminSession,
+    ownerSession,
+    get,
+    ipc,
+    writeCurrent,
+    advance: (ms: number) => {
+      now += ms;
+    },
+  };
 }
 
 describe("telemetry authorization and HTTP responses", () => {
+  it("serves a compact baseline, scalar-only updates, idle204 and a reset for changed filters", async () => {
+    const h = await fixture();
+    const route = "/admin/telemetry?scope=host&range=1h&stream=1";
+    const first = await h.get(route, h.adminSession.token);
+    expect(first.statusCode).toBe(200);
+    expect(first.json()).toMatchObject({
+      streamVersion: 1,
+      reset: true,
+      changes: { "current.values.cpuUsedCores": 12 },
+    });
+    expect(first.json().series).toBeUndefined();
+    const since = "&since=" + first.json().revision;
+    const idle = await h.get(route + since, h.adminSession.token);
+    expect(idle.statusCode).toBe(204);
+    expect(idle.payload).toBe("");
+    expect(idle.headers["cache-control"]).toBe("private, no-store");
+    h.advance(5000);
+    await h.writeCurrent(13);
+    const update = await h.get(route + since, h.adminSession.token);
+    expect(update.json()).toMatchObject({
+      reset: false,
+      base: first.json().revision,
+      changes: { "current.values.cpuUsedCores": 13 },
+    });
+    expect(
+      Object.keys(update.json().changes).filter((key) =>
+        key.startsWith("point."),
+      ),
+    ).toHaveLength(0);
+    expect(Buffer.byteLength(update.payload)).toBeLessThan(600);
+    const reset = await h.get(
+      "/admin/telemetry?scope=all-runners&stream=1" + since,
+      h.adminSession.token,
+    );
+    expect(reset.json()).toMatchObject({ scope: "all-runners", reset: true });
+    const complete = await h.get(
+      "/admin/telemetry?scope=host",
+      h.adminSession.token,
+    );
+    expect(complete.json().series).toHaveLength(720);
+    expect(complete.json().streamVersion).toBeUndefined();
+  });
+
+  it("authenticates every revision request and rejects old automatic full-data browser polling", async () => {
+    const h = await fixture();
+    const full = await h.get("/admin/telemetry?stream=1", h.adminSession.token);
+    const since = "&since=" + full.json().revision;
+    expect((await h.get("/admin/telemetry?stream=1" + since)).statusCode).toBe(
+      401,
+    );
+    expect(
+      (await h.get("/admin/telemetry?stream=1" + since, h.ownerSession.token))
+        .statusCode,
+    ).toBe(403);
+    const own = await h.get(
+      "/account/telemetry?stream=1" + since,
+      h.ownerSession.token,
+    );
+    expect(own.json()).toMatchObject({ scope: h.owner.id, reset: true });
+    expect(own.payload).not.toContain(h.other.id);
+    const legacy = await h.get("/admin/telemetry", h.adminSession.token, {
+      "sec-fetch-dest": "empty",
+    });
+    expect(legacy.statusCode).toBe(409);
+    expect(legacy.json()).toEqual({ error: "refresh_required" });
+    expect(Buffer.byteLength(legacy.payload)).toBeLessThan(100);
+    expect(
+      (
+        await h.get("/admin/telemetry", h.adminSession.token, {
+          "sec-fetch-dest": "document",
+        })
+      ).statusCode,
+    ).toBe(200);
+    await h.users.update(h.admin.id, h.owner.id, {
+      status: "disabled",
+      role: "user",
+    });
+    expect(
+      (
+        await h.get(
+          "/account/telemetry?stream=1&since=" + own.json().revision,
+          h.ownerSession.token,
+        )
+      ).statusCode,
+    ).toBe(401);
+    expect(h.ipc).not.toHaveBeenCalled();
+  });
   it("returns JSON401 without redirect and denies non-admin host and aggregate access", async () => {
     const h = await fixture();
     for (const route of ["/admin/telemetry", "/account/telemetry"]) {
@@ -179,6 +288,10 @@ describe("telemetry authorization and HTTP responses", () => {
       "range=1y",
       "range=1h&range=24h",
       "scope=host&scope=all-runners",
+      "stream=2",
+      "stream=1&stream=1",
+      "stream=1&since=bad",
+      "since=" + "x".repeat(24),
     ]) {
       expect(
         (await h.get("/admin/telemetry?" + query, h.adminSession.token))

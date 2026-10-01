@@ -16,6 +16,7 @@ import { browserSession, field } from "./browser-session.ts";
 import { RunnerControlStore } from "./runner-control-store.ts";
 import { errorPage, sendPage } from "./pages.ts";
 import { renderFragment } from "./views.ts";
+import { LiveSnapshots } from "./live-snapshots.ts";
 import {
   adminView,
   dateLabel,
@@ -113,6 +114,46 @@ export function installAdminRoutes(
 ): void {
   const router = express.Router();
   const browser = browserSession(config, users);
+  const snapshots = new LiveSnapshots();
+  const live = (req: Request) =>
+    req.method === "GET" && req.path.endsWith("/live");
+  const viewRequest = (req: Request) =>
+    ({
+      baseUrl: req.baseUrl,
+      path: req.path.replace(/\/live$/, ""),
+      query: Object.fromEntries(
+        Object.entries(req.query).filter(([key]) => key !== "since"),
+      ),
+    }) as Request;
+  const sendLive = (
+    req: Request,
+    res: Response,
+    kind: string,
+    data: Record<string, unknown>,
+  ) => {
+    const session = res.locals.admin as AdminSession;
+    const filters = [
+      "q",
+      "owner",
+      "status",
+      "sort",
+      "direction",
+      "page",
+      "event",
+    ].map((key) => [key, query(req, key)]);
+    snapshots.send(
+      req,
+      res,
+      JSON.stringify([
+        session.user.id,
+        session.user.authVersion,
+        req.path,
+        filters,
+      ]),
+      kind,
+      data,
+    );
+  };
   const controls = new RunnerControlStore(
     config.dataDir,
     config.runnerStatusDir ?? "/runner-status",
@@ -120,6 +161,16 @@ export function installAdminRoutes(
   router.use(express.urlencoded({ extended: false, limit: "16kb" }));
   router.use(async (req, res, next) => {
     const session = await browser.current(req);
+    if (live(req)) {
+      res.setHeader("Cache-Control", "private, no-store");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      if (!session) {
+        return res.status(401).json({ error: "authentication_required" });
+      }
+      if (session.user.role !== "admin") {
+        return res.status(403).json({ error: "admin_required" });
+      }
+    }
     if (!session) {
       return req.method === "GET"
         ? res.redirect(303, "/login")
@@ -143,6 +194,19 @@ export function installAdminRoutes(
           message: "내 계정 화면을 이용해 주세요.",
         }),
       );
+    }
+    // Retire the old browser pollers immediately after deployment. Ordinary
+    // document navigation still renders HTML; refreshed clients use /live.
+    if (
+      req.method === "GET" &&
+      req.get("Sec-Fetch-Dest") === "empty" &&
+      /^\/(?:runners(?:\/[^/]+)?|processes|audit(?:\/[A-Za-z0-9_-]{20}\/detail)?)$/.test(
+        req.path,
+      ) &&
+      !live(req)
+    ) {
+      res.setHeader("Cache-Control", "private, no-store");
+      return res.status(409).json({ error: "refresh_required" });
     }
     res.locals.admin = session;
     if (req.method !== "GET" && !browser.validCsrf(req, session.csrf)) {
@@ -535,13 +599,14 @@ export function installAdminRoutes(
     });
   }
 
-  router.get("/runners", async (req, res) => {
+  router.get(["/runners", "/runners/live"], async (req, res) => {
+    const pageReq = viewRequest(req);
     const q = query(req, "q").toLowerCase();
     const sorted = sortList(
       (await users.list()).filter((entry) =>
         (entry.username + " " + (entry.email ?? "")).toLowerCase().includes(q),
       ),
-      req,
+      pageReq,
       [
         {
           key: "username",
@@ -555,7 +620,7 @@ export function installAdminRoutes(
         },
       ],
     );
-    const list = pageOf(sorted.items, req);
+    const list = pageOf(sorted.items, pageReq);
     const rows: Record<string, unknown>[] = [];
     for (let index = 0; index < list.rows.length; index += 4) {
       rows.push(
@@ -572,6 +637,26 @@ export function installAdminRoutes(
         )),
       );
     }
+    if (live(req)) {
+      return sendLive(req, res, "runners", {
+        order: rows.map((row) => row.id),
+        pagination: list.pagination,
+        ...Object.fromEntries(
+          rows.map((row) => [
+            "row:" + row.id,
+            {
+              id: row.id,
+              username: row.username,
+              status: row.status,
+              statusLabel: row.statusLabel,
+              ready: row.ready,
+              projectCount: row.projectCount,
+              href: row.href,
+            },
+          ]),
+        ),
+      });
+    }
     return adminView(req, res, "runners", "admin/runners", {
       livePage: true,
       ...list,
@@ -581,13 +666,13 @@ export function installAdminRoutes(
       sortHeaders: sorted.headers,
     });
   });
-  router.get("/runners/:id", async (req, res) => {
+  router.get(["/runners/:id", "/runners/:id/live"], async (req, res) => {
     const owner = await user(String(req.params.id));
     const state = await projectsFor(owner, res);
     const { control, observation } = await controls.read(owner.id);
     const fresh = observation && Date.now() - observation.observedAt < 60_000;
     const limits = control?.limits ?? observation;
-    return adminView(req, res, "runners", "admin/runner-detail", {
+    const model = {
       livePage: true,
       owner: userRow(owner),
       ...state,
@@ -637,7 +722,28 @@ export function installAdminRoutes(
               storageUsed: observation.storageUsedMiB ?? "확인 중",
             }
           : undefined,
-    });
+    };
+    if (live(req)) {
+      const keys = [
+        "ready",
+        "operationPending",
+        "operationMessage",
+        "containerState",
+        "observedLabel",
+        "observedDateTime",
+        "observationFresh",
+        "observed",
+      ] as const;
+      return sendLive(req, res, "runner", {
+        ...Object.fromEntries(keys.map((key) => [key, model[key] ?? null])),
+        projects: state.projects.map(({ id, name, relativePath }) => ({
+          id,
+          name,
+          relativePath,
+        })),
+      });
+    }
+    return adminView(req, res, "runners", "admin/runner-detail", model);
   });
   router.post("/runners/:id/operations", async (req, res) => {
     const owner = await user(String(req.params.id));
@@ -672,7 +778,8 @@ export function installAdminRoutes(
     });
     return res.redirect(303, "/admin/runners/" + owner.id);
   });
-  router.get("/processes", async (req, res) => {
+  router.get(["/processes", "/processes/live"], async (req, res) => {
+    const pageReq = viewRequest(req);
     const selection = await selected(req, res);
     const state = await processList(selection.owner, res);
     const q = query(req, "q").toLowerCase(),
@@ -696,7 +803,7 @@ export function installAdminRoutes(
       }));
     const sorted = sortList(
       rows,
-      req,
+      pageReq,
       [
         { key: "command", label: "명령", value: (entry) => entry.command },
         { key: "status", label: "상태", value: (entry) => entry.statusLabel },
@@ -710,11 +817,35 @@ export function installAdminRoutes(
       ],
       { defaultKey: "started", defaultDirection: "desc" },
     );
+    const list = pageOf(sorted.items, pageReq);
+    if (live(req)) {
+      return sendLive(req, res, "processes", {
+        order: list.rows.map((row) => row.id),
+        pagination: list.pagination,
+        ready: state.ready,
+        ownerId: selection.owner.id,
+        ...Object.fromEntries(
+          list.rows.map((row) => [
+            "row:" + row.id,
+            {
+              id: row.id,
+              command: row.command,
+              status: row.status,
+              statusLabel: row.statusLabel,
+              pid: row.pid,
+              startedLabel: row.startedLabel,
+              startedDateTime: row.startedDateTime,
+              href: row.href,
+            },
+          ]),
+        ),
+      });
+    }
     return adminView(req, res, "processes", "admin/processes", {
       livePage: true,
       ...selection,
       ...state,
-      ...pageOf(sorted.items, req),
+      ...list,
       q,
       sort: sorted.state,
       sortHeaders: sorted.headers,
@@ -726,7 +857,7 @@ export function installAdminRoutes(
     });
   });
   router.get("/processes/:owner/:id/live", async (req, res) => {
-    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Cache-Control", "private, no-store");
     const owner = await user(String(req.params.owner));
     const state = await processList(owner, res);
     if (!state.ready) {
@@ -754,6 +885,14 @@ export function installAdminRoutes(
     const nextCursor = processLogCursor(process.id, page, logs.continuation);
     if (!nextCursor || typeof page?.output !== "string") {
       throw new AdminError("로그 응답을 확인할 수 없습니다.", 502);
+    }
+    if (
+      !page.output &&
+      cursor === nextCursor &&
+      !logs.truncated &&
+      query(req, "status") === process.status
+    ) {
+      return res.status(204).end();
     }
     return res.json({
       process: {
@@ -969,7 +1108,7 @@ export function installAdminRoutes(
     await record(res, "admin_client_removed", { clientId: id });
     return res.redirect(303, "/admin/connections?saved=1");
   });
-  router.get("/audit/:id/detail", async (req, res) => {
+  router.get(["/audit/:id/detail", "/audit/:id/live"], async (req, res) => {
     const id = String(req.params.id);
     if (!/^[A-Za-z0-9_-]{20}$/.test(id)) {
       throw new AdminError("감사 기록을 찾을 수 없습니다.", 404);
@@ -984,15 +1123,59 @@ export function installAdminRoutes(
       row,
       all,
       res,
-      query(req, "metadata") !== "1",
+      !live(req) && query(req, "metadata") !== "1",
     );
+    if (live(req)) {
+      const processes = detail.processes as Array<Record<string, unknown>>;
+      return sendLive(req, res, "audit-detail", {
+        record: {
+          id: row.id,
+          at: row.at,
+          atDateTime: row.atDateTime,
+          event: row.event,
+          actor: row.actor,
+          tool: row.tool,
+          reason: row.reason,
+          details: row.details,
+          command: row.command,
+        },
+        meta: {
+          command: detail.command,
+          ownerLabel: detail.ownerLabel,
+          processListHref: detail.processListHref,
+          message: detail.message,
+        },
+        order: processes.map((process) => process.id),
+        ...Object.fromEntries(
+          processes.map((process) => [
+            "process:" + process.id,
+            Object.fromEntries(
+              [
+                "id",
+                "command",
+                "pid",
+                "status",
+                "statusLabel",
+                "startedLabel",
+                "startedDateTime",
+                "href",
+                "liveUrl",
+                "runningText",
+                "moreText",
+              ].map((key) => [key, process[key] ?? null]),
+            ),
+          ]),
+        ),
+      });
+    }
     return sendPage(
       res,
       200,
       renderFragment("partials/audit-detail", { ...row, detail }),
     );
   });
-  router.get("/audit", async (req, res) => {
+  router.get(["/audit", "/audit/live"], async (req, res) => {
+    const pageReq = viewRequest(req);
     const [recent, all] = await Promise.all([audit.recent(), users.list()]);
     const q = query(req, "q").toLowerCase(),
       event = query(req, "event");
@@ -1005,7 +1188,7 @@ export function installAdminRoutes(
       );
     const sorted = sortList(
       rows,
-      req,
+      pageReq,
       [
         {
           key: "at",
@@ -1018,17 +1201,43 @@ export function installAdminRoutes(
       ],
       { defaultKey: "at", defaultDirection: "desc" },
     );
-    const page = pageOf(sorted.items, req);
-    const selectedId = query(req, "detail");
+    const page = pageOf(sorted.items, pageReq);
+    const selectedId = live(req) ? "" : query(req, "detail");
     for (const row of page.rows) {
       row.expanded = row.id === selectedId;
       row.expandedText = row.expanded ? "true" : "false";
       row.detailLabel = row.expanded ? "상세 닫기" : "상세 보기";
       row.detailHref = auditDetailHref(
-        req,
+        pageReq,
         row.expanded ? undefined : row.id,
         row.id,
       );
+    }
+    if (live(req)) {
+      return sendLive(req, res, "audit", {
+        order: page.rows.map((row) => row.id),
+        pagination: page.pagination,
+        clipped: recent.clipped,
+        ...Object.fromEntries(
+          page.rows.map((row) => [
+            "row:" + row.id,
+            Object.fromEntries(
+              [
+                "id",
+                "at",
+                "atDateTime",
+                "event",
+                "actor",
+                "tool",
+                "reason",
+                "detailHref",
+                "detailLabel",
+                "expandedText",
+              ].map((key) => [key, row[key as keyof AuditRow] ?? null]),
+            ),
+          ]),
+        ),
+      });
     }
     const selected = page.rows.find((row) => row.expanded);
     if (selected) {
@@ -1066,17 +1275,27 @@ export function installAdminRoutes(
     return res.redirect(303, "/admin/settings?saved=1");
   });
   router.use((req, res) =>
-    adminView(
-      req,
-      res,
-      "dashboard",
-      "admin/error",
-      { error: "관리자 페이지를 찾을 수 없습니다." },
-      404,
-    ),
+    live(req)
+      ? res.status(404).json({ error: "not_found" })
+      : adminView(
+          req,
+          res,
+          "dashboard",
+          "admin/error",
+          { error: "관리자 페이지를 찾을 수 없습니다." },
+          404,
+        ),
   );
   router.use(
     (error: unknown, req: Request, res: Response, _next: NextFunction) => {
+      if (live(req)) {
+        return res
+          .status(error instanceof AdminError ? error.status : 400)
+          .json({
+            error:
+              error instanceof Error ? error.message : "Live update failed",
+          });
+      }
       return adminView(
         req,
         res,

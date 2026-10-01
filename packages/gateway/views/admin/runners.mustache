@@ -1,10 +1,11 @@
-<section class="panel">
+<section class="panel" data-live-feed="runners" data-live-url="/admin/runners/live">
   <form class="toolbar" method="get" action="/admin/runners">{{> partials/sort-fields}}<label class="filter-field grow">사용자 검색<input name="q" type="search" value="{{q}}" placeholder="사용자 아이디"></label><button class="primary" type="submit">상태 조회</button><a class="button quiet" href="/admin/runners">초기화</a></form>
   <div data-live-region="runners">
-  <div class="table-scroll"><table><caption class="sr-only">실행 환경 목록</caption><thead><tr>{{#sortHeaders.username}}{{> partials/sortable-header}}{{/sortHeaders.username}}{{#sortHeaders.status}}{{> partials/sortable-header}}{{/sortHeaders.status}}<th>runner 연결</th><th>프로젝트</th><th>관리</th></tr></thead><tbody>
-    {{#rows}}<tr><td><strong>{{username}}</strong></td><td><span class="badge {{status}}">{{statusLabel}}</span></td><td>{{#ready}}<span class="badge active">연결됨</span>{{/ready}}{{^ready}}<span class="badge pending">응답 없음</span>{{/ready}}</td><td>{{#ready}}{{projectCount}}개{{/ready}}{{^ready}}—{{/ready}}</td><td><a class="button small" href="{{href}}">운영·제한 관리 →</a></td></tr>{{/rows}}
-    {{^rows}}<tr><td colspan="5" class="empty-state">조건에 맞는 사용자가 없습니다.</td></tr>{{/rows}}
-  </tbody></table></div>{{> partials/pagination}}
+  <div class="table-scroll"><table><caption class="sr-only">실행 환경 목록</caption><thead><tr>{{#sortHeaders.username}}{{> partials/sortable-header}}{{/sortHeaders.username}}{{#sortHeaders.status}}{{> partials/sortable-header}}{{/sortHeaders.status}}<th>runner 연결</th><th>프로젝트</th><th>관리</th></tr></thead><tbody data-live-rows>
+    {{#rows}}{{> partials/live-runner-row}}{{/rows}}
+    {{^rows}}<tr data-live-empty><td colspan="5" class="empty-state">조건에 맞는 사용자가 없습니다.</td></tr>{{/rows}}
+  </tbody></table></div><div data-live-pagination>{{> partials/pagination}}</div>
   </div>
 </section>
 <p class="help">조회 시점의 연결 상태입니다. 응답 없음은 컨테이너 미생성, 중지 또는 통신 오류를 포함합니다. <a href="/admin/usage?scope=all-runners">전체 실행 환경의 자원 사용량 보기 →</a></p>
+<template data-live-row-template>{{> partials/live-runner-row}}</template>

@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { TelemetryStream } from "../src/telemetry-stream.ts";
+import type { TelemetryResponse } from "../src/telemetry-store.ts";
 
 const source = readFileSync(
   new URL("../public/telemetry.js", import.meta.url),
@@ -257,6 +259,89 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
 describe("telemetry page", () => {
+  it("applies compact snapshots and deltas, retains points and selection, and accepts idle 204 without parsing JSON", async () => {
+    const h = harness();
+    const feed = new TelemetryStream();
+    const initial = payload();
+    initial.to = startAt + 40000;
+    const first = feed.respond(
+      "viewer",
+      initial as unknown as TelemetryResponse,
+    )!;
+    const changed = structuredClone(initial);
+    changed.current.values.cpuUsedCores = 9;
+    changed.current.observedAt += 5000;
+    const next = feed.respond(
+      "viewer",
+      changed as unknown as TelemetryResponse,
+      first.revision,
+    )!;
+    expect(
+      Object.keys(next.changes).some((key) => key.startsWith("point.")),
+    ).toBe(false);
+    h.respond(first as any);
+    h.respond(next as any);
+    const json = vi.fn(async () => {
+      throw new Error("204 has no JSON body");
+    });
+    h.fetch.mockResolvedValueOnce({ ok: true, status: 204, json });
+    h.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.values.cpuUsedCores.textContent).toBe("2.5 코어");
+    const before = h.charts.cpu.querySelector("path")!.getAttribute("d");
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(h.values.cpuUsedCores.textContent).toBe("9 코어");
+    expect(h.charts.cpu.querySelector("path")!.getAttribute("d")).toBe(before);
+    expect(
+      new URL(String(h.fetch.mock.calls[1][0])).searchParams.get("since"),
+    ).toBe(first.revision);
+    h.statisticButtons.p95.fire("click");
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(
+      new URL(String(h.fetch.mock.calls[2][0])).searchParams.get("since"),
+    ).toBe(next.revision);
+    expect(h.statisticButtons.p95.getAttribute("aria-pressed")).toBe("true");
+    expect(h.document.activeElement).toBe(h.input);
+    expect(h.window.scrollTo).not.toHaveBeenCalled();
+    expect(json).not.toHaveBeenCalled();
+  });
+
+  it("requests a new baseline after a mismatched delta and keeps revision through transient network failures", async () => {
+    const h = harness();
+    const feed = new TelemetryStream();
+    const initial = payload();
+    initial.to = startAt + 40000;
+    const first = feed.respond(
+      "viewer",
+      initial as unknown as TelemetryResponse,
+    )!;
+    const changed = structuredClone(initial);
+    changed.current.values.cpuUsedCores = 7;
+    const next = feed.respond(
+      "viewer",
+      changed as unknown as TelemetryResponse,
+      first.revision,
+    )!;
+    h.respond(first as any);
+    h.fetch.mockRejectedValueOnce(new Error("offline"));
+    h.respond({ ...next, base: "x".repeat(24) } as any);
+    h.respond(
+      feed.respond("viewer", changed as unknown as TelemetryResponse) as any,
+    );
+    h.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(5000);
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(
+      new URL(String(h.fetch.mock.calls[2][0])).searchParams.get("since"),
+    ).toBe(first.revision);
+    expect(h.values.cpuUsedCores.textContent).toBe("2.5 코어");
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(
+      new URL(String(h.fetch.mock.calls[3][0])).searchParams.has("since"),
+    ).toBe(false);
+    expect(h.values.cpuUsedCores.textContent).toBe("7 코어");
+  });
   it("shows real cores, normalized percentages, byte units, averages, peaks and observed totals without turning missing values into zero", async () => {
     const h = harness();
     h.respond();
@@ -264,7 +349,7 @@ describe("telemetry page", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(h.fetch).toHaveBeenCalledTimes(1);
     expect(String(h.fetch.mock.calls[0][0])).toBe(
-      "https://dev.example/admin/telemetry?scope=host&range=1h",
+      "https://dev.example/admin/telemetry?scope=host&range=1h&stream=1",
     );
     expect(h.fetch.mock.calls[0][1]).toMatchObject({
       cache: "no-store",
@@ -370,7 +455,7 @@ describe("telemetry page", () => {
     expect(tooltip.hidden).toBe(false);
   });
 
-  it("bounds SVG work to 720 samples and updates the viewBox when the container changes width", async () => {
+  it("bounds SVG work to 721 edge-inclusive samples and updates the viewBox when the container changes width", async () => {
     const h = harness();
     const data = payload();
     data.series = Array.from({ length: 2000 }, (_, i) => ({
@@ -382,7 +467,7 @@ describe("telemetry page", () => {
     h.start();
     await vi.advanceTimersByTimeAsync(0);
     const path = h.charts.cpu.querySelector("path")!.getAttribute("d")!;
-    expect(path.match(/[ML]/g)).toHaveLength(720);
+    expect(path.match(/[ML]/g)).toHaveLength(721);
     h.charts.cpu.clientWidth = 272;
     h.charts.cpu.querySelector("svg")!.clientWidth = 272;
     h.event("resize");

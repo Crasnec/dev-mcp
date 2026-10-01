@@ -4,7 +4,7 @@
 
   const ns = "http://www.w3.org/2000/svg";
   const interval = 5000;
-  const maxPoints = 720;
+  const maxPoints = 721;
   const number = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
   const statisticLabels = {
     average: "평균",
@@ -44,6 +44,57 @@
       labels: ["읽기", "쓰기"],
     },
   };
+  const chartMetrics = Object.values(definitions).flatMap(
+    (entry) => entry.metrics,
+  );
+  const currentMetrics = [
+    ...chartMetrics,
+    "cpuCapacityCores",
+    "cpuPercent",
+    "cpuCapacityPercent",
+    "memoryCapacityBytes",
+    "memoryPercent",
+    "diskCapacityBytes",
+    "diskPercent",
+  ];
+  const pointFields = [
+    "values",
+    "maxValues",
+    "p50",
+    "p95",
+    "p99",
+    "percentileRelativeError",
+  ];
+  const statisticFields = [
+    "average",
+    "max",
+    "p50",
+    "p95",
+    "p99",
+    "percentileRelativeError",
+  ];
+  const totalFields = [
+    "cpuSeconds",
+    "diskReadBytes",
+    "diskWriteBytes",
+    "networkRxBytes",
+    "networkTxBytes",
+  ];
+  const scalarFields = new Set([
+    "current.observedAt",
+    "current.state",
+    "current.availability",
+    ...currentMetrics.map((metric) => `current.values.${metric}`),
+    ...chartMetrics.flatMap((metric) =>
+      statisticFields.map((key) => `statistics.${metric}.${key}`),
+    ),
+    ...totalFields.map((key) => `totals.${key}`),
+    "history.observedMs",
+    "history.coverageRatio",
+    "history.truncated",
+  ]);
+  let streamRevision;
+  let streamFields;
   const finite = (value) =>
     typeof value === "number" && Number.isFinite(value) && value >= 0
       ? value
@@ -62,6 +113,137 @@
     );
   const percentile = (metric, value) =>
     finite(value) === null ? "—" : "≈ " + format(metric, value);
+
+  function streamResult(patch, url) {
+    if (
+      patch?.schemaVersion !== 1 ||
+      patch.streamVersion !== 1 ||
+      patch.kind !== "telemetry" ||
+      typeof patch.revision !== "string" ||
+      !/^[A-Za-z0-9_-]{24}$/.test(patch.revision) ||
+      typeof patch.reset !== "boolean" ||
+      typeof patch.scope !== "string" ||
+      patch.range !== (url.searchParams.get("range") || "1h") ||
+      (url.searchParams.has("scope") &&
+        patch.scope !== url.searchParams.get("scope")) ||
+      typeof patch.from !== "number" ||
+      typeof patch.to !== "number" ||
+      timestamp(patch.from) === null ||
+      timestamp(patch.to) === null ||
+      patch.to <= patch.from ||
+      !Number.isInteger(patch.stepMs) ||
+      patch.stepMs < 1 ||
+      !patch.changes ||
+      typeof patch.changes !== "object" ||
+      Array.isArray(patch.changes) ||
+      !Array.isArray(patch.removed) ||
+      patch.removed.length > maxPoints ||
+      Object.keys(patch.changes).length > 1024 ||
+      (!patch.reset &&
+        (!streamFields ||
+          patch.base !== streamRevision ||
+          patch.scope !== latestResult?.scope))
+    ) {
+      throw new Error("Invalid telemetry patch");
+    }
+    const fields = patch.reset ? new Map() : new Map(streamFields);
+    const pointKey = (key) =>
+      /^point\.(0|[1-9]\d{0,15})$/.test(key) &&
+      timestamp(Number(key.slice(6))) !== null;
+    for (const key of patch.removed) {
+      if (typeof key !== "string" || !pointKey(key))
+        throw new Error("Invalid removed point");
+      fields.delete(key);
+    }
+    for (const [key, value] of Object.entries(patch.changes)) {
+      if (pointKey(key)) {
+        if (
+          !Array.isArray(value) ||
+          value.length !== chartMetrics.length * pointFields.length ||
+          value.some((item) => item !== null && finite(item) === null)
+        )
+          throw new Error("Invalid telemetry point");
+      } else if (
+        !scalarFields.has(key) ||
+        (key === "current.state"
+          ? typeof value !== "string" || value.length > 32
+          : key === "current.availability"
+            ? !["fresh", "partial", "stale", "unavailable"].includes(value)
+            : key === "history.truncated"
+              ? typeof value !== "boolean"
+              : value !== null && finite(value) === null)
+      ) {
+        throw new Error("Invalid telemetry field");
+      }
+      fields.set(key, value);
+    }
+    for (const key of scalarFields) {
+      if (!fields.has(key)) throw new Error("Incomplete telemetry snapshot");
+    }
+    const from = Math.floor(patch.from / patch.stepMs) * patch.stepMs;
+    const count = Math.ceil((patch.to - from) / patch.stepMs);
+    if (count > maxPoints || fields.size > 1024)
+      throw new Error("Telemetry series exceeded limit");
+    const result = {
+      schemaVersion: 1,
+      scope: patch.scope,
+      range: patch.range,
+      from: patch.from,
+      to: patch.to,
+      stepMs: patch.stepMs,
+      current: {
+        observedAt: fields.get("current.observedAt"),
+        state: fields.get("current.state"),
+        availability: fields.get("current.availability"),
+        values: Object.fromEntries(
+          currentMetrics.map((metric) => [
+            metric,
+            fields.get(`current.values.${metric}`),
+          ]),
+        ),
+      },
+      statistics: Object.fromEntries(
+        chartMetrics.map((metric) => [
+          metric,
+          Object.fromEntries(
+            statisticFields.map((key) => [
+              key,
+              fields.get(`statistics.${metric}.${key}`),
+            ]),
+          ),
+        ]),
+      ),
+      totals: Object.fromEntries(
+        totalFields.map((key) => [key, fields.get(`totals.${key}`)]),
+      ),
+      history: Object.fromEntries(
+        ["observedMs", "coverageRatio", "truncated"].map((key) => [
+          key,
+          fields.get(`history.${key}`),
+        ]),
+      ),
+      series: Array.from({ length: count }, (_, index) => {
+        const at = from + index * patch.stepMs;
+        const packed = fields.get(`point.${at}`);
+        return {
+          at,
+          ...Object.fromEntries(
+            pointFields.map((key, fieldIndex) => [
+              key,
+              Object.fromEntries(
+                chartMetrics.map((metric, metricIndex) => [
+                  metric,
+                  packed?.[fieldIndex * chartMetrics.length + metricIndex] ??
+                    null,
+                ]),
+              ),
+            ]),
+          ),
+        };
+      }),
+    };
+    return { result, fields, revision: patch.revision };
+  }
 
   function bytes(value) {
     const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
@@ -498,6 +680,23 @@
     }
   }
 
+  function showAvailability(result) {
+    const state = ["fresh", "partial", "stale", "unavailable"].includes(
+      result.current.availability,
+    )
+      ? result.current.availability
+      : "unavailable";
+    availability(
+      state,
+      {
+        fresh: "",
+        partial: "일부 측정값을 사용할 수 없습니다.",
+        stale: "최근 측정값이 지연되고 있습니다.",
+        unavailable: "측정 데이터를 아직 사용할 수 없습니다.",
+      }[state],
+    );
+  }
+
   function renderCharts(result) {
     const left = window.scrollX;
     const top = window.scrollY;
@@ -573,20 +772,7 @@
     }
     latestResult = result;
     renderCharts(result);
-    const state = ["fresh", "partial", "stale", "unavailable"].includes(
-      result.current.availability,
-    )
-      ? result.current.availability
-      : "unavailable";
-    availability(
-      state,
-      {
-        fresh: "",
-        partial: "일부 측정값을 사용할 수 없습니다.",
-        stale: "최근 측정값이 지연되고 있습니다.",
-        unavailable: "측정 데이터를 아직 사용할 수 없습니다.",
-      }[state] ?? "측정 데이터를 아직 사용할 수 없습니다.",
-    );
+    showAvailability(result);
     if (window.scrollX !== left || window.scrollY !== top) {
       window.scrollTo({ left, top, behavior: "instant" });
     }
@@ -615,6 +801,8 @@
       const url = new URL(page.dataset.telemetryUrl, window.location.href);
       if (url.origin !== new URL(window.location.href).origin)
         throw new Error("Invalid telemetry URL");
+      url.searchParams.set("stream", "1");
+      if (streamRevision) url.searchParams.set("since", streamRevision);
       const response = await fetch(url, {
         cache: "no-store",
         credentials: "same-origin",
@@ -633,10 +821,34 @@
         );
         return;
       }
+      if (response.status === 204) {
+        if (!streamRevision || !latestResult)
+          throw new Error("Missing telemetry baseline");
+        showAvailability(latestResult);
+        failures = 0;
+        return;
+      }
       if (!response.ok) throw new Error("Telemetry request failed");
       const result = await response.json();
       if (closed || document.hidden || controller.signal.aborted) return;
-      update(result);
+      if (result?.streamVersion !== undefined) {
+        let accepted;
+        try {
+          accepted = streamResult(result, url);
+        } catch (error) {
+          streamRevision = undefined;
+          streamFields = undefined;
+          throw error;
+        }
+        update(accepted.result);
+        streamFields = accepted.fields;
+        streamRevision = accepted.revision;
+      } else {
+        // Older deployments may still serve the complete compatible endpoint.
+        update(result);
+        streamFields = undefined;
+        streamRevision = undefined;
+      }
       failures = 0;
     } catch {
       if (!closed && !document.hidden && !resumeRequested) {

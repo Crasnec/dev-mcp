@@ -10,6 +10,7 @@ interface NavItem {
   label: string;
   mark: string;
   description: string;
+  self?: { href: string; label: string; description: string };
 }
 export type AdminSession = { user: User; csrf: string };
 
@@ -17,6 +18,7 @@ export function managementShell(
   user: User,
   csrf: string,
   section: string,
+  options: { selfScope?: boolean } = {},
 ): Record<string, unknown> {
   const allNavigation = JSON.parse(
     readFileSync(
@@ -24,10 +26,33 @@ export function managementShell(
       "utf8",
     ),
   ) as NavItem[];
-  const allowedNavigation =
-    user.role === "admin"
-      ? allNavigation
-      : allNavigation.filter((item) => item.key === "account");
+  const selfScope = options.selfScope ?? user.role !== "admin";
+  const selfOrder = [
+    "runners",
+    "projects",
+    "processes",
+    "usage",
+    "audit",
+    "account",
+  ];
+  const allowedNavigation = selfScope
+    ? selfOrder.flatMap((key) => {
+        const item = allNavigation.find((entry) => entry.key === key);
+        return item?.self
+          ? [
+              {
+                ...item,
+                ...item.self,
+                navGroup: undefined,
+                href: item.self.href.replace(
+                  "{userId}",
+                  encodeURIComponent(user.id),
+                ),
+              },
+            ]
+          : [];
+      })
+    : allNavigation;
   const current = allowedNavigation.find((item) => item.key === section);
   if (!current) {
     throw new Error("사용할 수 없는 관리 화면입니다.");
@@ -37,8 +62,10 @@ export function managementShell(
     title: current.label,
     description: current.description,
     sectionHref: current.href,
-    managementHref: isAdmin ? "/admin" : "/account",
-    workspaceLabel: isAdmin ? "관리 워크스페이스" : "내 워크스페이스",
+    managementHref: selfScope ? "/account" : "/admin",
+    workspaceLabel: selfScope ? "내 워크스페이스" : "관리 워크스페이스",
+    consoleBase: selfScope ? "/account" : "/admin",
+    selfScope,
     isAdmin,
     csrf,
     actor: {
@@ -61,13 +88,17 @@ export function adminView(
   status = 200,
 ): Response {
   const session = res.locals.admin as AdminSession;
+  const selfScope =
+    data.selfScope === true ||
+    req.baseUrl === "/account" ||
+    session.user.role !== "admin";
   return sendPage(
     res,
     status,
     renderView(
       template,
       {
-        ...managementShell(session.user, session.csrf, section),
+        ...managementShell(session.user, session.csrf, section, { selfScope }),
         refreshHref: currentPageHref(req),
         notice:
           req.query.saved === "1" ? "변경 사항을 저장했습니다." : undefined,

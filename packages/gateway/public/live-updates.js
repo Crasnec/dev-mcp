@@ -1,6 +1,8 @@
 (() => {
   const page = document.querySelector("main[data-live-page]");
   if (!page) return;
+  const consoleBase =
+    page.dataset.consoleBase === "/account" ? "/account" : "/admin";
   const processPage = page.matches("[data-live-process]")
     ? page
     : page.querySelector("[data-live-process]");
@@ -67,7 +69,7 @@
     const url = new URL(value, window.location.href);
     if (
       url.origin !== new URL(window.location.href).origin ||
-      !url.pathname.startsWith("/admin/")
+      !url.pathname.startsWith(consoleBase + "/")
     )
       return;
     if (node.getAttribute("href") !== value) node.setAttribute("href", value);
@@ -213,7 +215,7 @@
       if (typeof owner === "string")
         href(
           region.querySelector("[data-live-runner-link]"),
-          "/admin/runners/" + encodeURIComponent(owner),
+          consoleBase + "/runners/" + encodeURIComponent(owner),
         );
     }
   }

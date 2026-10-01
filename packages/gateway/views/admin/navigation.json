@@ -12,7 +12,12 @@
     "href": "/admin/usage",
     "label": "자원 사용량",
     "mark": "◔",
-    "description": "서버와 실행 환경의 CPU, 메모리, 디스크, 네트워크 사용 추이를 확인합니다."
+    "description": "서버와 실행 환경의 CPU, 메모리, 디스크, 네트워크 사용 추이를 확인합니다.",
+    "self": {
+      "href": "/account/usage",
+      "label": "자원 사용량",
+      "description": "내 실행 환경의 CPU, 메모리, 디스크, 네트워크 사용 추이를 확인합니다."
+    }
   },
   {
     "key": "users",
@@ -27,21 +32,36 @@
     "href": "/admin/projects",
     "label": "프로젝트",
     "mark": "▱",
-    "description": "사용자별 프로젝트를 조회하고 등록 정보를 관리합니다."
+    "description": "사용자별 프로젝트를 조회하고 등록 정보를 관리합니다.",
+    "self": {
+      "href": "/account/projects",
+      "label": "프로젝트",
+      "description": "내 프로젝트를 조회하고 등록 정보를 관리합니다."
+    }
   },
   {
     "key": "runners",
     "href": "/admin/runners",
     "label": "실행 환경",
     "mark": "▣",
-    "description": "사용자별 runner의 연결 상태와 준비 절차를 확인합니다."
+    "description": "사용자별 runner의 연결 상태와 준비 절차를 확인합니다.",
+    "self": {
+      "href": "/account/runners/{userId}",
+      "label": "실행 환경",
+      "description": "내 실행 환경의 연결 상태와 적용된 자원 제한을 확인합니다."
+    }
   },
   {
     "key": "processes",
     "href": "/admin/processes",
     "label": "프로세스",
     "mark": "▷",
-    "description": "백그라운드 작업의 상태와 로그를 확인하고 종료합니다."
+    "description": "백그라운드 작업의 상태와 로그를 확인하고 종료합니다.",
+    "self": {
+      "href": "/account/processes",
+      "label": "프로세스",
+      "description": "내 백그라운드 작업을 실행하고 상태와 로그를 확인합니다."
+    }
   },
   {
     "key": "connections",
@@ -56,7 +76,12 @@
     "href": "/admin/audit",
     "label": "감사 기록",
     "mark": "≡",
-    "description": "계정 변경과 도구 실행 이력을 확인합니다."
+    "description": "계정 변경과 도구 실행 이력을 확인합니다.",
+    "self": {
+      "href": "/account/audit",
+      "label": "작업 기록",
+      "description": "내 도구 실행 이유와 작업 이력을 확인합니다."
+    }
   },
   {
     "key": "settings",
@@ -71,6 +96,11 @@
     "label": "내 계정",
     "mark": "●",
     "navGroup": "내 정보",
-    "description": "내 실행 환경, 프로젝트와 로그인 수단을 확인합니다."
+    "description": "내 실행 환경, 프로젝트와 로그인 수단을 확인합니다.",
+    "self": {
+      "href": "/account",
+      "label": "내 계정",
+      "description": "내 작업 공간과 로그인 수단을 확인합니다."
+    }
   }
 ]

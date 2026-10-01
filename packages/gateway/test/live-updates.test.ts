@@ -514,6 +514,32 @@ const value = (node: Element, name: string) =>
   node.querySelector(`[data-live-field="${name}"]`)!;
 
 describe("JSON live snapshots", () => {
+  it("keeps self-service polling and newly rendered links inside the account console", async () => {
+    const h = harness(false);
+    h.page.dataset.consoleBase = "/account";
+    h.feed.dataset.liveUrl = "/account/processes/live";
+    h.window.location.href = "https://dev.example/account/processes?q=build";
+    const own = { ...processRow("own"), href: "/account/processes/me/own" };
+    snapshot(h, "own-1", { order: ["own"], "row:own": own, ready: true }, true);
+    snapshot(h, "own-2", {
+      "row:own": { ...own, href: "/admin/processes/other/own" },
+    });
+    h.start();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(h.fetch.mock.calls[0][0].href).toBe(
+      "https://dev.example/account/processes/live?q=build",
+    );
+    expect(h.fetch.mock.calls[0][0].searchParams.has("owner")).toBe(false);
+    expect(value(h.body.children[0]!, "href").getAttribute("href")).toBe(
+      own.href,
+    );
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(h.fetch.mock.calls[1][0].searchParams.get("since")).toBe("own-1");
+    expect(value(h.body.children[0]!, "href").getAttribute("href")).toBe(
+      own.href,
+    );
+  });
+
   it("requests only dedicated JSON feeds, applies keyed deltas as literal text and preserves controls, nodes and scrolling", async () => {
     const h = harness(false);
     const existing = row("a");

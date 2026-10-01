@@ -66,6 +66,8 @@ async function fixture() {
   const ipc = vi
     .spyOn(IpcClient.prototype, "call")
     .mockRejectedValue(new Error("Telemetry must not use runner IPC"));
+  const telemetry = new RunnerTelemetryStore(runnerStatusDir, () => now);
+  const read = vi.spyOn(telemetry, "read");
   const app = createApp(
     {
       port: 3000,
@@ -75,7 +77,7 @@ async function fixture() {
       runnerSocket: path.join(dataDir, "unused.sock"),
       adminPasswordHash: passwordHash,
     },
-    { users, telemetry: new RunnerTelemetryStore(runnerStatusDir, () => now) },
+    { users, telemetry },
   );
   const get = (
     url: string,
@@ -99,6 +101,8 @@ async function fixture() {
     ownerSession,
     get,
     ipc,
+    read,
+    runnerStatusDir,
     writeCurrent,
     advance: (ms: number) => {
       now += ms;
@@ -107,6 +111,141 @@ async function fixture() {
 }
 
 describe("telemetry authorization and HTTP responses", () => {
+  it("renders own usage with range controls, charts and percentiles without enumerating other owners", async () => {
+    const h = await fixture();
+    const ts = Date.parse("2026-10-01T12:00:00Z");
+    const folder = path.join(
+      h.runnerStatusDir,
+      "telemetry",
+      "history",
+      h.owner.id,
+      "raw",
+    );
+    await mkdir(folder, { recursive: true });
+    await writeFile(
+      path.join(folder, "2026-10-01T12.jsonl"),
+      JSON.stringify({
+        ts,
+        intervalMs: 5000,
+        state: "ok",
+        epoch: "own-runner",
+        values: { cpuUsedCores: 2 },
+        metricObservedAt: { cpuUsedCores: ts },
+        deltas: { cpuSeconds: 10 },
+        coverage: { expected: 1, observed: 1, complete: true },
+      }) + "\n",
+    );
+    const list = vi.spyOn(h.users, "list");
+    const getOwner = vi.spyOn(h.users, "get");
+    const response = await h.get(
+      "/account/usage?range=1h",
+      h.ownerSession.token,
+    );
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toContain("no-store");
+    expect(h.read).toHaveBeenCalledExactlyOnceWith(h.owner.id, "1h");
+    expect(response.payload).toContain('action="/account/usage"');
+    expect(response.payload).toContain(
+      'data-telemetry-url="/account/telemetry?range=1h"',
+    );
+    expect(response.payload).toContain('data-console-base="/account"');
+    expect(response.payload).toContain("내 실행 환경");
+    expect(response.payload).toContain("1 코어");
+    expect(response.payload).toContain("≈ 2 코어");
+    for (const metric of ["cpu", "memory", "disk", "disk-io", "network"]) {
+      expect(response.payload).toContain(`data-telemetry-chart="${metric}"`);
+    }
+    for (const percentile of ["p50", "p95", "p99"]) {
+      expect(response.payload).toContain(
+        `data-telemetry-${percentile}="cpuUsedCores"`,
+      );
+    }
+    for (const range of ["1h", "24h", "7d", "30d"]) {
+      expect(response.payload).toContain(`<option value="${range}"`);
+    }
+    for (const privateValue of [
+      h.other.id,
+      h.other.username,
+      'name="scope"',
+      'name="owner"',
+      "호스트 서버",
+      "전체 실행 환경",
+      "12 코어",
+    ]) {
+      expect(response.payload).not.toContain(privateValue);
+    }
+    expect(response.payload).toContain("/assets/telemetry.js");
+    const full = await h.get(
+      "/account/telemetry?range=1h&stream=1",
+      h.ownerSession.token,
+    );
+    expect(full.json()).toMatchObject({
+      scope: h.owner.id,
+      reset: true,
+      changes: {
+        "current.values.cpuUsedCores": 1,
+        "statistics.cpuUsedCores.p95": 2,
+      },
+    });
+    const idle = await h.get(
+      "/account/telemetry?range=1h&stream=1&since=" + full.json().revision,
+      h.ownerSession.token,
+    );
+    expect(idle.statusCode).toBe(204);
+    expect(idle.payload).toBe("");
+    expect(list).not.toHaveBeenCalled();
+    expect(getOwner).not.toHaveBeenCalled();
+    expect(h.ipc).not.toHaveBeenCalled();
+  });
+
+  it("rejects account usage scope substitution and rechecks authentication before reading history", async () => {
+    const h = await fixture();
+    const anonymous = await h.get("/account/usage");
+    expect(anonymous.statusCode).toBe(303);
+    expect(anonymous.headers.location).toBe("/login");
+    for (const query of [
+      "scope=host",
+      "scope=all-runners",
+      "scope=" + h.other.id,
+      "scope=" + h.owner.id,
+      "owner=" + h.other.id,
+      "owner=" + h.owner.id,
+      "scope=host&scope=all-runners",
+      "owner[]=foreign",
+      "range=1y",
+      "range=1h&range=24h",
+    ]) {
+      expect(
+        (await h.get("/account/usage?" + query, h.ownerSession.token))
+          .statusCode,
+      ).toBe(400);
+    }
+    expect(h.read).not.toHaveBeenCalled();
+    const adminOwn = await h.get(
+      "/account/usage?range=30d",
+      h.adminSession.token,
+    );
+    expect(adminOwn.statusCode).toBe(200);
+    expect(h.read).toHaveBeenCalledExactlyOnceWith(h.admin.id, "30d");
+    expect(adminOwn.payload).toContain('action="/account/usage"');
+    expect(adminOwn.payload).not.toContain('name="scope"');
+    expect(adminOwn.payload).not.toContain("호스트 서버");
+    h.read.mockClear();
+    await h.users.update(h.admin.id, h.owner.id, {
+      status: "disabled",
+      role: "user",
+    });
+    const suspended = await h.get("/account/usage", h.ownerSession.token);
+    expect(suspended.statusCode).toBe(303);
+    expect(suspended.headers.location).toBe("/login");
+    expect(
+      (await h.get("/account/telemetry?stream=1", h.ownerSession.token))
+        .statusCode,
+    ).toBe(401);
+    expect(h.read).not.toHaveBeenCalled();
+    expect(h.ipc).not.toHaveBeenCalled();
+  });
+
   it("serves a compact baseline, scalar-only updates, idle204 and a reset for changed filters", async () => {
     const h = await fixture();
     const route = "/admin/telemetry?scope=host&range=1h&stream=1";
@@ -224,6 +363,8 @@ describe("telemetry authorization and HTTP responses", () => {
       "scope=all-runners",
       "scope=" + h.other.id,
       "owner=" + h.other.id,
+      "scope[]=host",
+      "owner[scope]=" + h.other.id,
     ]) {
       expect(
         (await h.get("/account/telemetry?" + query, h.ownerSession.token))

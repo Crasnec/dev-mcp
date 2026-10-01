@@ -22,6 +22,7 @@
       {{> partials/brand}}
       <nav aria-label="관리 메뉴">
         {{#navigation}}{{#navGroup}}<span class="nav-group">{{navGroup}}</span>{{/navGroup}}<a href="{{href}}" {{#active}}class="active" aria-current="page"{{/active}}>{{label}}</a>{{/navigation}}
+        {{#selfScope}}{{#isAdmin}}<a href="/admin">관리자 화면 →</a>{{/isAdmin}}{{/selfScope}}
       </nav>
       <div class="sidebar-bottom">
         <div class="sidebar-account"><strong title="{{actor.username}}">{{actor.username}}</strong><small>{{actor.roleLabel}}</small></div>
@@ -29,7 +30,7 @@
       </div>
     </aside>
     <div class="workspace">
-      <main id="main"{{#livePage}} data-live-page{{/livePage}}{{#liveAudit}} data-live-audit{{/liveAudit}}{{#liveProcessUrl}} data-live-process="{{liveProcessUrl}}" data-live-running="{{#running}}true{{/running}}{{^running}}false{{/running}}" data-live-more="{{#moreLogs}}true{{/moreLogs}}{{^moreLogs}}false{{/moreLogs}}"{{/liveProcessUrl}}>
+      <main id="main" data-console-base="{{consoleBase}}"{{#livePage}} data-live-page{{/livePage}}{{#liveAudit}} data-live-audit{{/liveAudit}}{{#liveProcessUrl}} data-live-process="{{liveProcessUrl}}" data-live-running="{{#running}}true{{/running}}{{^running}}false{{/running}}" data-live-more="{{#moreLogs}}true{{/moreLogs}}{{^moreLogs}}false{{/moreLogs}}"{{/liveProcessUrl}}>
         <header class="page-heading"><div><h1>{{title}}</h1><p>{{description}}</p></div><a class="button refresh-link" href="{{refreshHref}}" aria-label="현재 화면 새로고침">새로고침 ↻</a></header>
         {{> partials/notice}}
         {{{body}}}

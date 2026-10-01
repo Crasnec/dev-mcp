@@ -4,6 +4,8 @@
   if (!body) {
     return;
   }
+  const consoleBase =
+    page.dataset.consoleBase === "/account" ? "/account" : "/admin";
 
   const rows = new Map();
   const feeds = new Set();
@@ -72,10 +74,10 @@
 
   function link(className, text, href, attributes = {}) {
     const node = element("a", className, text, attributes);
-    const url = new URL(href || "/admin/audit", window.location.href);
+    const url = new URL(href || consoleBase + "/audit", window.location.href);
     if (
       url.origin === new URL(window.location.href).origin &&
-      url.pathname.startsWith("/admin/")
+      url.pathname.startsWith(consoleBase + "/")
     ) {
       node.setAttribute("href", url.pathname + url.search + url.hash);
     }
@@ -618,7 +620,8 @@
     }
     row.toggle.setAttribute(
       "href",
-      link("", "", record.detailHref).getAttribute("href") || "/admin/audit",
+      link("", "", record.detailHref).getAttribute("href") ||
+        consoleBase + "/audit",
     );
     row.summarySignature = value;
   }
@@ -639,7 +642,8 @@
     action.append(
       link("button small audit-detail-toggle", "상세 보기", record.detailHref, {
         "data-audit-toggle": "",
-        "data-detail-url": "/admin/audit/" + encodeURIComponent(id) + "/live",
+        "data-detail-url":
+          consoleBase + "/audit/" + encodeURIComponent(id) + "/live",
         "aria-expanded": "false",
         "aria-controls": "audit-detail-" + id,
       }),
@@ -819,7 +823,7 @@
     active: () => true,
     url: () => {
       const url = new URL(window.location.href);
-      url.pathname = "/admin/audit/live";
+      url.pathname = consoleBase + "/audit/live";
       url.searchParams.delete("detail");
       url.hash = "";
       return url;

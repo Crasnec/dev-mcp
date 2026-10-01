@@ -112,15 +112,48 @@ export function installAdminRoutes(
   audit: AuditLogger,
   settings: SettingsStore,
 ): void {
+  installConsoleRoutes(
+    app,
+    config,
+    users,
+    auth,
+    runners,
+    audit,
+    settings,
+    false,
+  );
+  installConsoleRoutes(
+    app,
+    config,
+    users,
+    auth,
+    runners,
+    audit,
+    settings,
+    true,
+  );
+}
+
+function installConsoleRoutes(
+  app: Express,
+  config: GatewayConfig,
+  users: UserStore,
+  auth: AuthStore,
+  runners: RunnerRouter,
+  audit: AuditLogger,
+  settings: SettingsStore,
+  selfScope: boolean,
+): void {
+  const base = selfScope ? "/account" : "/admin";
   const router = express.Router();
   const browser = browserSession(config, users);
   const snapshots = new LiveSnapshots();
   const live = (req: Request) =>
-    req.method === "GET" && req.path.endsWith("/live");
+    ["GET", "HEAD"].includes(req.method) && /\/live\/?$/.test(req.path);
   const viewRequest = (req: Request) =>
     ({
       baseUrl: req.baseUrl,
-      path: req.path.replace(/\/live$/, ""),
+      path: req.path.replace(/\/live\/?$/, ""),
       query: Object.fromEntries(
         Object.entries(req.query).filter(([key]) => key !== "since"),
       ),
@@ -147,6 +180,7 @@ export function installAdminRoutes(
       JSON.stringify([
         session.user.id,
         session.user.authVersion,
+        req.baseUrl,
         req.path,
         filters,
       ]),
@@ -158,7 +192,7 @@ export function installAdminRoutes(
     config.dataDir,
     config.runnerStatusDir ?? "/runner-status",
   );
-  router.use(express.urlencoded({ extended: false, limit: "16kb" }));
+  router.use(express.urlencoded({ extended: false, limit: "128kb" }));
   router.use(async (req, res, next) => {
     const session = await browser.current(req);
     if (live(req)) {
@@ -167,7 +201,7 @@ export function installAdminRoutes(
       if (!session) {
         return res.status(401).json({ error: "authentication_required" });
       }
-      if (session.user.role !== "admin") {
+      if (!selfScope && session.user.role !== "admin") {
         return res.status(403).json({ error: "admin_required" });
       }
     }
@@ -184,7 +218,7 @@ export function installAdminRoutes(
             }),
           );
     }
-    if (session.user.role !== "admin") {
+    if (!selfScope && session.user.role !== "admin") {
       return sendPage(
         res,
         403,
@@ -194,6 +228,21 @@ export function installAdminRoutes(
           message: "내 계정 화면을 이용해 주세요.",
         }),
       );
+    }
+    res.locals.admin = session;
+    res.locals.selfScope = selfScope;
+    if (selfScope && !workspaceRequest(req)) {
+      return live(req)
+        ? res.status(404).json({ error: "not_found" })
+        : sendPage(
+            res,
+            404,
+            errorPage({
+              status: 404,
+              title: "페이지를 찾을 수 없습니다",
+              message: "내 작업 공간의 메뉴를 이용해 주세요.",
+            }),
+          );
     }
     // Retire the old browser pollers immediately after deployment. Ordinary
     // document navigation still renders HTML; refreshed clients use /live.
@@ -208,12 +257,14 @@ export function installAdminRoutes(
       res.setHeader("Cache-Control", "private, no-store");
       return res.status(409).json({ error: "refresh_required" });
     }
-    res.locals.admin = session;
-    if (req.method !== "GET" && !browser.validCsrf(req, session.csrf)) {
+    if (
+      !["GET", "HEAD"].includes(req.method) &&
+      !browser.validCsrf(req, session.csrf)
+    ) {
       return adminView(
         req,
         res,
-        "dashboard",
+        selfScope ? "account" : "dashboard",
         "admin/error",
         {
           error:
@@ -222,10 +273,33 @@ export function installAdminRoutes(
         403,
       );
     }
+    if (selfScope) {
+      // Reject alternate/ambiguous owners even if the route would otherwise
+      // ignore them. The authenticated identity is the only workspace selector.
+      for (const fields of [req.query, req.body ?? {}]) {
+        if (Object.keys(fields).some((key) => /^(?:owner|scope)\[/.test(key))) {
+          throw new AdminError("작업 공간 선택 값을 확인해 주세요.");
+        }
+      }
+      for (const candidate of [req.query.owner, req.body?.owner]) {
+        if (
+          candidate !== undefined &&
+          (typeof candidate !== "string" || candidate !== session.user.id)
+        ) {
+          throw new AdminError("내 작업 공간만 사용할 수 있습니다.", 404);
+        }
+      }
+      if (req.query.scope !== undefined || req.body?.scope !== undefined) {
+        throw new AdminError("내 작업 공간만 사용할 수 있습니다.", 400);
+      }
+    }
     next();
   });
   const actor = (res: Response) => (res.locals.admin as AdminSession).user;
-  const user = async (id: string) => {
+  const user = async (id: string, res: Response) => {
+    if (selfScope && id !== actor(res).id) {
+      throw new AdminError("내 작업 공간의 항목을 찾을 수 없습니다.", 404);
+    }
     const found = await users.get(id);
     if (!found) {
       throw new AdminError("사용자를 찾을 수 없습니다.", 404);
@@ -233,8 +307,11 @@ export function installAdminRoutes(
     return found;
   };
   const selected = async (req: Request, res: Response) => {
-    const owner = await user(query(req, "owner") || actor(res).id);
-    const owners = (await users.list()).map((entry) => ({
+    const owner = await user(
+      selfScope ? actor(res).id : query(req, "owner") || actor(res).id,
+      res,
+    );
+    const owners = (selfScope ? [] : await users.list()).map((entry) => ({
       ...userRow(entry),
       selected: entry.id === owner.id,
     }));
@@ -245,12 +322,24 @@ export function installAdminRoutes(
     res: Response,
     method: string,
     params: Record<string, unknown> = {},
-  ) =>
-    runners
+  ) => {
+    if (selfScope && owner.id !== actor(res).id) {
+      throw new AdminError("내 작업 공간만 사용할 수 있습니다.", 404);
+    }
+    return runners
       .forUser(owner)
-      .call(method, params, "admin:" + actor(res).id + ":owner:" + owner.id, {
-        timeoutMs: 5000,
-      });
+      .call(
+        method,
+        params,
+        (selfScope ? "workspace:" : "admin:") +
+          actor(res).id +
+          ":owner:" +
+          owner.id,
+        {
+          timeoutMs: 5000,
+        },
+      );
+  };
   const projectsFor = async (owner: User, res: Response) => {
     const result = await call(owner, res, "project_list");
     const projects = (
@@ -286,7 +375,25 @@ export function installAdminRoutes(
     res: Response,
     event: string,
     details: Record<string, unknown>,
-  ) => audit.write({ event, actor: actor(res).id, ...details });
+  ) =>
+    audit.write({
+      event: selfScope ? event.replace(/^admin_/, "workspace_") : event,
+      actor: actor(res).id,
+      ...details,
+    });
+  const auditRecords = async (res: Response) => {
+    const recent = await audit.recent();
+    return {
+      ...recent,
+      records: selfScope
+        ? recent.records.filter((entry) =>
+            ownsAuditRecord(entry, actor(res).id),
+          )
+        : recent.records,
+    };
+  };
+  const visibleUsers = (res: Response) =>
+    selfScope ? Promise.resolve([actor(res)]) : users.list();
   const auditProcessDetail = async (
     row: AuditRow,
     allUsers: User[],
@@ -318,7 +425,7 @@ export function installAdminRoutes(
       return {
         command: row.command,
         message: `${owner.email ?? owner.username}님의 실행 환경에 연결할 수 없습니다.`,
-        processListHref: "/admin/processes?owner=" + owner.id,
+        processListHref: base + "/processes?owner=" + owner.id,
         processes: [],
       };
     }
@@ -337,7 +444,11 @@ export function installAdminRoutes(
             )
           : "";
         const href =
-          "/admin/processes/" + owner.id + "/" + encodeURIComponent(process.id);
+          base +
+          "/processes/" +
+          owner.id +
+          "/" +
+          encodeURIComponent(process.id);
         return {
           ...process,
           statusLabel: statusLabel(process.status),
@@ -367,7 +478,7 @@ export function installAdminRoutes(
     return {
       command: row.command,
       ownerLabel: owner.email ?? owner.username,
-      processListHref: "/admin/processes?owner=" + owner.id,
+      processListHref: base + "/processes?owner=" + owner.id,
       message:
         processRows.length === 0
           ? "조건에 맞는 연관 프로세스를 찾지 못했습니다."
@@ -380,7 +491,7 @@ export function installAdminRoutes(
     if (query(req, "user")) {
       return res.redirect(
         303,
-        "/admin/runners/" + encodeURIComponent(query(req, "user")),
+        base + "/runners/" + encodeURIComponent(query(req, "user")),
       );
     }
     const [all, sessions, clients, recent] = await Promise.all([
@@ -391,21 +502,21 @@ export function installAdminRoutes(
     ]);
     return adminView(req, res, "dashboard", "admin/dashboard", {
       metrics: [
-        { label: "전체 사용자", value: all.length, href: "/admin/users" },
+        { label: "전체 사용자", value: all.length, href: base + "/users" },
         {
           label: "승인 대기",
           value: all.filter((entry) => entry.status === "pending").length,
-          href: "/admin/users?status=pending",
+          href: base + "/users?status=pending",
         },
         {
           label: "브라우저 세션",
           value: sessions.length,
-          href: "/admin/connections",
+          href: base + "/connections",
         },
         {
           label: "MCP 클라이언트",
           value: clients.length,
-          href: "/admin/connections",
+          href: base + "/connections",
         },
       ],
       pending: all
@@ -450,7 +561,7 @@ export function installAdminRoutes(
     });
   });
   router.get("/users/:id", async (req, res) => {
-    const target = await user(String(req.params.id));
+    const target = await user(String(req.params.id), res);
     const sessions = (await users.browserSessions()).filter(
       (session) => session.userId === target.id,
     );
@@ -481,7 +592,7 @@ export function installAdminRoutes(
     await record(res, "user_updated", { userId: req.params.id, role, status });
     return res.redirect(
       303,
-      "/admin/users/" + encodeURIComponent(String(req.params.id)) + "?saved=1",
+      base + "/users/" + encodeURIComponent(String(req.params.id)) + "?saved=1",
     );
   });
   router.post("/users/:id/revoke", async (req, res) => {
@@ -489,7 +600,7 @@ export function installAdminRoutes(
     await record(res, "user_access_revoked", { userId: req.params.id });
     return res.redirect(
       303,
-      "/admin/users/" + encodeURIComponent(String(req.params.id)) + "?saved=1",
+      base + "/users/" + encodeURIComponent(String(req.params.id)) + "?saved=1",
     );
   });
 
@@ -504,7 +615,8 @@ export function installAdminRoutes(
       .map((project) => ({
         ...project,
         href:
-          "/admin/projects/" +
+          base +
+          "/projects/" +
           selection.owner.id +
           "/" +
           encodeURIComponent(project.id),
@@ -527,7 +639,10 @@ export function installAdminRoutes(
     });
   });
   router.post("/projects", async (req, res) => {
-    const owner = await user(field(req, "owner"));
+    const owner = await user(
+      selfScope ? actor(res).id : field(req, "owner"),
+      res,
+    );
     const name = field(req, "name").trim(),
       relativePath = field(req, "relative_path");
     if (
@@ -550,10 +665,10 @@ export function installAdminRoutes(
       );
     }
     await record(res, "admin_project_registered", { userId: owner.id, name });
-    return res.redirect(303, "/admin/projects?owner=" + owner.id + "&saved=1");
+    return res.redirect(303, base + "/projects?owner=" + owner.id + "&saved=1");
   });
   router.get("/projects/:owner/:id", async (req, res) => {
-    const owner = await user(String(req.params.owner));
+    const owner = await user(String(req.params.owner), res);
     const project = await projectFor(owner, String(req.params.id), res);
     const git = await call(owner, res, "git_read", {
       project_id: project.id,
@@ -569,7 +684,7 @@ export function installAdminRoutes(
   });
   for (const operation of ["unregister", "delete"] as const) {
     router.post("/projects/:owner/:id/" + operation, async (req, res) => {
-      const owner = await user(String(req.params.owner));
+      const owner = await user(String(req.params.owner), res);
       const project = await projectFor(owner, String(req.params.id), res);
       if (
         operation === "delete" &&
@@ -594,12 +709,17 @@ export function installAdminRoutes(
       });
       return res.redirect(
         303,
-        "/admin/projects?owner=" + owner.id + "&saved=1",
+        base + "/projects?owner=" + owner.id + "&saved=1",
       );
     });
   }
 
   router.get(["/runners", "/runners/live"], async (req, res) => {
+    if (selfScope) {
+      return live(req)
+        ? res.status(404).json({ error: "not_found" })
+        : res.redirect(303, base + "/runners/" + actor(res).id);
+    }
     const pageReq = viewRequest(req);
     const q = query(req, "q").toLowerCase();
     const sorted = sortList(
@@ -631,7 +751,7 @@ export function installAdminRoutes(
               ...userRow(owner),
               ...state,
               projectCount: state.projects.length,
-              href: "/admin/runners/" + owner.id,
+              href: base + "/runners/" + owner.id,
             };
           }),
         )),
@@ -667,7 +787,7 @@ export function installAdminRoutes(
     });
   });
   router.get(["/runners/:id", "/runners/:id/live"], async (req, res) => {
-    const owner = await user(String(req.params.id));
+    const owner = await user(String(req.params.id), res);
     const state = await projectsFor(owner, res);
     const { control, observation } = await controls.read(owner.id);
     const fresh = observation && Date.now() - observation.observedAt < 60_000;
@@ -746,7 +866,7 @@ export function installAdminRoutes(
     return adminView(req, res, "runners", "admin/runner-detail", model);
   });
   router.post("/runners/:id/operations", async (req, res) => {
-    const owner = await user(String(req.params.id));
+    const owner = await user(String(req.params.id), res);
     const action = field(req, "action");
     const number = (name: string) => {
       const value = field(req, name);
@@ -776,7 +896,7 @@ export function installAdminRoutes(
       revision: request.revision,
       limits,
     });
-    return res.redirect(303, "/admin/runners/" + owner.id);
+    return res.redirect(303, base + "/runners/" + owner.id);
   });
   router.get(["/processes", "/processes/live"], async (req, res) => {
     const pageReq = viewRequest(req);
@@ -796,7 +916,8 @@ export function installAdminRoutes(
         startedLabel: dateLabel(entry.startedAt),
         startedDateTime: dateIso(entry.startedAt),
         href:
-          "/admin/processes/" +
+          base +
+          "/processes/" +
           selection.owner.id +
           "/" +
           encodeURIComponent(entry.id),
@@ -849,6 +970,9 @@ export function installAdminRoutes(
       q,
       sort: sorted.state,
       sortHeaders: sorted.headers,
+      projects: state.ready
+        ? (await projectsFor(selection.owner, res)).projects
+        : [],
       statuses: ["running", "exited", "stopped"].map((value) => ({
         value,
         label: statusLabel(value),
@@ -856,9 +980,55 @@ export function installAdminRoutes(
       })),
     });
   });
+  router.post("/processes", async (req, res) => {
+    const owner = await user(
+      selfScope ? actor(res).id : field(req, "owner"),
+      res,
+    );
+    const projectId = field(req, "project_id");
+    const command = field(req, "command");
+    const networkIntent = field(req, "network_intent") || "none";
+    if (
+      !command.trim() ||
+      Buffer.byteLength(command) > 32768 ||
+      !["none", "read", "write"].includes(networkIntent)
+    ) {
+      throw new AdminError("실행 명령과 네트워크 사용 범위를 확인해 주세요.");
+    }
+    const project = await projectFor(owner, projectId, res);
+    const result = await call(owner, res, "process_start", {
+      project_id: project.id,
+      command,
+      network_intent: networkIntent,
+    });
+    if (!result.ok) {
+      throw new AdminError(
+        result.error?.message ?? "프로세스를 실행하지 못했습니다.",
+      );
+    }
+    const started = (result.data as { process?: { id?: unknown } } | undefined)
+      ?.process;
+    await record(res, "admin_process_started", {
+      userId: owner.id,
+      projectId: project.id,
+      ...(typeof started?.id === "string" ? { processId: started.id } : {}),
+      params: { command, network_intent: networkIntent },
+    });
+    return res.redirect(
+      303,
+      typeof started?.id === "string"
+        ? base +
+            "/processes/" +
+            owner.id +
+            "/" +
+            encodeURIComponent(started.id) +
+            "?saved=1"
+        : base + "/processes?owner=" + owner.id + "&saved=1",
+    );
+  });
   router.get("/processes/:owner/:id/live", async (req, res) => {
     res.setHeader("Cache-Control", "private, no-store");
-    const owner = await user(String(req.params.owner));
+    const owner = await user(String(req.params.owner), res);
     const state = await processList(owner, res);
     if (!state.ready) {
       throw new AdminError("실행 환경에 연결할 수 없습니다.", 503);
@@ -905,7 +1075,7 @@ export function installAdminRoutes(
     });
   });
   router.get("/processes/:owner/:id", async (req, res) => {
-    const owner = await user(String(req.params.owner));
+    const owner = await user(String(req.params.owner), res);
     const state = await processList(owner, res);
     if (!state.ready) {
       throw new AdminError("실행 환경에 연결할 수 없습니다.", 503);
@@ -925,7 +1095,8 @@ export function installAdminRoutes(
     return adminView(req, res, "processes", "admin/process-detail", {
       livePage: true,
       liveProcessUrl:
-        "/admin/processes/" +
+        base +
+        "/processes/" +
         owner.id +
         "/" +
         encodeURIComponent(process.id) +
@@ -949,7 +1120,8 @@ export function installAdminRoutes(
         : cursor,
       moreLogs: logs.truncated || !logs.ok,
       nextLog: logs.continuation
-        ? "/admin/processes/" +
+        ? base +
+          "/processes/" +
           owner.id +
           "/" +
           encodeURIComponent(process.id) +
@@ -959,7 +1131,14 @@ export function installAdminRoutes(
     });
   });
   router.post("/processes/:owner/:id/stop", async (req, res) => {
-    const owner = await user(String(req.params.owner));
+    const owner = await user(String(req.params.owner), res);
+    const state = await processList(owner, res);
+    if (!state.ready) {
+      throw new AdminError("실행 환경에 연결할 수 없습니다.", 503);
+    }
+    if (!state.processes.some((entry) => entry.id === req.params.id)) {
+      throw new AdminError("이 사용자의 프로세스를 찾을 수 없습니다.", 404);
+    }
     const result = await call(owner, res, "process_stop", {
       process_id: String(req.params.id),
     });
@@ -974,7 +1153,8 @@ export function installAdminRoutes(
     });
     return res.redirect(
       303,
-      "/admin/processes/" +
+      base +
+        "/processes/" +
         owner.id +
         "/" +
         encodeURIComponent(String(req.params.id)) +
@@ -1095,7 +1275,7 @@ export function installAdminRoutes(
   router.post("/connections/sessions/:id/revoke", async (req, res) => {
     await users.revokeBrowserSession(actor(res).id, String(req.params.id));
     await record(res, "admin_session_revoked", {});
-    return res.redirect(303, "/admin/connections?saved=1");
+    return res.redirect(303, base + "/connections?saved=1");
   });
   router.post("/connections/clients/:id/delete", async (req, res) => {
     const id = String(req.params.id);
@@ -1106,14 +1286,17 @@ export function installAdminRoutes(
     }
     await auth.removeClient(id);
     await record(res, "admin_client_removed", { clientId: id });
-    return res.redirect(303, "/admin/connections?saved=1");
+    return res.redirect(303, base + "/connections?saved=1");
   });
   router.get(["/audit/:id/detail", "/audit/:id/live"], async (req, res) => {
     const id = String(req.params.id);
     if (!/^[A-Za-z0-9_-]{20}$/.test(id)) {
       throw new AdminError("감사 기록을 찾을 수 없습니다.", 404);
     }
-    const [recent, all] = await Promise.all([audit.recent(), users.list()]);
+    const [recent, all] = await Promise.all([
+      auditRecords(res),
+      visibleUsers(res),
+    ]);
     const source = recent.records.find((entry) => auditRecordId(entry) === id);
     if (!source) {
       throw new AdminError("감사 기록을 찾을 수 없습니다.", 404);
@@ -1176,7 +1359,10 @@ export function installAdminRoutes(
   });
   router.get(["/audit", "/audit/live"], async (req, res) => {
     const pageReq = viewRequest(req);
-    const [recent, all] = await Promise.all([audit.recent(), users.list()]);
+    const [recent, all] = await Promise.all([
+      auditRecords(res),
+      visibleUsers(res),
+    ]);
     const q = query(req, "q").toLowerCase(),
       event = query(req, "event");
     const rows = recent.records
@@ -1272,7 +1458,7 @@ export function installAdminRoutes(
     await record(res, "admin_settings_updated", {
       registrationOpen: field(req, "registrationOpen") === "on",
     });
-    return res.redirect(303, "/admin/settings?saved=1");
+    return res.redirect(303, base + "/settings?saved=1");
   });
   router.use((req, res) =>
     live(req)
@@ -1280,9 +1466,9 @@ export function installAdminRoutes(
       : adminView(
           req,
           res,
-          "dashboard",
+          selfScope ? "account" : "dashboard",
           "admin/error",
-          { error: "관리자 페이지를 찾을 수 없습니다." },
+          { error: "페이지를 찾을 수 없습니다." },
           404,
         ),
   );
@@ -1296,10 +1482,26 @@ export function installAdminRoutes(
               error instanceof Error ? error.message : "Live update failed",
           });
       }
+      if (!res.locals.admin) {
+        return sendPage(
+          res,
+          400,
+          errorPage({
+            status: 400,
+            title: "요청을 확인할 수 없습니다",
+            message: "입력한 내용을 확인한 후 다시 시도해 주세요.",
+          }),
+        );
+      }
       return adminView(
         req,
         res,
-        req.path.split("/")[1] || "dashboard",
+        selfScope &&
+          !["projects", "runners", "processes", "audit"].includes(
+            req.path.split("/")[1] ?? "",
+          )
+          ? "account"
+          : req.path.split("/")[1] || "dashboard",
         "admin/error",
         {
           error:
@@ -1311,7 +1513,7 @@ export function installAdminRoutes(
       );
     },
   );
-  app.use("/admin", router);
+  app.use(base, router);
 }
 
 function auditRow(entry: Record<string, unknown>, users: User[]): AuditRow {
@@ -1445,4 +1647,32 @@ function relatedProcesses(
       (left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt),
     )
     .slice(0, 5);
+}
+
+function workspaceRequest(req: Request): boolean {
+  const read = ["GET", "HEAD"].includes(req.method);
+  if (read) {
+    return /^\/(?:projects(?:\/[^/]+\/[^/]+)?|processes(?:\/live|\/[^/]+\/[^/]+(?:\/live)?)?|runners(?:\/[^/]+(?:\/live)?)?|audit(?:\/live|\/[A-Za-z0-9_-]{20}\/(?:detail|live))?)\/?$/.test(
+      req.path,
+    );
+  }
+  return (
+    req.method === "POST" &&
+    /^\/(?:projects(?:\/[^/]+\/[^/]+\/(?:unregister|delete))?|processes(?:\/[^/]+\/[^/]+\/stop)?)\/?$/.test(
+      req.path,
+    )
+  );
+}
+
+function ownsAuditRecord(
+  entry: Record<string, unknown>,
+  userId: string,
+): boolean {
+  if (entry.userId !== undefined) {
+    return entry.userId === userId;
+  }
+  return (
+    typeof entry.actor === "string" &&
+    (entry.actor === userId || entry.actor.startsWith(userId + ":"))
+  );
 }

@@ -433,6 +433,50 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
 describe("inline audit details", () => {
+  it("opens new self-service audit rows and their logs through account-only URLs", async () => {
+    const h = harness([]);
+    h.page.dataset.consoleBase = "/account";
+    h.window.location.href = "https://dev.example/account/audit?q=build";
+    const ownRecord = { ...record("a"), detailHref: "/account/audit?detail=a" };
+    const process = {
+      ...processMetadata("job"),
+      href: "/account/processes/me/job",
+      liveUrl: "/account/processes/me/job/live",
+    };
+    const response = detailResponse("detail-1", [process]);
+    const payload = await response.json();
+    (payload.changes.meta as Record<string, unknown>).processListHref =
+      "/account/processes";
+    h.fetch.mockImplementation((url: URL) => {
+      if (url.pathname === "/account/audit/live")
+        return Promise.resolve(h.listResponse("list-1", [ownRecord]));
+      if (url.pathname === "/account/audit/a/live")
+        return Promise.resolve({ ...response, json: async () => payload });
+      if (url.pathname === "/account/processes/me/job/live")
+        return Promise.resolve(logResponse("own log", "own-cursor"));
+      throw new Error("Unexpected console URL: " + url.pathname);
+    });
+    h.start();
+    await vi.advanceTimersByTimeAsync(2000);
+    const summary = h.body.querySelector("[data-audit-id]")!;
+    const toggle = summary.querySelector("[data-audit-toggle]")!;
+    const detail = h.body.querySelector("[data-audit-detail-row]")!;
+    const content = detail.querySelector("[data-audit-detail-content]")!;
+    expect(toggle.getAttribute("href")).toBe(ownRecord.detailHref);
+    expect(toggle.dataset.detailUrl).toBe("/account/audit/a/live");
+    h.click({ summary, toggle, detail, content });
+    await vi.advanceTimersByTimeAsync(2);
+    expect(content.querySelector("[data-audit-log]")?.textContent).toBe(
+      "own log",
+    );
+    expect(
+      content.querySelectorAll("a").map((link) => link.getAttribute("href")),
+    ).toContain(process.href);
+    expect(
+      h.fetch.mock.calls.every(([url]) => url.pathname.startsWith("/account/")),
+    ).toBe(true);
+  });
+
   it("opens inline, respects modified links, and never reopens a detail closed during fetch", async () => {
     const row = auditRow("a");
     const h = harness([row]);

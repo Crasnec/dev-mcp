@@ -135,11 +135,7 @@ export function installTelemetryRoutes(
       return;
     }
     const range = requestedRange(req);
-    if (
-      !range ||
-      req.query.scope !== undefined ||
-      req.query.owner !== undefined
-    ) {
+    if (!range || hasScopeSelector(req)) {
       return res.status(400).json({ error: "invalid_telemetry_query" });
     }
     if (!ownsRunner(session.user)) {
@@ -148,107 +144,144 @@ export function installTelemetryRoutes(
     return respond(req, res, session.user.id, session.user.id, range);
   });
 
-  app.get("/admin/usage", async (req, res) => {
-    const session = await authenticate(req, res, true, true);
-    if (!session) {
-      return;
-    }
-    const range = requestedRange(req);
-    const scope =
-      typeof req.query.scope === "string" ? req.query.scope : "host";
-    const selected = await resolveScope(scope);
-    if (!range || !selected) {
-      return sendPage(
-        res,
-        400,
-        errorPage({
-          status: 400,
-          title: "사용량 범위를 확인해 주세요",
-          message: "사용할 실행 환경과 조회 기간을 선택해 주세요.",
-        }),
-      );
-    }
-    const data = await telemetry.read(scope, range);
-    res.locals.admin = session;
-    const owners = (await users.list()).filter(ownsRunner);
-    const scopes = [
-      { value: "host", label: "호스트 서버" },
-      { value: "all-runners", label: "전체 실행 환경" },
-      ...owners.map((owner) => ({ value: owner.id, label: ownerLabel(owner) })),
-    ].map((entry) => ({ ...entry, selected: entry.value === scope }));
-    const ranges = Object.entries(TELEMETRY_RANGES).map(([value, entry]) => ({
-      value,
-      label: entry.label,
-      selected: value === range,
-    }));
-    return adminView(req, res, "usage", "admin/usage", {
-      telemetryPage: true,
-      telemetryUrl: "/admin/telemetry?" + new URLSearchParams({ scope, range }),
-      scopes,
-      ranges,
-      scopeLabel: selected.label,
-      rangeLabel: TELEMETRY_RANGES[range].label,
-      telemetryNotice: {
-        fresh: "",
-        partial: "일부 측정값을 확인할 수 없습니다.",
-        stale: "최근 측정이 중단되어 현재 사용량을 확인할 수 없습니다.",
-        unavailable: "사용량이 수집되면 여기에 표시됩니다.",
-      }[data.current.availability],
-      telemetry: data,
-      metrics: SSR_METRICS.map(([key, label]) => ({
-        key,
-        label,
-        current: formatMetric(key, data.current.values[key]),
-        average: formatMetric(key, data.statistics[key].average),
-        max: formatMetric(key, data.statistics[key].max),
-        p50: formatPercentile(key, data.statistics[key].p50),
-        p95: formatPercentile(key, data.statistics[key].p95),
-        p99: formatPercentile(key, data.statistics[key].p99),
-        percentileTitle:
-          data.statistics[key].percentileRelativeError === null
-            ? "분포 기록이 없는 구간의 백분위는 표시되지 않습니다."
-            : `근사 백분위 · 상대 오차 상한 ${decimal(data.statistics[key].percentileRelativeError * 100)}%`,
-      })),
-      totals: [
-        {
-          key: "cpuSeconds",
-          label: "누적 CPU 시간",
-          value: formatCpuTime(data.totals.cpuSeconds),
-        },
-        {
-          key: "diskReadBytes",
-          label: "디스크 읽기",
-          value: formatBytes(data.totals.diskReadBytes),
-        },
-        {
-          key: "diskWriteBytes",
-          label: "디스크 쓰기",
-          value: formatBytes(data.totals.diskWriteBytes),
-        },
-        {
-          key: "networkRxBytes",
-          label: "네트워크 수신",
-          value: formatBytes(data.totals.networkRxBytes),
-        },
-        {
-          key: "networkTxBytes",
-          label: "네트워크 송신",
-          value: formatBytes(data.totals.networkTxBytes),
-        },
-      ],
-      observedAtLabel:
-        data.current.observedAt === null
-          ? "측정 기록 없음"
-          : new Date(data.current.observedAt)
-              .toISOString()
-              .replace("T", " ")
-              .slice(0, 19) + " UTC",
-      observedDateTime: dateIso(data.current.observedAt),
-      coverageLabel:
-        `선택 기간 중 ${durationLabel(data.history.observedMs)} 기록 · ${decimal(data.history.coverageRatio * 100)}%` +
-        (data.history.truncated ? " · 일부 기록만 표시" : ""),
-    });
-  });
+  const usagePage =
+    (selfScope: boolean) => async (req: Request, res: Response) => {
+      const session = await authenticate(req, res, !selfScope, true);
+      if (!session) {
+        return;
+      }
+      const range = requestedRange(req);
+      if (
+        !range ||
+        (selfScope && hasScopeSelector(req)) ||
+        (req.query.scope !== undefined && typeof req.query.scope !== "string")
+      ) {
+        return sendPage(
+          res,
+          400,
+          errorPage({
+            status: 400,
+            title: "사용량 범위를 확인해 주세요",
+            message: "사용할 실행 환경과 조회 기간을 선택해 주세요.",
+          }),
+        );
+      }
+      const scope = selfScope
+        ? session.user.id
+        : typeof req.query.scope === "string"
+          ? req.query.scope
+          : "host";
+      const selected = selfScope
+        ? ownsRunner(session.user)
+          ? { scope, label: "내 실행 환경" }
+          : undefined
+        : await resolveScope(scope);
+      if (!selected) {
+        return sendPage(
+          res,
+          selfScope ? 404 : 400,
+          errorPage({
+            status: selfScope ? 404 : 400,
+            title: "실행 환경을 확인해 주세요",
+            message: "조회할 수 있는 실행 환경이 없습니다.",
+          }),
+        );
+      }
+      const data = await telemetry.read(scope, range);
+      res.locals.admin = session;
+      const owners = selfScope ? [] : (await users.list()).filter(ownsRunner);
+      const scopes = selfScope
+        ? []
+        : [
+            { value: "host", label: "호스트 서버" },
+            { value: "all-runners", label: "전체 실행 환경" },
+            ...owners.map((owner) => ({
+              value: owner.id,
+              label: ownerLabel(owner),
+            })),
+          ].map((entry) => ({ ...entry, selected: entry.value === scope }));
+      const ranges = Object.entries(TELEMETRY_RANGES).map(([value, entry]) => ({
+        value,
+        label: entry.label,
+        selected: value === range,
+      }));
+      const consoleBase = selfScope ? "/account" : "/admin";
+      return adminView(req, res, "usage", "admin/usage", {
+        consoleBase,
+        selfScope,
+        telemetryPage: true,
+        telemetryUrl:
+          consoleBase +
+          "/telemetry?" +
+          new URLSearchParams(selfScope ? { range } : { scope, range }),
+        scopes,
+        ranges,
+        scopeLabel: selected.label,
+        rangeLabel: TELEMETRY_RANGES[range].label,
+        telemetryNotice: {
+          fresh: "",
+          partial: "일부 측정값을 확인할 수 없습니다.",
+          stale: "최근 측정이 중단되어 현재 사용량을 확인할 수 없습니다.",
+          unavailable: "사용량이 수집되면 여기에 표시됩니다.",
+        }[data.current.availability],
+        telemetry: data,
+        metrics: SSR_METRICS.map(([key, label]) => ({
+          key,
+          label,
+          current: formatMetric(key, data.current.values[key]),
+          average: formatMetric(key, data.statistics[key].average),
+          max: formatMetric(key, data.statistics[key].max),
+          p50: formatPercentile(key, data.statistics[key].p50),
+          p95: formatPercentile(key, data.statistics[key].p95),
+          p99: formatPercentile(key, data.statistics[key].p99),
+          percentileTitle:
+            data.statistics[key].percentileRelativeError === null
+              ? "분포 기록이 없는 구간의 백분위는 표시되지 않습니다."
+              : `근사 백분위 · 상대 오차 상한 ${decimal(data.statistics[key].percentileRelativeError * 100)}%`,
+        })),
+        totals: [
+          {
+            key: "cpuSeconds",
+            label: "누적 CPU 시간",
+            value: formatCpuTime(data.totals.cpuSeconds),
+          },
+          {
+            key: "diskReadBytes",
+            label: "디스크 읽기",
+            value: formatBytes(data.totals.diskReadBytes),
+          },
+          {
+            key: "diskWriteBytes",
+            label: "디스크 쓰기",
+            value: formatBytes(data.totals.diskWriteBytes),
+          },
+          {
+            key: "networkRxBytes",
+            label: "네트워크 수신",
+            value: formatBytes(data.totals.networkRxBytes),
+          },
+          {
+            key: "networkTxBytes",
+            label: "네트워크 송신",
+            value: formatBytes(data.totals.networkTxBytes),
+          },
+        ],
+        observedAtLabel:
+          data.current.observedAt === null
+            ? "측정 기록 없음"
+            : new Date(data.current.observedAt)
+                .toISOString()
+                .replace("T", " ")
+                .slice(0, 19) + " UTC",
+        observedDateTime: dateIso(data.current.observedAt),
+        coverageLabel:
+          `선택 기간 중 ${durationLabel(data.history.observedMs)} 기록 · ${decimal(data.history.coverageRatio * 100)}%` +
+          (data.history.truncated ? " · 일부 기록만 표시" : ""),
+      });
+    };
+
+  app.get("/admin/usage", usagePage(false));
+  app.get("/account/usage", usagePage(true));
 }
 
 function ownsRunner(user: User): boolean {
@@ -336,6 +369,11 @@ function requestedRange(req: Request): TelemetryRange | undefined {
   return typeof range === "string" && Object.hasOwn(TELEMETRY_RANGES, range)
     ? (range as TelemetryRange)
     : undefined;
+}
+function hasScopeSelector(req: Request): boolean {
+  return Object.keys(req.query).some((key) =>
+    /^(?:scope|owner)(?:\[|$)/.test(key),
+  );
 }
 function jsonHeaders(res: Response): void {
   res.setHeader("Cache-Control", "private, no-store");

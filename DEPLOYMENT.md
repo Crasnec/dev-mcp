@@ -43,8 +43,6 @@ Rollback (printed by the migration script):
 4. Remove the entry from `workspace-dirs.json` in `dev-mcp_runner-status`.
 5. Start `dev-mcp-runner-1`, and redeploy the previous gateway and provisioner images. Tag them before step 2, e.g. `dev-mcp-gateway:rollback-<date>`.
 
-Known issue that the migration does not change: `data/user-ipc` and `data/google` live inside `/home/crasnec/workspace`, so the administrator's runner can read the other runners' IPC keys and the Google credential copies. Move `USER_RUNNER_IPC_DIR` and the secret copies outside the workspace when convenient.
-
 ## Automatic user runner creation (2026-09-22)
 
 Account approval previously saved only the runner identity; creating its container required the manual host helper. The separate `provisioner` service now polls active accounts every five seconds and creates missing dedicated runners with that helper. It also repairs already-approved accounts and retries failed creations. Running or deliberately stopped containers are preserved. Pending/disabled accounts are skipped.

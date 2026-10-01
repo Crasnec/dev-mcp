@@ -226,4 +226,118 @@ describe("workspace workflow", () => {
       processes: [expect.objectContaining({ id, status: "stopped" })],
     });
   });
+
+  it("drains all final output when terminal polling stops at EOF", async () => {
+    const { runtime, projectId } = await runtimeFixture();
+    const byteCount = 256 * 1024;
+    const started = await runtime.processes.start(
+      projectId,
+      `printf '%${byteCount}s' '' | tr ' ' x; printf '끝\\n'`,
+    );
+    expect(started.ok).toBe(true);
+    const id = (started.data as { process: { id: string } }).process.id;
+    let cursor: string | undefined;
+    let output = "";
+    let terminal: { status: string; exitCode?: number | null } | undefined;
+    await expect
+      .poll(
+        async () => {
+          const listed = await runtime.processes.list(projectId);
+          terminal = (
+            listed.data as {
+              processes: {
+                id: string;
+                status: string;
+                exitCode?: number | null;
+              }[];
+            }
+          ).processes.find((entry) => entry.id === id);
+          const logs = await runtime.processes.logs(id, cursor);
+          expect(logs.ok).toBe(true);
+          const data = logs.data as { output: string; cursor: string };
+          output += data.output;
+          cursor = data.cursor;
+          return terminal?.status === "exited" && !logs.truncated;
+        },
+        { interval: 1, timeout: 5_000 },
+      )
+      .toBe(true);
+    expect(output).toBe(`${"x".repeat(byteCount)}끝\n`);
+    expect(terminal?.exitCode).toBe(0);
+    expect((await runtime.processes.logs(id, cursor)).data).toMatchObject({
+      output: "",
+    });
+  });
+
+  it("flushes output written by a termination handler before publishing stopped", async () => {
+    const { runtime, projectId } = await runtimeFixture(512 * 1024);
+    const byteCount = 128 * 1024;
+    const started = await runtime.processes.start(
+      projectId,
+      `trap "printf '%${byteCount}s' '' | tr ' ' x; printf 'stopped\\n'; exit 0" TERM; printf 'ready\\n'; while :; do sleep 0.1; done`,
+    );
+    expect(started.ok).toBe(true);
+    const id = (started.data as { process: { id: string } }).process.id;
+    try {
+      await expect
+        .poll(async () => (await runtime.processes.logs(id)).data, {
+          timeout: 5_000,
+        })
+        .toMatchObject({ output: "ready\n" });
+      const stopped = await runtime.processes.stop(id);
+      expect(stopped.ok).toBe(true);
+      expect(stopped.data).toMatchObject({ process: { status: "stopped" } });
+      const logs = await runtime.processes.logs(id);
+      expect(logs.truncated).toBe(false);
+      expect((logs.data as { output: string }).output).toContain(
+        `${"x".repeat(byteCount)}stopped\n`,
+      );
+    } finally {
+      await runtime.processes.stop(id);
+    }
+  });
+
+  it("returns promptly for a stale process while inherited output pipes remain open", async () => {
+    const { runtime, projectId } = await runtimeFixture();
+    const started = await runtime.processes.start(
+      projectId,
+      "printf 'ready\\n'; sleep 0.1; sleep 30 &",
+    );
+    expect(started.ok).toBe(true);
+    const { id, pid } = (
+      started.data as { process: { id: string; pid: number } }
+    ).process;
+    try {
+      await expect
+        .poll(
+          async () => {
+            try {
+              await readFile(`/proc/${pid}/stat`);
+              return false;
+            } catch {
+              return true;
+            }
+          },
+          { timeout: 5_000 },
+        )
+        .toBe(true);
+      const before = Date.now();
+      expect((await runtime.processes.stop(id)).error?.code).toBe(
+        "PROCESS_STALE",
+      );
+      expect(Date.now() - before).toBeLessThan(1_000);
+      expect((await runtime.processes.list(projectId)).data).toMatchObject({
+        processes: [expect.objectContaining({ id, status: "running" })],
+      });
+    } finally {
+      process.kill(-pid, "SIGKILL");
+      await expect
+        .poll(async () => (await runtime.processes.list(projectId)).data, {
+          timeout: 5_000,
+        })
+        .toMatchObject({
+          processes: [expect.objectContaining({ id, status: "exited" })],
+        });
+    }
+  });
 });

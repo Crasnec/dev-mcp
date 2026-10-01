@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/assets/admin.css">
   <link rel="stylesheet" href="/assets/message-dialogs.css">
   <script src="/assets/message-dialogs.js" defer></script>
+  {{#livePage}}<script src="/assets/live-updates.js" defer></script>{{/livePage}}
 </head>
 <body>
   <a class="skip-link" href="#main">본문 바로가기</a>
@@ -23,7 +24,7 @@
     </aside>
     <div class="workspace">
       <header class="topbar"><div class="breadcrumb"><a href="{{managementHref}}">관리</a><span>/</span><a href="{{sectionHref}}">{{title}}</a></div><form method="post" action="/logout">{{> partials/csrf}}<button class="quiet" type="submit">로그아웃</button></form></header>
-      <main id="main">
+      <main id="main"{{#livePage}} data-live-page{{/livePage}}{{#liveProcessUrl}} data-live-process="{{liveProcessUrl}}" data-live-running="{{#running}}true{{/running}}{{^running}}false{{/running}}" data-live-more="{{#moreLogs}}true{{/moreLogs}}{{^moreLogs}}false{{/moreLogs}}"{{/liveProcessUrl}}>
         <div class="page-heading"><div><span class="eyebrow">DEV MCP / OPERATIONS</span><h1>{{title}}</h1><p>{{description}}</p></div><a class="button refresh-link" href="{{refreshHref}}">새로고침 ↻</a></div>
         {{> partials/notice}}
         {{{body}}}

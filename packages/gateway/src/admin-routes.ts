@@ -35,6 +35,41 @@ interface ProcessSummary {
   startedAt: string;
   exitCode?: number;
 }
+interface ProcessLogPage {
+  output: string;
+  cursor?: string;
+  nextOffset?: number;
+}
+
+function processLogCursor(
+  id: string,
+  page: ProcessLogPage | undefined,
+  continuation?: string,
+): string | undefined {
+  if (page?.cursor) {
+    return page.cursor;
+  }
+  if (continuation) {
+    return continuation;
+  }
+  // Existing runners can keep serving live logs without restarting active jobs.
+  const offset = page?.nextOffset;
+  if (
+    typeof offset === "number" &&
+    Number.isSafeInteger(offset) &&
+    offset >= 0
+  ) {
+    return Buffer.from(
+      JSON.stringify({
+        v: 1,
+        kind: "process-log",
+        id,
+        offset,
+      }),
+    ).toString("base64url");
+  }
+  return undefined;
+}
 interface AuditRow {
   id: string;
   source: Record<string, unknown>;
@@ -517,6 +552,7 @@ export function installAdminRoutes(
       );
     }
     return adminView(req, res, "runners", "admin/runners", {
+      livePage: true,
       ...list,
       rows,
       q,
@@ -531,6 +567,7 @@ export function installAdminRoutes(
     const fresh = observation && Date.now() - observation.observedAt < 60_000;
     const limits = control?.limits ?? observation;
     return adminView(req, res, "runners", "admin/runner-detail", {
+      livePage: true,
       owner: userRow(owner),
       ...state,
       primary: owner.runner === "primary",
@@ -651,6 +688,7 @@ export function installAdminRoutes(
       { defaultKey: "started", defaultDirection: "desc" },
     );
     return adminView(req, res, "processes", "admin/processes", {
+      livePage: true,
       ...selection,
       ...state,
       ...pageOf(sorted.items, req),
@@ -662,6 +700,46 @@ export function installAdminRoutes(
         label: statusLabel(value),
         selected: status === value,
       })),
+    });
+  });
+  router.get("/processes/:owner/:id/live", async (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    const owner = await user(String(req.params.owner));
+    const state = await processList(owner, res);
+    if (!state.ready) {
+      throw new AdminError("실행 환경에 연결할 수 없습니다.", 503);
+    }
+    const process = state.processes.find((entry) => entry.id === req.params.id);
+    if (!process) {
+      throw new AdminError("이 사용자의 프로세스를 찾을 수 없습니다.", 404);
+    }
+    const cursor =
+      typeof req.query.cursor === "string"
+        ? req.query.cursor.slice(0, 4096)
+        : undefined;
+    const logs = await call(owner, res, "process_logs", {
+      process_id: process.id,
+      ...(cursor ? { cursor } : {}),
+    });
+    if (!logs.ok) {
+      throw new AdminError(
+        logs.error?.message ?? "로그를 읽을 수 없습니다.",
+        503,
+      );
+    }
+    const page = logs.data as ProcessLogPage | undefined;
+    const nextCursor = processLogCursor(process.id, page, logs.continuation);
+    if (!nextCursor || typeof page?.output !== "string") {
+      throw new AdminError("로그 응답을 확인할 수 없습니다.", 502);
+    }
+    return res.json({
+      process: {
+        status: process.status,
+        statusLabel: statusLabel(process.status),
+      },
+      output: page.output,
+      cursor: nextCursor,
+      more: logs.truncated === true,
     });
   });
   router.get("/processes/:owner/:id", async (req, res) => {
@@ -683,6 +761,13 @@ export function installAdminRoutes(
       ...(cursor ? { cursor } : {}),
     });
     return adminView(req, res, "processes", "admin/process-detail", {
+      livePage: true,
+      liveProcessUrl:
+        "/admin/processes/" +
+        owner.id +
+        "/" +
+        encodeURIComponent(process.id) +
+        "/live",
       owner,
       process: {
         ...process,
@@ -690,9 +775,16 @@ export function installAdminRoutes(
         startedLabel: dateLabel(process.startedAt),
       },
       running: process.status === "running",
-      output: logs.ok
-        ? (logs.data as { output: string }).output
-        : logs.error?.message,
+      output: logs.ok ? (logs.data as ProcessLogPage).output : "",
+      logError: logs.ok ? undefined : logs.error?.message,
+      logCursor: logs.ok
+        ? processLogCursor(
+            process.id,
+            logs.data as ProcessLogPage,
+            logs.continuation,
+          )
+        : cursor,
+      moreLogs: logs.truncated || !logs.ok,
       nextLog: logs.continuation
         ? "/admin/processes/" +
           owner.id +

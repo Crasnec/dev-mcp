@@ -29,10 +29,15 @@ interface ProcessRecord {
 interface ProcessRegistry {
   processes: ProcessRecord[];
 }
+interface ProcessExit {
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+}
 
 export class ProcessService {
   private readonly store: JsonStore<ProcessRegistry>;
   private readonly logDir: string;
+  private readonly logCompletions = new Map<string, Promise<ProcessExit>>();
 
   constructor(
     private readonly config: RunnerConfig,
@@ -109,6 +114,11 @@ export class ProcessService {
       }
       child.stdout.pipe(log, { end: false });
       child.stderr.pipe(log, { end: false });
+      const completion = new Promise<ProcessExit>((resolve) => {
+        child.once("close", (exitCode, signal) => {
+          log.end(() => resolve({ exitCode, signal }));
+        });
+      });
       const record: ProcessRecord = {
         id,
         projectId,
@@ -121,20 +131,24 @@ export class ProcessService {
         status: "running",
         logFile,
       };
+      this.logCompletions.set(id, completion);
       await this.store.update((value) => {
         value.processes.push(record);
       });
-      child.once("close", (exitCode, signal) => {
-        log.end();
-        void this.store.update((value) => {
-          const current = value.processes.find((entry) => entry.id === id);
-          if (current && current.status === "running") {
-            current.status = "exited";
-            current.exitCode = exitCode;
-            current.signal = signal;
-            current.endedAt = new Date().toISOString();
-          }
-        });
+      void completion.then(async ({ exitCode, signal }) => {
+        try {
+          await this.store.update((value) => {
+            const current = value.processes.find((entry) => entry.id === id);
+            if (current && current.status === "running") {
+              current.status = "exited";
+              current.exitCode = exitCode;
+              current.signal = signal;
+              current.endedAt = new Date().toISOString();
+            }
+          });
+        } finally {
+          this.logCompletions.delete(id);
+        }
       });
       child.unref();
       return ok({ process: publicRecord(record) });
@@ -178,7 +192,9 @@ export class ProcessService {
       if (!record) {
         return fail("PROCESS_NOT_FOUND", `Unknown process: ${id}`);
       }
-      const offset = cursor ? decodeLogCursor(cursor, id) : 0;
+      const { offset, pending } = cursor
+        ? decodeLogCursor(cursor, id)
+        : { offset: 0, pending: Buffer.alloc(0) };
       const size = (await stat(record.logFile)).size;
       const end = Math.min(
         size,
@@ -186,22 +202,38 @@ export class ProcessService {
       );
       const handle = await open(record.logFile, "r");
       const content = Buffer.alloc(Math.max(0, end - offset));
-      const { bytesRead } = await handle.read(
-        content,
-        0,
-        content.length,
-        offset,
-      );
-      await handle.close();
+      let bytesRead: number;
+      try {
+        ({ bytesRead } = await handle.read(content, 0, content.length, offset));
+      } finally {
+        await handle.close();
+      }
+      const nextOffset = offset + bytesRead;
+      const truncated = nextOffset < size;
+      const combined = Buffer.concat([pending, content.subarray(0, bytesRead)]);
+      let nextPending = incompleteUtf8Suffix(combined);
+      if (
+        nextPending.length &&
+        !truncated &&
+        (record.status !== "running" ||
+          (!this.logCompletions.has(id) &&
+            !(await sameProcess(record.pid, record.procStart))))
+      ) {
+        nextPending = Buffer.alloc(0);
+      }
+      const nextCursor = encodeLogCursor(id, nextOffset, nextPending);
       return ok(
         {
-          output: content.subarray(0, bytesRead).toString("utf8"),
+          output: combined
+            .subarray(0, combined.length - nextPending.length)
+            .toString("utf8"),
           offset,
-          nextOffset: offset + bytesRead,
+          nextOffset,
+          cursor: nextCursor,
         },
         {
-          truncated: end < size,
-          ...(end < size ? { continuation: encodeLogCursor(id, end) } : {}),
+          truncated,
+          ...(truncated ? { continuation: nextCursor } : {}),
         },
       );
     } catch (error) {
@@ -221,7 +253,9 @@ export class ProcessService {
         return ok({ process: publicRecord(record), alreadyStopped: true });
       }
       if (!(await sameProcess(record.pid, record.procStart))) {
-        await this.markDead(id, "exited");
+        if (!this.logCompletions.has(id)) {
+          await this.markDead(id, "exited");
+        }
         return fail(
           "PROCESS_STALE",
           "PID no longer refers to the recorded process",
@@ -245,6 +279,13 @@ export class ProcessService {
           );
         }
       }
+      const completion = this.logCompletions.get(id);
+      if (completion && !(await finishesWithin(completion, 2_000))) {
+        return fail(
+          "PROCESS_STOP_FAILED",
+          "Process exited but its output is still draining",
+        );
+      }
       await this.store.update((registry) => {
         const current = registry.processes.find((entry) => entry.id === id);
         if (current) {
@@ -264,6 +305,7 @@ export class ProcessService {
       for (const record of registry.processes) {
         if (
           record.status === "running" &&
+          !this.logCompletions.has(record.id) &&
           !(await sameProcess(record.pid, record.procStart))
         ) {
           record.status = "exited";
@@ -319,15 +361,46 @@ async function waitForExit(
   }
   return !(await sameProcess(pid, expected));
 }
-function encodeLogCursor(id: string, offset: number): string {
+async function finishesWithin(
+  completion: Promise<unknown>,
+  timeoutMs: number,
+): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      completion.then(() => true),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+function encodeLogCursor(id: string, offset: number, pending: Buffer): string {
   return Buffer.from(
-    JSON.stringify({ v: 1, kind: "process-log", id, offset }),
+    JSON.stringify({
+      v: 1,
+      kind: "process-log",
+      id,
+      offset,
+      ...(pending.length ? { pending: pending.toString("base64url") } : {}),
+    }),
   ).toString("base64url");
 }
-function decodeLogCursor(token: string, id: string): number {
+function decodeLogCursor(
+  token: string,
+  id: string,
+): { offset: number; pending: Buffer } {
   const value = JSON.parse(
     Buffer.from(token, "base64url").toString("utf8"),
-  ) as { v?: number; kind?: string; id?: string; offset?: number };
+  ) as {
+    v?: number;
+    kind?: string;
+    id?: string;
+    offset?: number;
+    pending?: unknown;
+  };
   if (
     value.v !== 1 ||
     value.kind !== "process-log" ||
@@ -337,5 +410,41 @@ function decodeLogCursor(token: string, id: string): number {
   ) {
     throw new Error("Invalid process log cursor");
   }
-  return value.offset as number;
+  let pending = Buffer.alloc(0);
+  if (value.pending !== undefined) {
+    if (
+      typeof value.pending !== "string" ||
+      !/^[A-Za-z0-9_-]{2,4}$/.test(value.pending)
+    ) {
+      throw new Error("Invalid process log cursor");
+    }
+    pending = Buffer.from(value.pending, "base64url");
+    if (
+      pending.toString("base64url") !== value.pending ||
+      pending.length > (value.offset as number) ||
+      incompleteUtf8Suffix(pending).length !== pending.length
+    ) {
+      throw new Error("Invalid process log cursor");
+    }
+  }
+  return { offset: value.offset as number, pending };
+}
+
+// Carry at most three unfinished UTF-8 bytes across pages and live EOF reads.
+function incompleteUtf8Suffix(content: Buffer): Buffer {
+  const tail = content.subarray(Math.max(0, content.length - 3));
+  let start = tail.length - 1;
+  while (start > 0 && (tail[start]! & 0xc0) === 0x80) {
+    start -= 1;
+  }
+  const suffix = tail.subarray(Math.max(0, start));
+  try {
+    const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+    if (decoder.decode(suffix, { stream: true }) === "") {
+      return suffix;
+    }
+  } catch {
+    // Invalid bytes are decoded normally rather than deferred indefinitely.
+  }
+  return Buffer.alloc(0);
 }

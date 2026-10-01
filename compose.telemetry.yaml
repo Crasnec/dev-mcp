@@ -21,7 +21,7 @@ services:
         target: /hostfs
         read_only: true
         bind:
-          propagation: rprivate
+          propagation: rslave
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,mode=1777

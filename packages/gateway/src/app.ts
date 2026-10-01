@@ -19,6 +19,8 @@ import { SettingsStore } from "./settings-store.ts";
 import { installAdminRoutes } from "./admin-routes.ts";
 import { GoogleLogin, type GoogleProvider } from "./google-login.ts";
 import { installGoogleRoutes } from "./google-routes.ts";
+import { installTelemetryRoutes } from "./telemetry-routes.ts";
+import { RunnerTelemetryStore } from "./telemetry-store.ts";
 
 const SESSION_IDLE_TIMEOUT_MS = 24 * 60 * 60_000;
 
@@ -36,6 +38,7 @@ export interface AppDependencies {
   ipc?: IpcClient;
   users?: UserStore;
   google?: GoogleProvider;
+  telemetry?: RunnerTelemetryStore;
 }
 
 export function createApp(
@@ -120,6 +123,13 @@ export function createApp(
     loginLimiter,
     settings,
     !!google,
+  );
+  installTelemetryRoutes(
+    app,
+    config,
+    users,
+    dependencies.telemetry ??
+      new RunnerTelemetryStore(config.runnerStatusDir ?? "/runner-status"),
   );
   installAdminRoutes(app, config, users, auth, runners, audit, settings);
   installOAuthRoutes(app, config, auth, audit, users, loginLimiter, !!google);

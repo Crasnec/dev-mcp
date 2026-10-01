@@ -1,97 +1,116 @@
 .message-dialog {
-  width: min(440px, calc(100vw - 32px));
+  width: min(420px, calc(100vw - 32px));
   max-width: none;
   max-height: calc(100dvh - 32px);
   overflow: auto;
   padding: 0;
   border: 0;
-  border-radius: 14px;
+  border-radius: 12px;
   background: transparent;
   color: inherit;
-  box-shadow: 0 24px 80px #1e2e2752;
+  box-shadow: var(--shadow-2, 0 12px 40px rgb(16 22 36 / 22%));
 }
 .message-dialog::backdrop {
-  background: #17241f73;
+  background: rgb(12 15 22 / 48%);
   backdrop-filter: blur(2px);
 }
 .message-dialog-panel {
-  padding: 25px;
-  border: 1px solid #dce5d8;
-  border-radius: 14px;
-  background: #fff;
+  padding: 22px 22px 18px;
+  border: 1px solid var(--line, #e2e5eb);
+  border-radius: 12px;
+  background: var(--surface, #fff);
+  color: var(--ink, #141821);
 }
 .message-dialog-heading {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 14px;
+  margin-bottom: 10px;
 }
 .message-dialog-heading h2 {
   margin: 0;
-  color: #294a38;
-  font-size: 17px;
+  color: var(--ink, #141821);
+  font-size: 16px;
+  font-weight: 700;
   line-height: 1.4;
 }
 .message-dialog-icon {
   display: grid;
   place-items: center;
-  flex: 0 0 28px;
-  height: 28px;
+  flex: 0 0 24px;
+  height: 24px;
   border-radius: 50%;
-  background: #e8f0e4;
-  color: #527b63;
-  font-family: Georgia, serif;
-  font-size: 16px;
+  background: var(--accent-solid, #3446d4);
+  color: var(--on-accent, #fff);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 13px;
+  font-style: italic;
   font-weight: 700;
 }
 .message-dialog-body {
   margin: 0;
-  color: #5f6e64;
+  color: var(--ink-2, #394050);
   font-size: 13px;
-  line-height: 1.8;
+  line-height: 1.75;
   word-break: keep-all;
   overflow-wrap: anywhere;
 }
 .message-dialog-body a {
-  color: #3f7056;
+  color: var(--accent, #3446d4);
   font-weight: 600;
 }
 .message-dialog-body code {
-  font-size: 11px;
+  font-size: 11.5px;
 }
 .message-dialog-actions {
   display: flex;
   justify-content: flex-end;
-  margin-top: 22px;
+  margin-top: 20px;
 }
 .message-dialog-close {
-  min-width: 76px;
-  background: #527b63;
-  border-color: #527b63;
-  color: #fff;
+  min-width: 80px;
+  border-color: var(--accent-solid, #3446d4);
+  background: var(--accent-solid, #3446d4);
+  color: var(--on-accent, #fff);
 }
 .message-dialog-close:hover {
-  background: #416b52;
+  border-color: var(--accent-solid-hover, #2a39b6);
+  background: var(--accent-solid-hover, #2a39b6);
+  color: var(--on-accent, #fff);
 }
 .context-message {
   position: relative;
   margin: 0 0 20px;
-  padding-left: 22px;
-  color: #5f6e64;
+  padding: 11px 14px 11px 38px;
+  border: 1px solid var(--line, #e2e5eb);
+  border-radius: var(--radius-small, 7px);
+  background: var(--surface-2, #f8f9fb);
+  color: var(--ink-2, #394050);
   font-size: 13px;
-  line-height: 1.8;
+  line-height: 1.7;
   word-break: keep-all;
   overflow-wrap: break-word;
 }
 .context-message::before {
   position: absolute;
-  top: 0;
-  left: 0;
-  color: #66836f;
-  content: "ⓘ";
+  top: 13px;
+  left: 14px;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid var(--accent, #3446d4);
+  border-radius: 50%;
+  color: var(--accent, #3446d4);
+  content: "i";
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 10px;
+  font-style: italic;
+  font-weight: 700;
+  line-height: 1;
 }
 .context-message a {
-  color: #3f7056;
+  color: var(--accent, #3446d4);
   font-weight: 600;
 }
 .context-message code {
@@ -99,23 +118,24 @@
   word-break: break-all;
 }
 .panel > .context-message {
-  margin: 18px 24px;
+  margin: 16px 20px;
 }
 body:has(.message-dialog[open]) {
   overflow: hidden;
 }
 @media (max-width: 480px) {
   .message-dialog-panel {
-    padding: 21px;
+    padding: 20px 18px 16px;
   }
   .message-dialog-actions {
     display: block;
   }
   .message-dialog-close {
     width: 100%;
+    min-height: 44px;
   }
   .panel > .context-message {
-    margin: 16px 18px;
+    margin: 14px 16px;
   }
 }
 @media (prefers-reduced-motion: reduce) {

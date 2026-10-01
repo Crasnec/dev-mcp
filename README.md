@@ -1,6 +1,6 @@
 # dev-mcp
 
-`dev-mcp` is a self-contained Docker Compose deployment that lets ChatGPT use MCP tools to work with files, shell commands, background processes, and Git in one host directory. It does not use an OpenAI API key, run Codex CLI, or expose the Docker socket to the gateway or runners. A separate trusted provisioner uses Docker access to create approved users' containers.
+`dev-mcp` is a self-contained Docker Compose deployment that lets ChatGPT use MCP tools to work with files, shell commands, background processes, and Git in one host directory. It does not use an OpenAI API key, run Codex CLI, or expose the Docker socket to the gateway or runners. A separate trusted provisioner uses Docker access to create approved users' containers. An optional trusted telemetry collector observes the host and runners without restarting them.
 
 ```text
 Internet / ChatGPT
@@ -12,7 +12,7 @@ Internet / ChatGPT
                            (users + OAuth)               runner-data
 ```
 
-The gateway cannot see `/workspace`. The runner cannot see OAuth state or the administrator password hash. The services use separate Docker networks and share only the runner's Unix socket volume.
+The gateway cannot see `/workspace`. The runner cannot see OAuth state or the administrator password hash. The gateway and runner use separate Docker networks and share the runner's Unix socket volume. Trusted control-plane services publish status and telemetry through `runner-status`, mounted read-only in the gateway.
 
 New users have dedicated runner containers, workspace/log volumes, IPC keys, and Docker bridge networks. The existing runner belongs to the initial administrator. Project access follows workspace ownership: users can access every project in their own runner, and cannot access another user's workspace. Sharing an individual project between users is not supported.
 
@@ -53,6 +53,7 @@ For MCP connections, Google login returns to a browser-bound consent page, never
 | `/admin` | User/approval/session/client counts, pending approvals, recent activity |
 | `/admin/users` | Search and status filters; account detail, approval, suspension, role changes, revoke all authentication |
 | `/admin/projects` | Owner-specific project list and search; register existing directories; Git status; unregister or permanently delete with name confirmation |
+| `/admin/usage` | Live and historical CPU, memory, disk and network charts; host, all runners or one owner; period averages, sampled peaks and transfer totals |
 | `/admin/runners` | Per-user connectivity, lifecycle operations, network access and resource/quota controls |
 | `/admin/processes` | Owner/status filters; process detail, paged logs, stop a running process |
 | `/admin/connections` | Browser sessions and individual revocation; OAuth clients, callback URLs and grant counts; client removal with ID confirmation |
@@ -85,7 +86,7 @@ The helper creates `dev-mcp-user-<uuid>`, two persistent volumes (`-workspace`, 
 
 Set `USER_RUNNER_IPC_DIR` to a dedicated absolute path on the Docker host if the daemon uses a different filesystem namespace. Otherwise it defaults to `./data/user-ipc`. Back up this directory (including the `.key` files), `gateway-data`, and each user's workspace/data volumes.
 
-Only the provisioner has Docker access. It has no network or HTTP endpoint and reads `gateway-data` read-only. Its logs contain provisioning success/failure events with account UUIDs (`docker compose logs provisioner`); a failed creation is retried on the next pass. Treat this service as a trusted host administrator. To stop existing jobs after disabling a user:
+The provisioner and optional telemetry collector have Docker access; the gateway and runners do not. It has no network or HTTP endpoint and reads `gateway-data` read-only. Its logs contain provisioning success/failure events with account UUIDs (`docker compose logs provisioner`); a failed creation is retried on the next pass. Treat this service as a trusted host administrator. To stop existing jobs after disabling a user:
 
 ```bash
 docker stop dev-mcp-user-<uuid>
@@ -262,6 +263,32 @@ docker compose config --quiet
 ```
 
 Tests cover PKCE, one-time codes, refresh rotation, revocation, path and symlink escapes, project registration through commit, long-output pagination, and background process lifecycle. After deployment, `scripts/verify-deployment.sh` checks public HTTPS metadata, the authentication challenge, mount isolation, network separation, and read-only roots.
+
+### Resource monitoring
+
+Enable the independent collector alongside the gateway, retaining any deployment-specific Compose overlays:
+
+```bash
+docker compose -f compose.yaml -f compose.telemetry.yaml build gateway telemetry
+docker compose -f compose.yaml -f compose.telemetry.yaml up -d --no-deps --no-build --wait gateway telemetry
+```
+
+These targeted commands preserve running runners and the provisioner. Keep `compose.telemetry.yaml` in subsequent deployment commands. The collector has no network listener and uses Docker's Unix socket plus read-only host observations; treat it as a trusted host administrator. The gateway receives only the read-only `runner-status` volume. The collector does not apply limits, provision environments, or restart jobs.
+
+Open the usage page (`/admin/usage`) to select the host, all runners, or an individual owner's environment and the last hour, day, week, or 30 days. Visible pages update every five seconds; background tabs pause. Charts support pointer and keyboard inspection. Current values and period statistics remain available without JavaScript. Administrator session authorization applies to the page and JSON endpoint (`/admin/telemetry`); ordinary accounts cannot read host or other users' measurements.
+
+Metric definitions:
+
+- **CPU:** used CPU cores, with 1 core equal to 100% CPU time. Values can exceed one core. Capacity utilization is a separate percentage; the host and all-runner views use physical host capacity. A runner uses its configured CPU allowance when available.
+- **Memory:** host RAM is total minus available memory; runner memory is its working set (Docker usage minus inactive file cache). Runner memory is not expected to sum to total host RAM.
+- **Disk space:** the host's root filesystem; a runner's workspace plus runtime data, measured independently at a slower cadence. Disk read/write throughput measures block-device traffic and is shown separately from occupied space. Aggregate runner disk capacity is not inferred from shared host capacity.
+- **Network:** host uplink traffic, excluding loopback and virtual bridge duplicates; runner traffic covers its container interfaces. Received/transmitted byte totals include valid measured intervals only.
+
+CPU/rate averages are weighted by valid observation time. Peaks are sampled maxima, not guarantees that every short spike was captured. Restarted counters, unavailable collectors, and gaps remain missing rather than being plotted as zero. Disk-space timestamps can be older than CPU/network observations because scans run less frequently. The page distinguishes unavailable or stale data.
+
+History begins when the collector is enabled. There is no reconstructed usage before that time. `runner-status/telemetry` holds atomic current snapshots and append-only hourly/daily JSONL shards: five-second observations for two hours, minute rollups for 48 hours, and hourly rollups for 30 days. `TELEMETRY_MAX_HISTORY_MIB` (default 512) bounds history storage and can shorten effective retention; the UI reports incomplete retained history. `TELEMETRY_MAX_RUNNERS` (default 256) bounds each collection pass; omitted environments make aggregate coverage incomplete. Back up this volume if monitoring history must survive volume removal; ordinary gateway/collector recreation retains it. Long-range views use rollups and preserve sampled maxima and valid transfer totals.
+
+The CPU and memory definitions follow [Docker's container statistics](https://docs.docker.com/reference/cli/docker/container/stats/) and [runtime metric documentation](https://docs.docker.com/engine/containers/runmetrics/). Host block traffic follows [Linux block statistics](https://cdn.kernel.org/doc/html/latest/block/stat.html).
 
 ### Web execution environment operations
 

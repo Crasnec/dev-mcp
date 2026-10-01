@@ -1,0 +1,49 @@
+# Start this service alone with --no-deps; running jobs and controllers are untouched.
+services:
+  telemetry:
+    build:
+      context: .
+      dockerfile: docker/telemetry.Dockerfile
+    environment:
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-dev-mcp}
+      RUNNER_STATUS_DIR: /runner-status
+      TELEMETRY_INTERVAL_MS: "5000"
+      TELEMETRY_MAX_HISTORY_MIB: ${TELEMETRY_MAX_HISTORY_MIB:-512}
+      TELEMETRY_MAX_RUNNERS: ${TELEMETRY_MAX_RUNNERS:-256}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - gateway-data:/gateway-data:ro
+      - runner-status:/runner-status
+      - /proc:/host-proc:ro
+      - /sys:/host-sys:ro
+      - type: bind
+        source: /
+        target: /hostfs
+        read_only: true
+        bind:
+          propagation: rprivate
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,mode=1777
+    cap_drop: [ALL]
+    cap_add: [DAC_READ_SEARCH]
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    restart: unless-stopped
+    network_mode: none
+    cpus: 0.5
+    mem_limit: 256m
+    pids_limit: 64
+    healthcheck:
+      test:
+        [
+          CMD,
+          node,
+          -e,
+          "const fs=require('fs');const s=JSON.parse(fs.readFileSync('/runner-status/telemetry/current.json','utf8'));if(s.schemaVersion!==1||Date.now()-s.ts>60000||s.ts>Date.now()+5000)process.exit(1)",
+        ]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 30s

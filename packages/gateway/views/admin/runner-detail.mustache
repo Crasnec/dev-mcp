@@ -29,7 +29,7 @@
       {{^observed}}<p class="help">관리 서비스에서 컨테이너 정보를 확인한 후 표시됩니다.</p>{{/observed}}
       </div>
     </section>
-    <section class="panel padded" data-live-region="runner-projects"><h2>프로젝트</h2><ul class="project-list">{{#projects}}<li><strong>{{name}}</strong><code>{{relativePath}}</code></li>{{/projects}}</ul>{{^projects}}<p class="help">{{#ready}}등록된 프로젝트가 없습니다.{{/ready}}{{^ready}}실행 환경에 연결한 뒤 확인할 수 있습니다.{{/ready}}</p>{{/projects}}<div class="actions"><a class="button" href="/admin/projects?owner={{owner.id}}">프로젝트 관리</a><a class="button" href="/admin/processes?owner={{owner.id}}">프로세스 관리</a></div></section>
+    <section class="panel padded" data-live-region="runner-projects"><h2>프로젝트</h2><ul class="project-list">{{#projects}}<li><strong>{{name}}</strong><code>{{relativePath}}</code></li>{{/projects}}</ul>{{^projects}}<p class="help">{{#ready}}등록된 프로젝트가 없습니다.{{/ready}}{{^ready}}실행 환경에 연결한 뒤 확인할 수 있습니다.{{/ready}}</p>{{/projects}}<div class="actions"><a class="button" href="/admin/usage?scope={{owner.id}}">자원 사용량</a><a class="button" href="/admin/projects?owner={{owner.id}}">프로젝트 관리</a><a class="button" href="/admin/processes?owner={{owner.id}}">프로세스 관리</a></div></section>
   </div>
   <section class="panel padded">
     <h2>권한·자원 제한 설정</h2>

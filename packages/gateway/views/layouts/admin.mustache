@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#f4f6f2">
+  <meta name="theme-color" content="#12151c">
+  <meta name="color-scheme" content="light dark">
   <meta name="robots" content="noindex,nofollow">
   <title>{{title}} · Dev MCP 관리</title>
   <link rel="stylesheet" href="/assets/admin.css">
@@ -11,6 +12,7 @@
   <script src="/assets/message-dialogs.js" defer></script>
   {{#livePage}}<script src="/assets/live-updates.js" defer></script>{{/livePage}}
   {{#liveAudit}}<script src="/assets/audit-updates.js" defer></script>{{/liveAudit}}
+  {{#telemetryPage}}<script src="/assets/telemetry.js" defer></script>{{/telemetryPage}}
 </head>
 <body>
   <a class="skip-link" href="#main">본문 바로가기</a>
@@ -18,7 +20,7 @@
     <aside class="sidebar">
       {{> partials/brand}}
       <nav aria-label="관리 메뉴">
-        {{#navigation}}<a href="{{href}}" {{#active}}class="active" aria-current="page"{{/active}}>{{label}}</a>{{/navigation}}
+        {{#navigation}}{{#navGroup}}<span class="nav-group">{{navGroup}}</span>{{/navGroup}}<a href="{{href}}" {{#active}}class="active" aria-current="page"{{/active}}>{{label}}</a>{{/navigation}}
       </nav>
       <div class="sidebar-bottom">
         <div class="sidebar-account"><strong title="{{actor.username}}">{{actor.username}}</strong><small>{{actor.roleLabel}}</small></div>

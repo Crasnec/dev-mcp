@@ -1,0 +1,82 @@
+<section class="panel usage-filter" aria-label="조회 조건">
+  <form class="toolbar" method="get" action="/admin/usage">
+    <label class="filter-field">모니터링 범위<select name="scope">{{#scopes}}<option value="{{value}}" {{#selected}}selected{{/selected}}>{{label}}</option>{{/scopes}}</select></label>
+    <label class="filter-field">기간<select name="range">{{#ranges}}<option value="{{value}}" {{#selected}}selected{{/selected}}>{{label}}</option>{{/ranges}}</select></label>
+    <button class="primary" type="submit">조회</button>
+  </form>
+</section>
+<div class="usage" data-telemetry data-telemetry-url="{{telemetryUrl}}">
+  <p class="usage-notice" data-telemetry-notice role="status"{{^telemetryNotice}} hidden{{/telemetryNotice}}>{{telemetryNotice}}</p>
+  <div class="usage-overview">
+    <section class="panel usage-readout" aria-labelledby="usage-readout-title">
+      <div class="panel-heading usage-readout-heading">
+        <div><h2 id="usage-readout-title">{{scopeLabel}}</h2><p>{{rangeLabel}} · 현재 값과 기간 통계</p></div>
+        <dl class="usage-status"><div><dt>마지막 측정</dt><dd data-telemetry-observed-at>{{observedAtLabel}}</dd></div><div><dt>기록</dt><dd data-telemetry-coverage>{{coverageLabel}}</dd></div></dl>
+      </div>
+      <div class="table-scroll">
+        <table class="usage-table">
+          <caption class="sr-only">{{scopeLabel}} 자원 사용 요약 ({{rangeLabel}})</caption>
+          <thead><tr><th scope="col">지표</th><th scope="col">현재</th><th scope="col">기간 평균</th><th scope="col">기간 최대</th></tr></thead>
+          <tbody>
+            {{#metrics}}<tr><th scope="row">{{label}}</th><td data-telemetry-value="{{key}}">{{current}}</td><td data-telemetry-average="{{key}}">{{average}}</td><td data-telemetry-max="{{key}}">{{max}}</td></tr>{{/metrics}}
+            {{^metrics}}<tr><td colspan="4" class="empty-state">아직 측정값이 없습니다. 수집이 시작되면 이곳에 표시됩니다.</td></tr>{{/metrics}}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    <section class="panel usage-totals-panel" aria-labelledby="usage-totals-title">
+      <div class="panel-heading"><div><h2 id="usage-totals-title">기간 누적</h2><p>{{rangeLabel}} 동안 기록된 합계</p></div></div>
+      <dl class="usage-totals">{{#totals}}<div><dt>{{label}}</dt><dd data-telemetry-total="{{key}}">{{value}}</dd></div>{{/totals}}</dl>
+      {{^totals}}<p class="empty-state">아직 누적 기록이 없습니다.</p>{{/totals}}
+    </section>
+  </div>
+  <div class="usage-charts">
+    <section class="panel telemetry-card" aria-labelledby="usage-chart-cpu-title">
+      <div class="telemetry-card-heading">
+        <div><h2 id="usage-chart-cpu-title">CPU</h2><p>사용 코어 · 1코어를 모두 쓰면 100%</p></div>
+        <dl class="telemetry-facts"><div><dt>코어 기준</dt><dd data-telemetry-value="cpuPercent">—</dd></div><div><dt>용량</dt><dd data-telemetry-value="cpuCapacityCores">—</dd></div><div><dt>용량 대비</dt><dd data-telemetry-value="cpuCapacityPercent">—</dd></div></dl>
+      </div>
+      <div class="telemetry-chart" data-telemetry-chart="cpu"><noscript><p class="telemetry-chart-empty">차트는 JavaScript를 사용할 때 표시됩니다. 위 요약에서 값을 확인할 수 있습니다.</p></noscript></div>
+    </section>
+    <section class="panel telemetry-card" aria-labelledby="usage-chart-memory-title">
+      <div class="telemetry-card-heading">
+        <div><h2 id="usage-chart-memory-title">메모리</h2><p>사용 중인 메모리</p></div>
+        <dl class="telemetry-facts"><div><dt>용량</dt><dd data-telemetry-value="memoryCapacityBytes">—</dd></div><div><dt>사용률</dt><dd data-telemetry-value="memoryPercent">—</dd></div></dl>
+      </div>
+      <div class="telemetry-chart" data-telemetry-chart="memory"><noscript><p class="telemetry-chart-empty">차트는 JavaScript를 사용할 때 표시됩니다. 위 요약에서 값을 확인할 수 있습니다.</p></noscript></div>
+    </section>
+    <section class="panel telemetry-card" aria-labelledby="usage-chart-disk-title">
+      <div class="telemetry-card-heading">
+        <div><h2 id="usage-chart-disk-title">디스크 공간</h2><p>서버: 루트 파일시스템 · 실행 환경: 작업공간과 실행 데이터</p></div>
+        <dl class="telemetry-facts"><div><dt>용량</dt><dd data-telemetry-value="diskCapacityBytes">—</dd></div><div><dt>사용률</dt><dd data-telemetry-value="diskPercent">—</dd></div></dl>
+      </div>
+      <div class="telemetry-chart" data-telemetry-chart="disk"><noscript><p class="telemetry-chart-empty">차트는 JavaScript를 사용할 때 표시됩니다. 위 요약에서 값을 확인할 수 있습니다.</p></noscript></div>
+    </section>
+    <section class="panel telemetry-card" aria-labelledby="usage-chart-disk-io-title">
+      <div class="telemetry-card-heading">
+        <div><h2 id="usage-chart-disk-io-title">디스크 읽기·쓰기</h2><p>초당 처리량 · 공간 사용량과 별개입니다</p></div>
+      </div>
+      <div class="telemetry-chart" data-telemetry-chart="disk-io"><noscript><p class="telemetry-chart-empty">차트는 JavaScript를 사용할 때 표시됩니다. 위 요약에서 값을 확인할 수 있습니다.</p></noscript></div>
+    </section>
+    <section class="panel telemetry-card" aria-labelledby="usage-chart-network-title">
+      <div class="telemetry-card-heading">
+        <div><h2 id="usage-chart-network-title">네트워크</h2><p>초당 수신·송신</p></div>
+      </div>
+      <div class="telemetry-chart" data-telemetry-chart="network"><noscript><p class="telemetry-chart-empty">차트는 JavaScript를 사용할 때 표시됩니다. 위 요약에서 값을 확인할 수 있습니다.</p></noscript></div>
+    </section>
+    <section class="panel usage-notes" aria-labelledby="usage-notes-title">
+      <div class="panel-heading"><h2 id="usage-notes-title">범위와 기록 안내</h2></div>
+      <dl class="usage-scope-list">
+        <div><dt>서버 전체</dt><dd>이 서버 전체의 사용량입니다. 디스크 공간은 루트 파일시스템 기준입니다.</dd></div>
+        <div><dt>전체 실행 환경</dt><dd>모든 사용자 실행 환경을 합한 사용량입니다.</dd></div>
+        <div><dt>개별 실행 환경</dt><dd>선택한 사용자의 실행 환경만 표시합니다.</dd></div>
+      </dl>
+      <ul class="usage-note-list">
+        <li>실행 환경의 디스크 공간은 작업공간과 실행 데이터를 합한 값입니다.</li>
+        <li>CPU는 코어 단위로 표시합니다. 용량 대비 비율은 따로 표시합니다.</li>
+        <li>기록은 수집을 시작한 시점부터 쌓이며, 그 이전 구간은 비어 있습니다.</li>
+        <li>차트는 기간에 따라 측정값의 평균을 표시합니다. 기간 최대는 실제로 수집된 측정값 중 가장 높은 값입니다.</li>
+      </ul>
+    </section>
+  </div>
+</div>

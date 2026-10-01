@@ -53,6 +53,10 @@ services:
       RUNNER_SOCKET: /ipc/runner.sock
       USER_RUNNER_SOCKET_DIR: /user-ipc
       RUNNER_STATUS_DIR: /runner-status
+      ONBOARDING_PORT: "3100"
+    # Local onboarding only: published on the host loopback, never via Caddy.
+    ports:
+      - "127.0.0.1:${ONBOARDING_HOST_PORT:-3100}:3100"
     volumes:
       - gateway-data:/var/lib/dev-mcp
       - runner-status:/runner-status:ro

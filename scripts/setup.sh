@@ -206,4 +206,13 @@ if [[ "$start" == true ]]; then
   if [[ "$production" != true ]]; then
     echo "After staging verification, rerun setup with --force --production."
   fi
+  echo
+  echo "Finish the installation in the local onboarding page (not served on $mcp_domain):"
+  echo "  1. Sign up with the intended administrator's Google account at https://$mcp_domain/signup"
+  echo "  2. On this host open http://127.0.0.1:3100/, or from a workstation run:"
+  echo "       ssh -L 3100:127.0.0.1:3100 <this-host>"
+  echo "  3. Enter the one-time code from:"
+  echo "       ${docker_command[*]} compose logs gateway | grep onboarding_available"
+  echo "  4. Optionally set a workspace root, for example $(dirname "$workspace_dir")/dev-mcp-workspaces,"
+  echo "     so each account gets a host directory that VS Code can open."
 fi

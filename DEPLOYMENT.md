@@ -14,6 +14,14 @@ node scripts/verify-public.mjs https://dev.crasnec.com
 
 The public reverse proxy is the existing `plan-app-caddy-1`, connected to `dev-mcp_edge`. Do **not** start this repository's separate `caddy` service on this server: the existing proxy owns ports 80/443. Its active configuration has access logging disabled. Other plan-app services were not changed.
 
+## Local onboarding and host-directory workspaces (developed 2026-10-01, not deployed)
+
+Deploying it requires rebuilding the gateway and provisioner, and recreating the gateway so that it publishes `127.0.0.1:${ONBOARDING_HOST_PORT:-3100}`. Check first that the port is free on the host. This installation already has a Google administrator, so the onboarding asks only for the optional workspace root. Read the code from `sudo docker compose ... logs gateway | grep onboarding_available` and open the page through `ssh -L 3100:127.0.0.1:3100` to the Docker host. Do not open it through `dev-fedora`: its loopback is its own.
+
+This server's existing layout stays unchanged. The primary runner keeps the whole `/home/crasnec/workspace`, and `dev-fedora` keeps its mounts. Because roots inside the primary workspace are rejected, a root here must lie outside `/home/crasnec/workspace`. For example, `/home/crasnec/dev-mcp-workspaces`, created and owned by UID 1000 on the host. Its directories are not visible in the current `dev-fedora` VS Code session. Open them with Remote - SSH to the Docker host instead (set that host in **운영 설정 → VS Code 연결**), or skip the root and keep Docker volumes. Existing dedicated runners keep their volumes until moved from the runner page.
+
+Separately, `data/user-ipc` lies inside the primary runner's `/workspace`, so the primary runner can read every dedicated runner's IPC key. This predates the feature. Move `USER_RUNNER_IPC_DIR` outside `WORKSPACE_DIR` when convenient.
+
 ## Automatic user runner creation (2026-09-22)
 
 Account approval previously saved only the runner identity; creating its container required the manual host helper. The separate `provisioner` service now polls active accounts every five seconds and creates missing dedicated runners with that helper. It also repairs already-approved accounts and retries failed creations. Running or deliberately stopped containers are preserved. Pending/disabled accounts are skipped.

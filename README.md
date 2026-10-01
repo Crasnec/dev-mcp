@@ -14,14 +14,14 @@ Internet / ChatGPT
 
 The gateway cannot see `/workspace`. The runner cannot see OAuth state or the administrator password hash. The gateway and runner use separate Docker networks and share the runner's Unix socket volume. Trusted control-plane services publish status and telemetry through `runner-status`, mounted read-only in the gateway.
 
-New users have dedicated runner containers, workspace/log volumes, IPC keys, and Docker bridge networks. The existing runner belongs to the initial administrator. Project access follows workspace ownership: users can access every project in their own runner, and cannot access another user's workspace. Sharing an individual project between users is not supported.
+New users have dedicated runner containers, workspace/log storage, IPC keys, and Docker bridge networks. When the installer chooses a host workspace root during local onboarding, each new account's `/workspace` is a subdirectory of that root, so the same files can be edited from VS Code on the host. The existing runner belongs to the initial administrator. Project access follows workspace ownership: users can access every project in their own runner, and cannot access another user's workspace. Sharing an individual project between users is not supported.
 
 ## Accounts and administration
 
 - `/signup`: Google-only registration; new accounts remain pending until approved. Password signup is rejected server-side.
 - `/login` and `/account`: Google sign-in, project overview, and explicit Google linking for existing accounts. Username/password login and password-change endpoints have been removed. OAuth consent also requires an existing session or Google sign-in.
 - `/admin`: ERP-style dashboard with a persistent navigation sidebar. Each management area and detail view has its own URL (see below).
-- Existing Google-linked accounts keep their account IDs, roles and workspaces. A fresh installation requires the one-time operator bootstrap below before the first administrator can sign in. `ADMIN_PASSWORD_HASH` remains a legacy configuration/storage field; it no longer enables browser or OAuth password authentication.
+- Existing Google-linked accounts keep their account IDs, roles and workspaces. A fresh installation completes the [local onboarding](#local-installer-onboarding) before the first administrator can sign in. `ADMIN_PASSWORD_HASH` remains a legacy configuration/storage field; it no longer enables browser or OAuth password authentication.
 - Existing OAuth credentials without a user identity are rejected after upgrading. Reconnect each MCP client, sign in with Google, and explicitly approve its requested permissions.
 - Browser session tokens are stored as hashes and sent in HttpOnly, SameSite=Lax cookies (Secure on HTTPS). Forms require CSRF tokens. The final active administrator, and the final active Google-linked administrator, cannot be disabled or demoted.
 - Account status/role changes and “revoke all” invalidate previous browser sessions, OAuth codes/tokens, and MCP session reuse. Already running commands are not killed automatically.
@@ -37,7 +37,7 @@ New users have dedicated runner containers, workspace/log volumes, IPC keys, and
    ```
 
    Continue including the overlay for subsequent Compose operations. If Docker runs in another filesystem namespace, set `GOOGLE_CLIENT_ID_SOURCE` and `GOOGLE_CLIENT_SECRET_SOURCE` to the copied files' absolute paths **on the Docker host**. Do not point the container at an unreadable owner-only source file or make plan-app's original files public.
-4. Existing Google-linked administrators can sign in immediately. On a fresh installation, register the intended administrator through Google, then use the one-time operator bootstrap below to approve that verified pending account. Existing authenticated users can still use **내 계정 → Google 계정 연결** to connect an unlinked account explicitly. Linking preserves its account ID, role and workspace and invalidates old sessions/MCP credentials. Accounts are never auto-merged by email.
+4. Existing Google-linked administrators can sign in immediately. On a fresh installation, register the intended administrator through Google, then approve that verified pending account in the [local onboarding](#local-installer-onboarding). Existing authenticated users can still use **내 계정 → Google 계정 연결** to connect an unlinked account explicitly. Linking preserves its account ID, role and workspace and invalidates old sessions/MCP credentials. Accounts are never auto-merged by email.
 
 Copied files live inside a mode-0700 `data/google` directory; individual files are read-only and readable by the non-root gateway through Compose secret mounts. Neither the directory nor the source filenames are included in Git or the Docker build context. Only the gateway receives these mounts. Never print `docker compose config` with credentials supplied as literal environment values. For non-Docker runs, configure `GOOGLE_CLIENT_ID_FILE` and `GOOGLE_CLIENT_SECRET_FILE` (or the corresponding environment values, but never both).
 
@@ -45,7 +45,25 @@ The gateway validates the ID token's signature, issuer, audience, expiry, nonce,
 
 For MCP connections, Google login returns to a browser-bound consent page, never directly to the external client's callback. The user must approve the requested scopes, with session CSRF protection. Unfinished Google login state expires after 10 minutes or a gateway restart. Auth callback/consent URLs are excluded from Caddy access logging to avoid logging codes or transaction identifiers. The application records sanitized authentication audit events instead. Other upstream proxies must apply equivalent redaction.
 
-### First Google administrator on a new installation
+### Local installer onboarding
+
+Until onboarding is completed, the gateway opens a second listener that Compose publishes only on the Docker host's loopback interface (`127.0.0.1:${ONBOARDING_HOST_PORT:-3100}`). Caddy never proxies it, so it is not reachable through `MCP_DOMAIN`. Open it on the host, or from a workstation through an SSH tunnel:
+
+```bash
+ssh -L 3100:127.0.0.1:3100 <docker-host>
+# then open http://127.0.0.1:3100/
+docker compose logs gateway | grep onboarding_available   # one-time code
+```
+
+Each gateway start prints a new random code to its log; only users with Docker access can read it. The page also answers only `localhost`, `127.0.0.1` and `[::1]` Host headers, uses its own SameSite=Strict session cookie and CSRF token, rejects cross-origin posts and limits code guesses. It has three steps:
+
+1. **First administrator:** sign up at `https://<MCP_DOMAIN>/signup` with the intended Google account, then choose that pending account. This applies the same checks as the CLI bootstrap below, inside the running gateway. Skipped when an active Google administrator exists.
+2. **Workspace root (optional):** an absolute path on the Docker host, for example `/srv/dev-mcp/workspaces`. It must already exist and be writable by `DEV_UID`. It must not be the primary runner's `WORKSPACE_DIR` or lie inside it, so the primary runner can never reach other accounts' files. A root that contains the primary workspace, such as `/srv/dev-mcp/workspaces` with `WORKSPACE_DIR=/srv/dev-mcp/workspaces/admin`, is allowed. The provisioner verifies the root and the page refreshes until the result is shown. Leave it unset to keep Docker volumes.
+3. **Complete:** available once an administrator exists and any configured root is verified. Afterwards the root cannot be changed and later gateway starts do not open the listener. Set `ONBOARDING_PORT=0` in the gateway environment to disable it entirely.
+
+An existing installation sees the onboarding once after upgrading; it skips the administrator step and only asks for the optional workspace root.
+
+### CLI fallback for the first Google administrator
 
 Complete Google registration first so the pending account has a verified provider identity. As the host operator, list only the pending Google account IDs and emails:
 
@@ -80,11 +98,11 @@ The bootstrap rejects an incorrect email, an unverified/non-pending account, or 
 | `/admin/users` | Search and status filters; account detail, approval, suspension, role changes, revoke all authentication |
 | `/admin/projects` | Owner-specific project list and search; register existing directories; Git status; unregister or permanently delete with name confirmation |
 | `/admin/usage` | Live and historical CPU, memory, disk and network charts; host, all runners or one owner; period averages, P50/P95/P99, sampled peaks and transfer totals |
-| `/admin/runners` | Per-user connectivity, lifecycle operations, network access and resource/quota controls |
+| `/admin/runners` | Per-user connectivity, lifecycle operations, network access, resource/quota controls, workspace location and moves to a host directory |
 | `/admin/processes` | Owner/status filters; process detail, paged logs, stop a running process |
 | `/admin/connections` | Browser sessions and individual revocation; OAuth clients, callback URLs and grant counts; client removal with ID confirmation |
 | `/admin/audit` | Automatically refreshed, searchable audit records with inline details and live process logs; bounded to the most recent 1 MiB of the log |
-| `/admin/settings` | Open/close new registrations and edit the signup notice; read-only deployment/isolation information |
+| `/admin/settings` | Open/close new registrations and edit the signup notice; VS Code link settings; read-only deployment, workspace root and onboarding information |
 
 Lists are paginated (25 records); browser sessions and OAuth clients have independent pagination on the connections screen. Administrators can manage all users' workspaces, but every operation still targets that owner's isolated runner. Normal users cannot enter administration. All administrative mutations require the administrator's authenticated session, CSRF token, and a matching Origin when present. Removing an OAuth client invalidates its access/refresh tokens and pending authorizations. Project deletion is permanent and does not stop running processes automatically.
 
@@ -130,6 +148,7 @@ After updating the runner image, stop and remove that user's container, then rer
 - Git, for cloning this repository
 - A public DNS A/AAAA record pointing to the host
 - Inbound TCP 80/443; UDP 443 is recommended for HTTP/3
+- A free loopback port for the one-time local onboarding (`ONBOARDING_HOST_PORT`, default 3100)
 
 The runner builds directly from the official `fedora:44` image. No local base image, dev container repository, host Node.js installation, Codex installation, Docker socket, SSH key, or host home mount is required.
 
@@ -151,7 +170,7 @@ The interactive setup command:
 - generates the legacy bootstrap scrypt field for configuration compatibility (this does not enable password login);
 - writes a mode-`0600` `.env` file with absolute host paths;
 - builds the Fedora runner, gateway, and Caddy stack;
-- starts the services with Docker Compose.
+- starts the services with Docker Compose and prints how to open the local onboarding.
 
 Host Node.js is optional. If Node.js 22 is unavailable, setup uses a temporary `node:22-alpine` container only for password hashing.
 
@@ -329,6 +348,16 @@ Administrators can use **실행 환경 → 사용자 상세** to create, start, 
 The gateway writes requests into `gateway-data/runner-controls.json`. The provisioner validates account/container ownership, executes fixed Docker operations and atomically publishes observations into the separate `runner-status` volume (read-only in the gateway). It still has no HTTP listener. User processes never receive the control/status volumes or Docker socket. Restart requests are not replayed after an ambiguous controller crash; check the actual state and submit a new request.
 
 Network blocking disconnects the runner from Docker networks; authenticated Unix-socket management remains available. Nonzero memory limits disable swap. CPU and PID limits are enforced by Docker/cgroups. Reducing memory can terminate processes. File size limits use `RLIMIT_FSIZE`. Changing these or resetting an existing memory/CPU limit to unlimited requires container replacement; volumes are preserved. Storage limit changes can stop running jobs. The existing primary runner's host bind mount is never automatically migrated; persistent storage and per-file limits apply to dedicated user runners. Resetting an already-set primary memory/CPU limit to unlimited requires an operator-managed Compose recreation; the web controller rejects that change before mutating it.
+
+#### Host-directory workspaces (VS Code)
+
+With a verified workspace root, the provisioner creates each new dedicated runner's workspace as `<root>/<name>` and bind-mounts it at `/workspace`; `/var/lib/dev-mcp` stays a named volume. The name comes from the account's email (`mina@example.com` → `mina`, then `mina-2`, …). Directories are created exclusively by an unprivileged helper from the runner image running as `DEV_UID`, so an existing directory, such as another project, is never handed to an account, and new files have the same owner as the host user who opens them in VS Code. Assignments are recorded in `runner-status/workspace-dirs.json`. Before every start, restart or recreation, the helper checks that the directory is still a real directory owned by `DEV_UID`, not a symlink.
+
+An account whose container was removed but whose `-workspace` volume remains keeps using that volume. On **실행 환경 → 사용자 상세**, **작업 공간 위치** shows the storage mode and, for host directories, the host path. Administrators can move a volume-backed runner to a host directory with a chosen name. The runner is stopped, the volume is copied with `cp -a`, and the container is recreated with the bind mount, restarting it if it was running. The original volume is kept. A failure restores the previous container and removes the new directory. Runners using the storage quota pool cannot be moved yet. Storage quotas do not apply to host directories; per-file size, memory, CPU and process limits still do.
+
+To open workspaces directly, set **운영 설정 → VS Code 연결**. The SSH host is a Remote - SSH host or `~/.ssh/config` alias. The optional path mapping rewrites a host path prefix for editors that see the files elsewhere, such as a dev container. The page then shows a `vscode://vscode-remote/ssh-remote+<host><path>` link. Ordinary users never see host paths.
+
+The primary runner must never see dedicated workspaces. Saving a root inside, or equal to, its `WORKSPACE_DIR` is rejected. The provisioner also compares the kernel-resolved locations of both mounts from `/proc/self/mountinfo` inside the helper, so a symlink or bind alias cannot hide an overlap. It repeats that comparison before every start, restart and recreation. While the primary workspace is mounted read-only in the helper for that comparison, its files are never read. A root that contains the primary workspace is allowed: the primary runner then sees only its own subdirectory.
 
 #### Persistent storage hard quota
 

@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { JsonStore } from "./json-store.ts";
 import type { User } from "./user-store.ts";
+import { workspaceNamePattern } from "./installation-store.ts";
 
 export interface RunnerLimits {
   network: boolean;
@@ -14,8 +15,9 @@ export interface RunnerLimits {
 }
 export interface RunnerControl {
   revision: string;
-  action: "create" | "start" | "stop" | "restart" | "apply";
+  action: "create" | "start" | "stop" | "restart" | "apply" | "workspace";
   limits?: RunnerLimits;
+  workspace?: { name: string };
   requestedAt: number;
   actorId: string;
 }
@@ -31,6 +33,8 @@ export interface RunnerObservation {
   fileSizeMiB?: number;
   storageMiB?: number;
   storageUsedMiB?: number;
+  workspaceMode?: "volume" | "quota" | "host";
+  workspaceHostPath?: string;
   observedAt: number;
 }
 
@@ -66,8 +70,13 @@ export class RunnerControlStore {
     expectedRevision: string,
     action: string,
     limits?: RunnerLimits,
+    workspace?: { name: string },
   ) {
-    if (!["create", "start", "stop", "restart", "apply"].includes(action)) {
+    if (
+      !["create", "start", "stop", "restart", "apply", "workspace"].includes(
+        action,
+      )
+    ) {
       throw new Error("올바른 실행 환경 작업을 선택해 주세요.");
     }
     if (owner.runner !== "primary" && owner.runner !== owner.id) {
@@ -81,6 +90,24 @@ export class RunnerControlStore {
     }
     if (["start", "restart"].includes(action) && owner.status !== "active") {
       throw new Error("승인된 계정의 실행 환경만 시작할 수 있습니다.");
+    }
+    const { observation } = await this.read(owner.id);
+    if (action === "workspace") {
+      if (owner.runner === "primary" || owner.status !== "active") {
+        throw new Error(
+          "승인된 사용자의 전용 환경만 호스트 디렉터리로 이전할 수 있습니다.",
+        );
+      }
+      if (!workspace || !workspaceNamePattern.test(workspace.name)) {
+        throw new Error(
+          "디렉터리 이름은 영문 소문자나 숫자로 시작하고 영문 소문자, 숫자, 점, 밑줄, -만 64자까지 쓸 수 있습니다.",
+        );
+      }
+      if (observation?.workspaceMode !== "volume") {
+        throw new Error(
+          "Docker 볼륨을 쓰는 것으로 확인된 실행 환경만 이전할 수 있습니다.",
+        );
+      }
     }
     if (action === "apply") {
       if (
@@ -109,6 +136,11 @@ export class RunnerControlStore {
           "기본 환경은 호스트 공유 디렉터리를 사용합니다. 저장공간·파일 크기 제한은 전용 사용자 환경에서 설정해 주세요.",
         );
       }
+      if (observation?.workspaceMode === "host" && limits.storageMiB > 0) {
+        throw new Error(
+          "호스트 디렉터리 작업 공간에는 저장공간 상한을 적용할 수 없습니다.",
+        );
+      }
     }
     return this.store.update((db) => {
       const current = db.entries[owner.id];
@@ -121,6 +153,9 @@ export class RunnerControlStore {
         revision: randomUUID(),
         action: action as RunnerControl["action"],
         limits: action === "apply" ? limits : current?.limits,
+        ...(action === "workspace"
+          ? { workspace: { name: workspace!.name } }
+          : {}),
         requestedAt: Date.now(),
         actorId,
       };

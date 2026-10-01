@@ -1,0 +1,53 @@
+<span class="eyebrow">설치 온보딩</span>
+<h1>설치를 마무리해 주세요.</h1>
+<p>로컬 주소에서만 열리는 페이지예요. 온보딩을 마치면 이 페이지는 더 이상 설정을 바꾸지 않습니다.</p>
+{{> partials/notice}}
+<section class="onboarding-step">
+  <h2><span class="step-number">1</span>첫 관리자</h2>
+  {{#admin}}<p class="context-message" role="status">관리자 계정({{admin}})이 있습니다.</p>{{/admin}}
+  {{^admin}}
+  {{^googleEnabled}}<p class="error-banner" role="alert">Google 로그인이 설정되지 않아 관리자 계정을 만들 수 없습니다. README의 Google 로그인 설정을 먼저 마쳐 주세요.</p>{{/googleEnabled}}
+  {{#googleEnabled}}
+  <p class="help">먼저 <a href="{{signupUrl}}">{{signupUrl}}</a>에서 관리자가 될 Google 계정으로 가입한 뒤, 아래에서 그 계정을 고르세요.</p>
+  {{#pending.length}}
+  <form method="post" action="/admin">
+    {{> partials/csrf}}
+    <fieldset class="scope choice-list"><legend>승인 대기 중인 Google 계정</legend>
+      {{#pending}}<label class="choice"><input type="radio" name="userId" value="{{id}}" required><span><strong>{{email}}</strong><small>{{created}} 가입</small></span></label>{{/pending}}
+    </fieldset>
+    <div class="settings-actions"><button class="primary" type="submit">이 계정을 관리자로 승인</button></div>
+  </form>
+  {{/pending.length}}
+  {{^pending.length}}<p class="help">아직 승인 대기 중인 Google 계정이 없습니다. 가입한 뒤 새로고침하세요.</p><div class="settings-actions"><a class="button" href="/">새로고침</a></div>{{/pending.length}}
+  {{/googleEnabled}}
+  {{/admin}}
+</section>
+<section class="onboarding-step">
+  <h2><span class="step-number">2</span>작업 공간 루트</h2>
+  <p class="help">각 계정의 작업 공간이 이 디렉터리 아래 하위 디렉터리로 만들어져, VS Code 같은 호스트 편집기에서 열 수 있습니다. 쓰지 않으면 지금처럼 Docker 볼륨을 씁니다.</p>
+  {{#root}}
+  {{#rootChecking}}<p class="context-message" role="status">관리 서비스가 <code>{{root}}</code>를 확인하고 있습니다. 잠시 후 자동으로 새로고침됩니다.</p>{{/rootChecking}}
+  {{#rootReady}}<p class="context-message" role="status"><code>{{root}}</code> · {{rootMessage}}</p>{{/rootReady}}
+  {{#rootInvalid}}<p class="error-banner" role="alert"><code>{{root}}</code> · {{rootMessage}}</p>{{/rootInvalid}}
+  {{/root}}
+  {{#overlap}}<p class="error-banner" role="alert">이 경로는 기본 실행 환경의 작업 공간(<code>{{primary}}</code>) 안에 있어 쓸 수 없습니다. 기본 실행 환경이 다른 계정의 파일에 접근하지 않도록 바깥 경로를 지정해 주세요.</p>{{/overlap}}
+  {{#primaryInside}}<p class="help">기본 실행 환경의 작업 공간(<code>{{primary}}</code>)이 이 루트 안에 있습니다. 이미 있는 디렉터리는 다른 계정에 배정되지 않습니다.</p>{{/primaryInside}}
+  <form method="post" action="/workspace-root">
+    {{> partials/csrf}}
+    <label for="workspace-root">Docker 호스트 기준 절대경로</label>
+    <input id="workspace-root" type="text" name="workspaceRoot" maxlength="512" autocomplete="off" spellcheck="false" placeholder="/srv/dev-mcp/workspaces" value="{{rootInput}}">
+    <p class="field-hint">디렉터리는 호스트에 미리 있어야 하고, 실행 환경 사용자(DEV_UID)가 쓸 수 있어야 합니다. 기본 실행 환경의 작업 공간{{#primary}}(<code>{{primary}}</code>){{/primary}} 안은 쓸 수 없습니다.</p>
+    <div class="settings-actions"><button class="primary" type="submit" name="mode" value="host">경로 저장하고 확인</button>{{#root}}<button type="submit" name="mode" value="none" formnovalidate>사용 안 함</button>{{/root}}</div>
+  </form>
+</section>
+<section class="onboarding-step">
+  <h2><span class="step-number">3</span>완료</h2>
+  {{#canComplete}}
+  <form method="post" action="/complete">
+    {{> partials/csrf}}
+    <p class="help">완료하면 작업 공간 루트는 바꿀 수 없고, 이 페이지는 닫힙니다.</p>
+    <div class="settings-actions"><button class="primary" type="submit">온보딩 완료</button></div>
+  </form>
+  {{/canComplete}}
+  {{^canComplete}}<p class="help">관리자 계정을 승인하고, 작업 공간 루트를 쓰는 경우 관리 서비스의 확인을 받으면 완료할 수 있습니다.</p>{{/canComplete}}
+</section>

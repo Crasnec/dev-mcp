@@ -16,6 +16,8 @@ export interface GatewayConfig {
   runnerSocket: string;
   userRunnerSocketDir?: string;
   runnerStatusDir?: string;
+  // Local-only onboarding listener; 0 disables it.
+  onboardingPort?: number;
   adminPasswordHash: string;
   google?: { clientId: string; clientSecret: string };
 }
@@ -26,6 +28,15 @@ export function loadConfig(
   const port = Number(env.PORT ?? "3000");
   if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
     throw new Error("PORT is invalid");
+  }
+  const onboardingPort = Number(env.ONBOARDING_PORT ?? "3100");
+  if (
+    !Number.isSafeInteger(onboardingPort) ||
+    onboardingPort < 0 ||
+    onboardingPort > 65535 ||
+    (onboardingPort !== 0 && onboardingPort === port)
+  ) {
+    throw new Error("ONBOARDING_PORT is invalid");
   }
   const publicBaseUrl = (env.PUBLIC_BASE_URL ?? "").replace(/\/$/, "");
   if (!publicBaseUrl) {
@@ -60,6 +71,7 @@ export function loadConfig(
       env.USER_RUNNER_SOCKET_DIR ?? "/user-ipc",
     ),
     runnerStatusDir: path.resolve(env.RUNNER_STATUS_DIR ?? "/runner-status"),
+    onboardingPort,
     adminPasswordHash: env.ADMIN_PASSWORD_HASH,
     ...(clientId && clientSecret ? { google: { clientId, clientSecret } } : {}),
   };

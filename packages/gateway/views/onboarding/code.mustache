@@ -1,0 +1,10 @@
+<span class="eyebrow">설치 온보딩</span>
+<h1>설치 코드를 입력해 주세요.</h1>
+<p>이 페이지는 서버의 로컬 주소에서만 열립니다. 코드는 gateway를 시작할 때마다 새로 만들어져 로그에 기록됩니다.</p>
+<code class="endpoint">docker compose logs gateway | grep onboarding_available</code>
+<form class="onboarding-form" method="post" action="/code">
+  {{> partials/notice}}
+  <label for="onboarding-code">설치 코드</label>
+  <input id="onboarding-code" type="text" name="code" required autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXXX-XXXXX-XXXXX-XXXXX-XXXXX">
+  <div class="settings-actions"><button class="primary" type="submit">계속</button></div>
+</form>

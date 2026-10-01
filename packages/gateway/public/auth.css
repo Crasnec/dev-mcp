@@ -377,6 +377,66 @@ select:focus-visible {
   background: var(--ok-tint);
   color: var(--ok);
 }
+.error-banner code,
+.notice code {
+  overflow-wrap: anywhere;
+}
+
+/* Local onboarding */
+.onboarding-form {
+  margin-top: 20px;
+}
+.onboarding-step {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+.onboarding-step h2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 10px;
+  font-size: 16px;
+  font-weight: 650;
+}
+.step-number {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+.choice-list {
+  display: grid;
+  gap: 8px;
+}
+.choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0;
+  font-weight: 400;
+  cursor: pointer;
+}
+.choice input {
+  margin-top: 3px;
+  accent-color: var(--accent);
+}
+.choice strong {
+  display: block;
+  color: var(--ink);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.choice small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
 @media (max-width: 600px) {
   .login-page {
     justify-content: flex-start;

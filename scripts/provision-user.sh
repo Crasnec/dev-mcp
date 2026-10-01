@@ -90,6 +90,18 @@ if [[ "${RUNNER_QUOTA_STORAGE:-false}" == true ]]; then
   data_mount="type=volume,source=$quota_volume,target=/var/lib/dev-mcp,volume-subpath=$user_id/data"
   resource_args+=(--label dev-mcp.storage=quota)
 fi
+# The provisioner creates and verifies this directory under the workspace root
+# chosen during local onboarding, so host editors such as VS Code can open it.
+workspace_host_dir="${RUNNER_WORKSPACE_HOST_DIR:-}"
+if [[ -n "$workspace_host_dir" ]]; then
+  if [[ "${RUNNER_QUOTA_STORAGE:-false}" == true || "$workspace_host_dir" != /* \
+    || "$workspace_host_dir" == "/" || "$workspace_host_dir" == *","* ]]; then
+    echo "Workspace host directory must be an absolute path without commas and cannot use quota storage." >&2
+    exit 2
+  fi
+  workspace_mount="type=bind,source=$workspace_host_dir,target=/workspace"
+  resource_args+=(--label dev-mcp.workspace=host)
+fi
 create_command=(run --detach)
 if [[ "${RUNNER_START:-true}" == false ]]; then
   create_command=(create)
@@ -111,7 +123,11 @@ docker "${create_command[@]}" --name "$container" --label "dev-mcp.user=$user_id
   "$runner_image"
 
 echo "Created $container. Refresh the user's execution environment in /admin."
-echo "Workspace volume: $container-workspace"
+if [[ -n "$workspace_host_dir" ]]; then
+  echo "Workspace host directory: $workspace_host_dir"
+else
+  echo "Workspace volume: $container-workspace"
+fi
 echo "Runtime/log volume: $container-data"
 echo "To stop running jobs: docker stop $container"
 echo "To recreate after rebuilding the runner image: docker stop $container && docker rm $container"

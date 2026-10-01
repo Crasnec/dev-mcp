@@ -10,10 +10,17 @@ import type { User, UserStore } from "./user-store.ts";
 import type { AuthStore } from "./auth-store.ts";
 import type { AuditLogger } from "./audit.ts";
 import type { RunnerRouter } from "./runner-router.ts";
-import type { SettingsStore } from "./settings-store.ts";
+import { vscodeUrl, type SettingsStore } from "./settings-store.ts";
+import {
+  suggestWorkspaceName,
+  type InstallationStore,
+} from "./installation-store.ts";
 import type { ProjectSummary } from "./account-pages.ts";
 import { browserSession, field } from "./browser-session.ts";
-import { RunnerControlStore } from "./runner-control-store.ts";
+import {
+  RunnerControlStore,
+  type RunnerObservation,
+} from "./runner-control-store.ts";
 import { errorPage, sendPage } from "./pages.ts";
 import { renderFragment } from "./views.ts";
 import { LiveSnapshots } from "./live-snapshots.ts";
@@ -111,6 +118,7 @@ export function installAdminRoutes(
   runners: RunnerRouter,
   audit: AuditLogger,
   settings: SettingsStore,
+  installation: InstallationStore,
 ): void {
   installConsoleRoutes(
     app,
@@ -120,6 +128,7 @@ export function installAdminRoutes(
     runners,
     audit,
     settings,
+    installation,
     false,
   );
   installConsoleRoutes(
@@ -130,6 +139,7 @@ export function installAdminRoutes(
     runners,
     audit,
     settings,
+    installation,
     true,
   );
 }
@@ -142,6 +152,7 @@ function installConsoleRoutes(
   runners: RunnerRouter,
   audit: AuditLogger,
   settings: SettingsStore,
+  installation: InstallationStore,
   selfScope: boolean,
 ): void {
   const base = selfScope ? "/account" : "/admin";
@@ -358,6 +369,39 @@ function installConsoleRoutes(
     return {
       ready: result.ok && Array.isArray(processes),
       processes: Array.isArray(processes) ? processes : [],
+    };
+  };
+  // Host paths and editor links are shown to administrators only.
+  const workspaceLocation = async (
+    owner: User,
+    mode: RunnerObservation["workspaceMode"],
+    hostPath: string | undefined,
+  ) => {
+    const current = await installation.read();
+    const root = await installation.rootStatus(current);
+    const host = mode === "host";
+    return {
+      modeLabel: mode
+        ? {
+            host: "호스트 디렉터리",
+            volume: "Docker 볼륨",
+            quota: "저장공간 상한 저장소",
+          }[mode]
+        : "확인 중",
+      host,
+      quota: mode === "quota",
+      hostPath: host ? hostPath : undefined,
+      vscodeUrl: host ? vscodeUrl(await settings.read(), hostPath) : undefined,
+      rootPath: current.workspaceRoot,
+      rootMessage: current.workspaceRoot
+        ? (root?.message ?? "관리 서비스가 경로를 확인하고 있습니다.")
+        : undefined,
+      canMove:
+        owner.runner !== "primary" &&
+        owner.status === "active" &&
+        mode === "volume" &&
+        root?.state === "ready",
+      suggestedName: suggestWorkspaceName(owner.email, owner.id),
     };
   };
   const projectFor = async (owner: User, id: string, res: Response) => {
@@ -792,11 +836,16 @@ function installConsoleRoutes(
     const { control, observation } = await controls.read(owner.id);
     const fresh = observation && Date.now() - observation.observedAt < 60_000;
     const limits = control?.limits ?? observation;
+    const mode = observation?.workspaceMode;
     const model = {
       livePage: true,
       owner: userRow(owner),
       ...state,
       primary: owner.runner === "primary",
+      hostWorkspace: mode === "host",
+      workspace: selfScope
+        ? undefined
+        : await workspaceLocation(owner, mode, observation?.workspaceHostPath),
       revision: control?.revision ?? "",
       operationPending:
         control &&
@@ -872,6 +921,10 @@ function installConsoleRoutes(
       const value = field(req, name);
       return /^\d+(?:\.\d+)?$/.test(value) ? Number(value) : NaN;
     };
+    const workspace =
+      action === "workspace"
+        ? { name: field(req, "workspaceName").trim() }
+        : undefined;
     const limits =
       action === "apply"
         ? {
@@ -889,12 +942,14 @@ function installConsoleRoutes(
       field(req, "revision"),
       action,
       limits,
+      workspace,
     );
     await record(res, "runner_operation_requested", {
       userId: owner.id,
       action,
       revision: request.revision,
       limits,
+      workspace,
     });
     return res.redirect(303, base + "/runners/" + owner.id);
   });
@@ -1445,10 +1500,31 @@ function installConsoleRoutes(
     });
   });
   router.get("/settings", async (req, res) => {
+    const current = await installation.read();
+    const root = await installation.rootStatus(current);
     return adminView(req, res, "settings", "admin/settings", {
       settings: await settings.read(),
       publicBaseUrl: config.publicBaseUrl,
+      installation: {
+        root: current.workspaceRoot,
+        rootMessage: current.workspaceRoot
+          ? (root?.message ?? "관리 서비스가 경로를 확인하고 있습니다.")
+          : undefined,
+        onboarding: current.onboardingCompletedAt
+          ? dateLabel(current.onboardingCompletedAt)
+          : undefined,
+      },
     });
+  });
+  router.post("/settings/editor", async (req, res) => {
+    const value = {
+      vscodeSshHost: field(req, "vscodeSshHost").trim(),
+      vscodePathFrom: field(req, "vscodePathFrom").trim(),
+      vscodePathTo: field(req, "vscodePathTo").trim(),
+    };
+    await settings.save(value);
+    await record(res, "admin_editor_settings_updated", value);
+    return res.redirect(303, base + "/settings?saved=1");
   });
   router.post("/settings", async (req, res) => {
     await settings.save({

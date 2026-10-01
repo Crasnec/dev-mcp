@@ -18,6 +18,10 @@ const project = process.env.COMPOSE_PROJECT_NAME ?? "dev-mcp";
 const usersFile =
   process.env.PROVISIONER_USERS_FILE ?? "/gateway-data/users.json";
 const controlsFile = path.join(path.dirname(usersFile), "runner-controls.json");
+const installationFile = path.join(
+  path.dirname(usersFile),
+  "installation.json",
+);
 const statusDir = process.env.RUNNER_STATUS_DIR ?? "/runner-status";
 const statusFile = path.join(statusDir, "status.json");
 const helper = fileURLToPath(new URL("./provision-user.sh", import.meta.url));
@@ -57,7 +61,7 @@ async function users() {
 }
 const operations = new RunnerOperations(
   docker,
-  async (user, limits, quotaStorage, start = true) => {
+  async (user, limits, quotaStorage, start = true, workspaceDir = "") => {
     await execute("bash", [helper, user.id], {
       env: {
         ...process.env,
@@ -71,6 +75,7 @@ const operations = new RunnerOperations(
         RUNNER_QUOTA_STORAGE: String(quotaStorage ?? false),
         RUNNER_QUOTA_VOLUME: project + "-quota-pool",
         RUNNER_START: String(start),
+        RUNNER_WORKSPACE_HOST_DIR: workspaceDir,
       },
       timeout: 300_000,
       maxBuffer: 1024 * 1024,
@@ -79,6 +84,7 @@ const operations = new RunnerOperations(
   },
   statusDir,
   project,
+  installationFile,
 );
 
 async function reconcile() {
@@ -91,6 +97,19 @@ async function reconcile() {
   const desired = await readJson(controlsFile, { entries: {} });
   const status = await readJson(statusFile, { entries: {} });
   let ok = true;
+  // Installation-level observations for the local onboarding and settings.
+  try {
+    status.installation = {
+      workspaceRoot: await operations.probeRoot(primaryId),
+      primaryWorkspace: await operations.primaryWorkspace(primaryId),
+      observedAt: Date.now(),
+    };
+  } catch {
+    ok = false;
+    status.installation = { observedAt: Date.now() };
+    log("installation_observation_failed");
+  }
+  await writeJson(statusFile, status);
   for (const user of accounts) {
     let previous = status.entries[user.id] ?? {};
     const request = desired.entries[user.id];

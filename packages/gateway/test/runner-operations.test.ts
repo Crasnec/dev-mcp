@@ -123,7 +123,7 @@ it("does not restart stopped users when changing a file-size limit", async () =>
   info.State = { Running: false, Status: "exited" };
   const limits = { ...defaults, fileSizeMiB: 64 };
   await ops.apply(user, { action: "apply", limits }, "primary");
-  expect(provision).toHaveBeenCalledWith(user, limits, false, false);
+  expect(provision).toHaveBeenCalledWith(user, limits, false, false, undefined);
   expect(docker.mock.calls.some((args) => args[0] === "start")).toBe(false);
 });
 it("rejects resource operations on a container labelled for another user", async () => {

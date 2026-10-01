@@ -20,6 +20,7 @@ import { GoogleLogin, type GoogleProvider } from "./google-login.ts";
 import { installGoogleRoutes } from "./google-routes.ts";
 import { installTelemetryRoutes } from "./telemetry-routes.ts";
 import { RunnerTelemetryStore } from "./telemetry-store.ts";
+import { InstallationStore } from "./installation-store.ts";
 
 const SESSION_IDLE_TIMEOUT_MS = 24 * 60 * 60_000;
 
@@ -38,6 +39,11 @@ export interface AppDependencies {
   users?: UserStore;
   google?: GoogleProvider;
   telemetry?: RunnerTelemetryStore;
+  // Shared with the onboarding listener: JSON stores serialize writes per
+  // instance only.
+  settings?: SettingsStore;
+  audit?: AuditLogger;
+  installation?: InstallationStore;
 }
 
 export function createApp(
@@ -48,7 +54,7 @@ export function createApp(
   app.disable("x-powered-by");
   app.set("trust proxy", 1);
   const auth = new AuthStore(config.dataDir);
-  const audit = new AuditLogger(config.dataDir);
+  const audit = dependencies.audit ?? new AuditLogger(config.dataDir);
   const users =
     dependencies.users ??
     new UserStore(config.dataDir, config.adminPasswordHash);
@@ -95,7 +101,13 @@ export function createApp(
       index: false,
     }),
   );
-  const settings = new SettingsStore(config.dataDir);
+  const settings = dependencies.settings ?? new SettingsStore(config.dataDir);
+  const installation =
+    dependencies.installation ??
+    new InstallationStore(
+      config.dataDir,
+      config.runnerStatusDir ?? "/runner-status",
+    );
   const google =
     dependencies.google ??
     (config.google
@@ -121,7 +133,16 @@ export function createApp(
     dependencies.telemetry ??
       new RunnerTelemetryStore(config.runnerStatusDir ?? "/runner-status"),
   );
-  installAdminRoutes(app, config, users, auth, runners, audit, settings);
+  installAdminRoutes(
+    app,
+    config,
+    users,
+    auth,
+    runners,
+    audit,
+    settings,
+    installation,
+  );
   installOAuthRoutes(app, config, auth, audit, users, !!google);
 
   app.get("/", (_req, res) => {

@@ -71,6 +71,10 @@ if (args[0] === "ps") {
   } else {
     state.containers[container] = args[0] === "create" ? "created" : "running";
   }
+} else if (args[0] === "run" && args.includes("-e")) {
+  // Unprivileged workspace-directory helper.
+  const operation = args[args.indexOf("-e") + 2];
+  output = { probe: "ok", mkdir: "created", verify: "ok", remove: "removed" }[operation] ?? "";
 } else if (args[0] === "start" || args[0] === "restart") {
   state.containers[name] = "running";
 }
@@ -91,6 +95,10 @@ process.exit(code);
         {
           env: {
             ...process.env,
+            // If the fake cannot execute (for example from a noexec temporary
+            // directory), a real docker CLI must never reach a host daemon.
+            DOCKER_HOST: "unix://" + path.join(directory, "no-docker.sock"),
+            DOCKER_CONTEXT: "default",
             PATH: directory + path.delimiter + process.env.PATH,
             PROVISIONER_USERS_FILE: usersFile,
             FAKE_DOCKER_STATE: stateFile,
@@ -226,3 +234,41 @@ it("applies a restart once and does not replay an ambiguous operation after a co
     JSON.parse(await readFile(statusFile, "utf8")).entries[alice].phase,
   ).toBe("failed");
 }, 30000);
+
+it("mounts approved users' workspaces from the onboarding root", async () => {
+  const fixtureData = await fixture([
+    { ...account(alice), email: "alice@example.test" },
+  ]);
+  const directory = path.dirname(fixtureData.usersFile);
+  await writeFile(
+    path.join(directory, "installation.json"),
+    JSON.stringify({ workspaceRoot: "/srv/workspaces" }),
+  );
+  await fixtureData.run();
+  const creation = (await fixtureData.state()).calls.find(
+    (args: string[]) => args[0] === "create",
+  );
+  expect(creation).toEqual(
+    expect.arrayContaining([
+      "type=bind,source=/srv/workspaces/alice,target=/workspace",
+      "dev-mcp.workspace=host",
+      `type=volume,source=dev-mcp-user-${alice}-data,target=/var/lib/dev-mcp`,
+    ]),
+  );
+  expect(creation).not.toContain(
+    `type=volume,source=dev-mcp-user-${alice}-workspace,target=/workspace`,
+  );
+  const statusDir = path.join(directory, "status");
+  expect(
+    JSON.parse(
+      await readFile(path.join(statusDir, "workspace-dirs.json"), "utf8"),
+    ),
+  ).toEqual({ users: { [alice]: { root: "/srv/workspaces", name: "alice" } } });
+  const status = JSON.parse(
+    await readFile(path.join(statusDir, "status.json"), "utf8"),
+  );
+  expect(status.installation.workspaceRoot).toMatchObject({
+    path: "/srv/workspaces",
+    state: "ready",
+  });
+});

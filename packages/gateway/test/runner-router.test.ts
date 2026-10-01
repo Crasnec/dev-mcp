@@ -81,7 +81,6 @@ describe("dedicated user runner routing", () => {
     for (const method of [
       "project_list",
       "file_read",
-      "image_read",
       "command_run",
       "command_output",
       "process_list",

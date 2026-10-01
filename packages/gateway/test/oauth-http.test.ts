@@ -5,6 +5,7 @@ import path from "node:path";
 import os from "node:os";
 import inject from "light-my-request";
 import { createApp } from "../src/app.ts";
+import { UserStore } from "../src/user-store.ts";
 import { pkceChallenge } from "../src/crypto.ts";
 
 const temporary: string[] = [];
@@ -35,12 +36,14 @@ describe("OAuth HTTP endpoints", () => {
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "mcp-oauth-http-"));
     temporary.push(dataDir);
     const password = "a-long-test-password";
+    const adminPasswordHash = await passwordHash(password);
+    const users = new UserStore(dataDir, adminPasswordHash);
     const app = createApp({
       port: 3000,
       publicBaseUrl: "http://127.0.0.1",
       dataDir,
       runnerSocket: path.join(dataDir, "missing.sock"),
-      adminPasswordHash: await passwordHash(password),
+      adminPasswordHash,
     });
     const callback = "https://chat.example.test/oauth/callback";
 
@@ -102,16 +105,24 @@ describe("OAuth HTTP endpoints", () => {
     expect(page.payload).not.toContain("Test <client>");
     expect(page.payload).toContain('value="deny" type="submit" formnovalidate');
 
-    const incorrect = await form(app, "/oauth/authorize", {
-      transaction: transaction!,
-      username: "admin",
-      password: "incorrect",
-      decision: "allow",
-    });
-    expect(incorrect.statusCode).toBe(401);
-    expect(incorrect.payload).toContain("Test &lt;client&gt;");
-    expect(incorrect.payload).toContain('aria-invalid="true"');
-    expect(incorrect.payload).toContain("아이디·비밀번호를 확인해 주세요.");
+    expect(page.payload).not.toContain('name="username"');
+    expect(page.payload).not.toContain('name="password"');
+    expect(page.payload).not.toContain('value="allow"');
+    const retired = await form(
+      app,
+      "/oauth/authorize",
+      {
+        transaction: transaction!,
+        username: "admin",
+        password,
+        csrf: csrf(page.payload),
+        decision: "allow",
+      },
+      cookies(page),
+    );
+    expect(retired.statusCode).toBe(403);
+    expect(retired.payload).toContain("Google로 로그인해 주세요");
+    expect(retired.headers.location).toBeUndefined();
 
     const denialPage = await inject(app, {
       method: "GET",
@@ -120,22 +131,54 @@ describe("OAuth HTTP endpoints", () => {
     const denialTransaction = /name="transaction" value="([^"]+)"/.exec(
       denialPage.payload,
     )![1]!;
-    const denied = await form(app, "/oauth/authorize", {
+    const deny = {
       transaction: denialTransaction,
       decision: "deny",
-    });
+      csrf: csrf(denialPage.payload),
+    };
+    expect((await form(app, "/oauth/authorize", deny)).statusCode).toBe(403);
+    expect(
+      (
+        await form(
+          app,
+          "/oauth/authorize",
+          { ...deny, csrf: "wrong" },
+          cookies(denialPage),
+        )
+      ).statusCode,
+    ).toBe(403);
+    const denied = await form(
+      app,
+      "/oauth/authorize",
+      deny,
+      cookies(denialPage),
+    );
     expect(denied.statusCode).toBe(302);
     const denialRedirect = new URL(denied.headers.location as string);
     expect(denialRedirect.origin + denialRedirect.pathname).toBe(callback);
     expect(denialRedirect.searchParams.get("error")).toBe("access_denied");
     expect(denialRedirect.searchParams.get("state")).toBe("state-123");
 
-    const approved = await form(app, "/oauth/authorize", {
-      transaction: transaction!,
-      username: "admin",
-      password,
-      decision: "allow",
+    const session = await users.createSession((await users.list())[0]!);
+    const sessionCookie = "dev-mcp-session=" + session.token;
+    const consent = await inject(app, {
+      method: "GET",
+      url: "/oauth/consent?transaction=" + transaction,
+      headers: { cookie: sessionCookie + "; " + cookies(page) },
     });
+    expect(consent.statusCode).toBe(200);
+    expect(consent.payload).toContain('value="allow"');
+    const approved = await form(
+      app,
+      "/oauth/authorize",
+      {
+        transaction: transaction!,
+        authentication: "session",
+        csrf: csrf(consent.payload),
+        decision: "allow",
+      },
+      sessionCookie + "; " + cookies(page),
+    );
     expect(approved.statusCode).toBe(302);
     const redirected = new URL(approved.headers.location as string);
     expect(redirected.origin + redirected.pathname).toBe(callback);
@@ -185,11 +228,26 @@ function form(
   app: ReturnType<typeof createApp>,
   url: string,
   values: Record<string, string>,
+  cookie = "",
 ) {
   return inject(app, {
     method: "POST",
     url,
-    headers: { "content-type": "application/x-www-form-urlencoded" },
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      cookie,
+      origin: "http://127.0.0.1",
+    },
     payload: new URLSearchParams(values).toString(),
   });
+}
+
+function cookies(response: { headers: Record<string, unknown> }): string {
+  const value = response.headers["set-cookie"];
+  return (Array.isArray(value) ? value : value ? [value] : [])
+    .map((entry) => String(entry).split(";")[0])
+    .join("; ");
+}
+function csrf(html: string): string {
+  return /name="csrf" value="([^"]+)"/.exec(html)![1]!;
 }

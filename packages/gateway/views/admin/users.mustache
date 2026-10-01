@@ -5,7 +5,7 @@
     <button class="primary" type="submit">조회</button><a class="button quiet" href="/admin/users">초기화</a>
   </form>
   <div class="table-scroll"><table><caption class="sr-only">사용자 목록</caption><thead><tr>{{#sortHeaders.username}}{{> partials/sortable-header}}{{/sortHeaders.username}}{{#sortHeaders.role}}{{> partials/sortable-header}}{{/sortHeaders.role}}{{#sortHeaders.status}}{{> partials/sortable-header}}{{/sortHeaders.status}}{{#sortHeaders.created}}{{> partials/sortable-header}}{{/sortHeaders.created}}<th>관리</th></tr></thead><tbody>
-    {{#rows}}<tr><td><a class="strong-link" href="{{href}}">{{username}}</a><small class="cell-secondary">{{id}}</small></td><td>{{roleLabel}}</td><td><span class="badge {{status}}">{{statusLabel}}</span></td><td>{{createdLabel}}</td><td><a class="button small" href="{{href}}">상세 관리 →</a></td></tr>{{/rows}}
+    {{#rows}}<tr><td><a class="strong-link" href="{{href}}">{{username}}</a><small class="cell-secondary">{{id}}</small></td><td>{{roleLabel}}</td><td><span class="badge {{status}}">{{statusLabel}}</span></td><td><time datetime="{{createdDateTime}}" data-local-time>{{createdLabel}}</time></td><td><a class="button small" href="{{href}}">상세 관리 →</a></td></tr>{{/rows}}
     {{^rows}}<tr><td colspan="5" class="empty-state">조건에 맞는 사용자가 없습니다.</td></tr>{{/rows}}
   </tbody></table></div>
   {{> partials/pagination}}

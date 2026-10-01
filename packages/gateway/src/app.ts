@@ -9,7 +9,6 @@ import { AuditLogger } from "./audit.ts";
 import { installOAuthRoutes } from "./oauth.ts";
 import { IpcClient } from "./ipc-client.ts";
 import { createMcpServer } from "./mcp-tools.ts";
-import { verifyMediaToken } from "./media.ts";
 import { errorPage, landingPage, sendPage } from "./pages.ts";
 import { UserStore } from "./user-store.ts";
 import { RunnerRouter } from "./runner-router.ts";
@@ -114,16 +113,7 @@ export function createApp(
     loginLimiter,
     google,
   );
-  installAccountRoutes(
-    app,
-    config,
-    users,
-    runners,
-    audit,
-    loginLimiter,
-    settings,
-    !!google,
-  );
+  installAccountRoutes(app, config, users, runners, settings, !!google);
   installTelemetryRoutes(
     app,
     config,
@@ -132,55 +122,12 @@ export function createApp(
       new RunnerTelemetryStore(config.runnerStatusDir ?? "/runner-status"),
   );
   installAdminRoutes(app, config, users, auth, runners, audit, settings);
-  installOAuthRoutes(app, config, auth, audit, users, loginLimiter, !!google);
+  installOAuthRoutes(app, config, auth, audit, users, !!google);
 
   app.get("/", (_req, res) => {
     return sendPage(res, 200, landingPage(config.publicBaseUrl));
   });
   app.get("/healthz", (_req, res) => res.json({ ok: true }));
-  app.get("/media/:token", async (req, res) => {
-    const claims = verifyMediaToken(config.adminPasswordHash, req.params.token);
-    if (!claims) {
-      return res.status(404).send("Image URL is invalid or expired");
-    }
-    const user = await users.valid(claims);
-    if (!user) {
-      return res.status(404).send("Image URL is invalid or expired");
-    }
-    const result = await runners
-      .forUser(user)
-      .call(
-        "image_read",
-        { project_id: claims.projectId, path: claims.path },
-        `media:${claims.actor}`,
-      );
-    if (!result.ok) {
-      return res.status(404).send("Image is no longer available");
-    }
-    const image = result.data as {
-      mimeType?: unknown;
-      base64?: unknown;
-    };
-    if (
-      typeof image.mimeType !== "string" ||
-      typeof image.base64 !== "string"
-    ) {
-      return res.status(502).send("Runner returned invalid image data");
-    }
-    let content: Buffer;
-    try {
-      content = Buffer.from(image.base64, "base64");
-    } catch {
-      return res.status(502).send("Runner returned invalid image data");
-    }
-    res.setHeader("Content-Type", image.mimeType);
-    res.setHeader("Content-Length", content.length);
-    res.setHeader("Cache-Control", "private, no-store");
-    res.setHeader("Content-Security-Policy", "default-src 'none'");
-    res.setHeader("Referrer-Policy", "no-referrer");
-    res.setHeader("X-Content-Type-Options", "nosniff");
-    return res.status(200).send(content);
-  });
   app.post("/mcp", express.json({ limit: "2mb" }), async (req, res) => {
     const token = await authenticate(req, res, auth, config, users);
     if (!token) {
@@ -226,8 +173,6 @@ export function createApp(
         ipc: runners.forUser(token.user),
         audit,
         resourceMetadataUrl: `${config.publicBaseUrl}/.well-known/oauth-protected-resource`,
-        mediaBaseUrl: config.publicBaseUrl,
-        mediaSigningSecret: config.adminPasswordHash,
       });
       session = {
         actor: token.clientId,

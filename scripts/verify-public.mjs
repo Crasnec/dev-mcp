@@ -20,6 +20,16 @@ try {
     ["/signup", 200],
     ["/assets/auth.css", 200],
     ["/assets/admin.css", 200],
+    ["/assets/live-updates.js", 200],
+    ["/assets/audit-updates.js", 200],
+    ["/assets/telemetry.js", 200],
+    ["/assets/local-time.js", 200],
+    ["/media/removed-image-token", 404],
+    ["/admin/usage", 303],
+    ["/admin/telemetry", 401],
+    ["/account/telemetry", 401],
+    ["/admin/audit", 303],
+    ["/admin/audit/00000000000000000000/detail", 303],
     ["/admin", 303],
     ["/mcp", 401],
     ["/.well-known/oauth-authorization-server", 200],
@@ -42,13 +52,31 @@ try {
   );
   const html = await signup.text();
   assert(
-    html.includes("Google로 가입하기"),
+    html.includes("Google로 가입하기") ||
+      html.includes("현재 신규 가입을 받지 않습니다."),
     "Google registration button missing",
   );
   assert(!html.includes('name="password"'), "Password registration is exposed");
-  const csrf = /name="csrf" value="([^"]+)"/.exec(html)?.[1];
+  const login = await request("/login");
+  const loginHtml = await login.text();
+  assert(
+    loginHtml.includes("Google로 계속하기"),
+    "Google login button missing",
+  );
+  assert(!loginHtml.includes('name="password"'), "Password login is exposed");
+  assert(
+    !loginHtml.includes("기존 계정으로 로그인"),
+    "Legacy login link is exposed",
+  );
+  assert(
+    login.headers
+      .get("content-security-policy")
+      ?.includes("connect-src 'self'"),
+    "Live update CSP missing",
+  );
+  const csrf = /name="csrf" value="([^"]+)"/.exec(loginHtml)?.[1];
   assert(csrf, "Missing CSRF token");
-  const cookie = signup.headers
+  const cookie = login.headers
     .getSetCookie()
     .map((value) => value.split(";")[0])
     .join("; ");
@@ -67,6 +95,22 @@ try {
     403,
     "Password registration must be disabled",
   );
+  for (const route of ["/login", "/account/password"]) {
+    const removed = await request(route, {
+      method: "POST",
+      headers,
+      body: new URLSearchParams({
+        csrf,
+        username: "removed-password-check",
+        password: "not-a-credential",
+      }),
+    });
+    assert.equal(
+      removed.status,
+      410,
+      route + " must reject password authentication",
+    );
+  }
   const started = await request("/auth/google", {
     method: "POST",
     headers,

@@ -144,6 +144,20 @@ function harness() {
   const input = new Element("input");
   input.value = "user is editing this";
   page.append(notice, observedAt, coverage, input);
+  const controls = new Element("div");
+  controls.setAttribute("data-telemetry-stat-controls", "");
+  controls.hidden = true;
+  const statisticButtons = Object.fromEntries(
+    ["average", "p50", "p95", "p99"].map((statistic) => {
+      const button = new Element("button");
+      button.setAttribute("data-telemetry-stat", statistic);
+      controls.append(button);
+      return [statistic, button];
+    }),
+  );
+  const percentileNotice = new Element("p");
+  percentileNotice.setAttribute("data-telemetry-percentile-notice", "");
+  page.append(controls, percentileNotice);
   const bound = (kind: string, metric: string) => {
     const node = new Element("span");
     node.setAttribute(`data-telemetry-${kind}`, metric);
@@ -156,6 +170,9 @@ function harness() {
   );
   const average = bound("average", "cpuUsedCores");
   const max = bound("max", "cpuUsedCores");
+  const percentiles = Object.fromEntries(
+    ["p50", "p95", "p99"].map((key) => [key, bound(key, "cpuUsedCores")]),
+  );
   const totals = Object.fromEntries(
     ["cpuSeconds", "networkRxBytes", "networkTxBytes"].map((metric) => [
       metric,
@@ -202,6 +219,10 @@ function harness() {
     notice,
     observedAt,
     coverage,
+    controls,
+    statisticButtons,
+    percentileNotice,
+    percentiles,
     input,
     values,
     average,
@@ -265,7 +286,19 @@ describe("telemetry page", () => {
     expect(h.totals.networkTxBytes.textContent).toBe("—");
     expect(h.notice.hidden).toBe(true);
     expect(h.observedAt.textContent).not.toBe("—");
-    expect(h.observedAt.textContent).toBe("2026-10-01 00:00:30 UTC");
+    expect(h.observedAt.textContent).toBe(
+      new Intl.DateTimeFormat(undefined, {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      }).format(new Date(startAt + 30_000)),
+    );
+    expect(h.observedAt.getAttribute("datetime")).toBe(
+      "2026-10-01T00:00:30.000Z",
+    );
     expect(h.coverage.textContent).toBe("선택 기간 중 30분 기록 · 50%");
     expect(h.input.value).toBe("user is editing this");
     expect(h.document.activeElement).toBe(h.input);
@@ -296,7 +329,7 @@ describe("telemetry page", () => {
       h.charts.network
         .querySelectorAll(".telemetry-legend-item")
         .map((node) => node.textContent),
-    ).toEqual(["수신", "송신"]);
+    ).toEqual(["수신 · 평균", "송신 · 평균"]);
   });
 
   it("supports keyboard and pointer inspection without replacing focus or the selected historic sample during refresh", async () => {
@@ -316,7 +349,7 @@ describe("telemetry page", () => {
     const preventDefault = vi.fn();
     svg.fire("keydown", { key: "Home", preventDefault });
     svg.fire("keydown", { key: "ArrowRight", preventDefault });
-    expect(tooltip.textContent).toContain("사용 중 —");
+    expect(tooltip.textContent).toContain("사용 중 평균 —");
     expect(preventDefault).toHaveBeenCalledTimes(2);
     const second = payload();
     second.series[1].values.cpuUsedCores = 1.75;
@@ -356,6 +389,60 @@ describe("telemetry page", () => {
     expect(h.charts.cpu.querySelector("svg")!.getAttribute("viewBox")).toBe(
       "0 0 272 220",
     );
+  });
+
+  it("selects measured percentile series, keeps two network lines, and exposes approximation without fabricating legacy percentiles", async () => {
+    const h = harness();
+    const original = payload();
+    const data = {
+      ...original,
+      statistics: {
+        cpuUsedCores: {
+          ...original.statistics.cpuUsedCores,
+          p50: 1.2,
+          p95: 3.2,
+          p99: 3.6,
+          percentileRelativeError: 0.04,
+        },
+      },
+      series: original.series.map((point, i) => ({
+        ...point,
+        p50: { ...metrics, cpuUsedCores: 1 },
+        p95: { ...metrics, cpuUsedCores: i === 1 ? null : 3 },
+        p99: { ...metrics, cpuUsedCores: 4 },
+        percentileRelativeError: { cpuUsedCores: 0.04 },
+      })),
+    };
+    h.respond(data);
+    h.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.controls.hidden).toBe(false);
+    expect(h.percentiles.p95.textContent).toBe("≈ 3.2 코어");
+    expect(h.percentiles.p95.getAttribute("title")).toContain("4%");
+    h.document.activeElement = h.statisticButtons.p95;
+    h.statisticButtons.p95.fire("click");
+    expect(h.statisticButtons.p95.getAttribute("aria-pressed")).toBe("true");
+    expect(h.statisticButtons.average.getAttribute("aria-pressed")).toBe(
+      "false",
+    );
+    expect(h.document.activeElement).toBe(h.statisticButtons.p95);
+    expect(h.charts.network.querySelectorAll("path")).toHaveLength(2);
+    const path = h.charts.cpu.querySelector("path")!.getAttribute("d")!;
+    expect(path.match(/M/g)).toHaveLength(2);
+    const svg = h.charts.cpu.querySelector("svg")!;
+    svg.fire("focus");
+    const tooltip = h.charts.cpu.querySelector(".telemetry-chart-tooltip")!;
+    expect(tooltip.textContent).toContain("P95 ≈ 3 코어");
+    expect(tooltip.textContent).toContain("상대 오차 ≤ 4%");
+    h.respond();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(h.statisticButtons.p95.getAttribute("aria-pressed")).toBe("true");
+    expect(h.percentiles.p95.textContent).toBe("—");
+    expect(h.charts.cpu.querySelector("path")!.getAttribute("d")).toBe("");
+    expect(h.percentileNotice.hidden).toBe(false);
+    h.statisticButtons.average.fire("click");
+    expect(h.percentileNotice.hidden).toBe(true);
+    expect(h.charts.cpu.querySelector("path")!.getAttribute("d")).not.toBe("");
   });
 
   it("waits for each response and pauses with an abort while hidden, then resumes immediately", async () => {

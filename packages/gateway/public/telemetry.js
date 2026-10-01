@@ -5,7 +5,15 @@
   const ns = "http://www.w3.org/2000/svg";
   const interval = 5000;
   const maxPoints = 720;
-  const number = new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 2 });
+  const number = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
+  const statisticLabels = {
+    average: "평균",
+    p50: "P50",
+    p95: "P95",
+    p99: "P99",
+  };
+  let statistic = "average";
+  let latestResult;
   const definitions = {
     cpu: {
       label: "CPU 사용량",
@@ -46,6 +54,14 @@
       ? result
       : null;
   };
+  const pointValue = (point, metric) =>
+    finite(
+      statistic === "average"
+        ? point.values?.[metric]
+        : point[statistic]?.[metric],
+    );
+  const percentile = (metric, value) =>
+    finite(value) === null ? "—" : "≈ " + format(metric, value);
 
   function bytes(value) {
     const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
@@ -90,12 +106,9 @@
   }
 
   function dateLabel(at, full = false, longRange = false) {
-    return new Intl.DateTimeFormat("ko-KR", {
-      timeZone: "UTC",
+    return new Intl.DateTimeFormat(undefined, {
       ...(full || longRange ? { month: "numeric", day: "numeric" } : {}),
-      ...(full || !longRange
-        ? { hour: "2-digit", minute: "2-digit", hour12: false }
-        : {}),
+      ...(full || !longRange ? { hour: "2-digit", minute: "2-digit" } : {}),
       ...(full ? { second: "2-digit" } : {}),
     }).format(new Date(at));
   }
@@ -151,6 +164,7 @@
     empty.textContent = "이 기간에 수집된 측정값이 없습니다.";
     empty.hidden = true;
     container.append(svg, tooltip, empty);
+    const legendItems = [];
     if (definition.metrics.length > 1) {
       const legend = document.createElement("div");
       legend.className = "telemetry-chart-legend";
@@ -158,6 +172,7 @@
         const item = document.createElement("span");
         item.className = `telemetry-legend-item telemetry-series--${seriesIndex ? "secondary" : "primary"}`;
         item.textContent = label;
+        legendItems.push(item);
         legend.append(item);
       }
       container.append(legend);
@@ -198,10 +213,12 @@
       selectedAt = point.at;
       tooltip.textContent = `${dateLabel(point.at, true)} · ${definition.metrics
         .map((metric, i) => {
-          const value = finite(point.values?.[metric]);
+          const value = pointValue(point, metric);
           const peak = finite(point.maxValues?.[metric]);
-          const rolledUp = lastResult?.range !== "1h";
-          return `${definition.labels[i]} ${rolledUp ? "평균 " : ""}${format(metric, value)}${rolledUp && peak !== null ? ` · 최대 ${format(metric, peak)}` : ""}`;
+          const relativeError = finite(point.percentileRelativeError?.[metric]);
+          const rolledUp =
+            statistic === "average" && lastResult?.range !== "1h";
+          return `${definition.labels[i]} ${statisticLabels[statistic]} ${statistic === "average" ? format(metric, value) : percentile(metric, value)}${statistic !== "average" && value !== null && relativeError !== null ? ` (상대 오차 ≤ ${number.format(relativeError * 100)}%)` : ""}${rolledUp && peak !== null ? ` · 최대 ${format(metric, peak)}` : ""}`;
         })
         .join(" · ")}`;
       tooltip.hidden = false;
@@ -209,7 +226,7 @@
       cursor.setAttribute("x1", String(x(point.at)));
       cursor.setAttribute("x2", String(x(point.at)));
       definition.metrics.forEach((metric, i) => {
-        const value = finite(point.values?.[metric]);
+        const value = pointValue(point, metric);
         dots[i].setAttribute(
           "visibility",
           value === null ? "hidden" : "visible",
@@ -274,6 +291,18 @@
       lastResult = result;
       width = measureWidth();
       svg.setAttribute("viewBox", `0 0 ${width} 220`);
+      svg.setAttribute(
+        "aria-label",
+        `${definition.label} ${statisticLabels[statistic]} 추이. 좌우 방향키로 측정값을 탐색합니다.`,
+      );
+      legendItems.forEach((item, i) => {
+        item.textContent =
+          definition.labels[i] + " · " + statisticLabels[statistic];
+      });
+      empty.textContent =
+        statistic === "average"
+          ? "이 기간에 수집된 측정값이 없습니다."
+          : "이 기간의 백분위를 계산할 수 없습니다.";
       const valid = result.series
         .map((point) => ({ ...point, at: timestamp(point?.at) }))
         .filter((point) => point.at !== null)
@@ -290,7 +319,7 @@
         const breaks = definition.metrics.filter((metric) => {
           for (let i = previousIndex + 1; i <= index; i += 1) {
             if (
-              finite(valid[i].values?.[metric]) === null ||
+              pointValue(valid[i], metric) === null ||
               (i > 0 &&
                 finite(result.stepMs) &&
                 valid[i].at - valid[i - 1].at > result.stepMs * 1.8)
@@ -307,11 +336,11 @@
       if (to <= from) to = from + 1;
       const observed = points.flatMap((point) =>
         [
-          ...definition.metrics,
-          ...(definition.capacity ? [definition.capacity] : []),
-        ]
-          .map((metric) => finite(point.values?.[metric]))
-          .filter((value) => value !== null),
+          ...definition.metrics.map((metric) => pointValue(point, metric)),
+          ...(definition.capacity
+            ? [finite(point.values?.[definition.capacity])]
+            : []),
+        ].filter((value) => value !== null),
       );
       if (definition.capacity) {
         const capacity = finite(result.current.values?.[definition.capacity]);
@@ -367,7 +396,7 @@
         let path = "";
         let previousAt = null;
         for (const [pointIndex, point] of points.entries()) {
-          const value = finite(point.values?.[metric]);
+          const value = pointValue(point, metric);
           if (value === null) {
             previousAt = null;
             continue;
@@ -378,7 +407,7 @@
           const isolated =
             gap &&
             (!next ||
-              finite(next.values?.[metric]) === null ||
+              pointValue(next, metric) === null ||
               next.breaks.includes(metric));
           if (isolated) {
             nodes.push(
@@ -426,14 +455,36 @@
   const notice = page.querySelector("[data-telemetry-notice]");
   const observedAt = page.querySelector("[data-telemetry-observed-at]");
   const coverage = page.querySelector("[data-telemetry-coverage]");
+  const percentileNotice = page.querySelector(
+    "[data-telemetry-percentile-notice]",
+  );
+  const controls = page.querySelector("[data-telemetry-stat-controls]");
+  if (controls) controls.hidden = false;
+  const statisticButtons = Array.from(
+    page.querySelectorAll("[data-telemetry-stat]"),
+  );
+  for (const button of statisticButtons) {
+    button.addEventListener("click", () => {
+      const next = button.dataset.telemetryStat;
+      if (!Object.hasOwn(statisticLabels, next) || next === statistic) return;
+      statistic = next;
+      for (const item of statisticButtons)
+        item.setAttribute("aria-pressed", String(item === button));
+      if (latestResult) renderCharts(latestResult);
+    });
+  }
   const bindings = [
     ["value", (result, metric) => result.current.values?.[metric]],
     ["average", (result, metric) => result.statistics?.[metric]?.average],
     ["max", (result, metric) => result.statistics?.[metric]?.max],
+    ["p50", (result, metric) => result.statistics?.[metric]?.p50],
+    ["p95", (result, metric) => result.statistics?.[metric]?.p95],
+    ["p99", (result, metric) => result.statistics?.[metric]?.p99],
     ["total", (result, metric) => result.totals?.[metric]],
   ].flatMap(([kind, read]) =>
     Array.from(page.querySelectorAll(`[data-telemetry-${kind}]`), (node) => ({
       node,
+      kind,
       metric: node.getAttribute(`data-telemetry-${kind}`),
       read,
     })),
@@ -447,6 +498,24 @@
     }
   }
 
+  function renderCharts(result) {
+    const left = window.scrollX;
+    const top = window.scrollY;
+    for (const render of charts) render(result);
+    if (percentileNotice) {
+      const incomplete = Object.values(definitions).some((definition) =>
+        definition.metrics.some(
+          (metric) =>
+            finite(result.statistics?.[metric]?.average) !== null &&
+            finite(result.statistics?.[metric]?.[statistic]) === null,
+        ),
+      );
+      percentileNotice.hidden = statistic === "average" || !incomplete;
+    }
+    if (window.scrollX !== left || window.scrollY !== top)
+      window.scrollTo({ left, top, behavior: "instant" });
+  }
+
   function update(result) {
     if (
       result?.schemaVersion !== 1 ||
@@ -458,15 +527,42 @@
     const left = window.scrollX;
     const top = window.scrollY;
     for (const binding of bindings) {
-      const next = format(binding.metric, binding.read(result, binding.metric));
+      const value = binding.read(result, binding.metric);
+      const next = binding.kind.startsWith("p")
+        ? percentile(binding.metric, value)
+        : format(binding.metric, value);
       if (binding.node.textContent !== next) binding.node.textContent = next;
+      if (binding.kind.startsWith("p")) {
+        const relativeError = finite(
+          result.statistics?.[binding.metric]?.percentileRelativeError,
+        );
+        binding.node.setAttribute(
+          "title",
+          finite(value) === null || relativeError === null
+            ? "분포 기록이 없는 구간의 백분위는 표시되지 않습니다."
+            : `근사 백분위 · 상대 오차 상한 ${number.format(relativeError * 100)}%`,
+        );
+      }
     }
     const at = timestamp(result.current.observedAt);
-    if (observedAt)
+    if (observedAt) {
+      observedAt.setAttribute(
+        "datetime",
+        at === null ? "" : new Date(at).toISOString(),
+      );
       observedAt.textContent =
         at === null
           ? "측정 기록 없음"
-          : new Date(at).toISOString().replace("T", " ").slice(0, 19) + " UTC";
+          : (window.devMcpTime?.format(at, "second") ??
+            new Intl.DateTimeFormat(undefined, {
+              year: "numeric",
+              month: "2-digit",
+              day: "2-digit",
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+            }).format(new Date(at)));
+    }
     if (coverage) {
       const observed = finite(result.history?.observedMs);
       const ratio = finite(result.history?.coverageRatio);
@@ -475,7 +571,8 @@
           ? "기록 범위를 확인할 수 없습니다."
           : `선택 기간 중 ${duration(observed)} 기록${ratio === null ? "" : ` · ${number.format(Math.min(1, ratio) * 100)}%`}${result.history?.truncated ? " · 일부 기록만 표시" : ""}`;
     }
-    for (const render of charts) render(result);
+    latestResult = result;
+    renderCharts(result);
     const state = ["fresh", "partial", "stale", "unavailable"].includes(
       result.current.availability,
     )

@@ -29,8 +29,6 @@ describe("MCP tool catalog", () => {
       audit: new AuditLogger(data),
       resourceMetadataUrl:
         "https://dev.example.test/.well-known/oauth-protected-resource",
-      mediaBaseUrl: "https://dev.example.test",
-      mediaSigningSecret: "test-media-secret",
     });
     const client = new Client({ name: "catalog-test", version: "1.0.0" });
     const [clientTransport, serverTransport] =
@@ -38,7 +36,7 @@ describe("MCP tool catalog", () => {
     await server.connect(serverTransport);
     await client.connect(clientTransport);
     const catalog = await client.listTools();
-    expect(catalog.tools).toHaveLength(18);
+    expect(catalog.tools).toHaveLength(17);
     for (const tool of catalog.tools) {
       expect(tool.inputSchema.required).toContain("reason");
       expect(tool.inputSchema.properties?.reason).toMatchObject({
@@ -54,6 +52,7 @@ describe("MCP tool catalog", () => {
       "git_diff",
       "git_log",
       "process_status",
+      "image_read",
     ]) {
       expect(names).not.toContain(removed);
     }
@@ -63,11 +62,6 @@ describe("MCP tool catalog", () => {
       { type: "oauth2", scopes: ["workspace:read"] },
     ]);
     expect(gitRead.inputSchema.required).toContain("operation");
-    const imageRead = catalog.tools.find((tool) => tool.name === "image_read")!;
-    expect(imageRead.annotations?.readOnlyHint).toBe(true);
-    expect(imageRead._meta?.securitySchemes).toEqual([
-      { type: "oauth2", scopes: ["workspace:read"] },
-    ]);
     const command = catalog.tools.find((tool) => tool.name === "command_run")!;
     expect(command.annotations?.destructiveHint).toBe(true);
     expect(command.annotations?.openWorldHint).toBe(true);
@@ -179,76 +173,6 @@ describe("MCP tool catalog", () => {
     await server.close();
   });
 
-  it("returns a short-lived URL for image_read", async () => {
-    const data = await mkdtemp(path.join(os.tmpdir(), "mcp-image-url-"));
-    temporary.push(data);
-    const ipc = {
-      call: vi.fn(async () => ({
-        ok: true,
-        data: {
-          path: "pixel.png",
-          mimeType: "image/png",
-          size: 68,
-          base64: "ignored-by-gateway",
-        },
-        truncated: false,
-      })),
-    } as unknown as IpcClient;
-    const server = createMcpServer({
-      scopes: ["workspace:read"],
-      actor: "test-client",
-      principal: { userId: "test-user", authVersion: 1 },
-      ipc,
-      audit: new AuditLogger(data),
-      resourceMetadataUrl:
-        "https://dev.example.test/.well-known/oauth-protected-resource",
-      mediaBaseUrl: "https://dev.example.test",
-      mediaSigningSecret: "test-media-secret",
-    });
-    const client = new Client({ name: "image-url-test", version: "1.0.0" });
-    const [clientTransport, serverTransport] =
-      InMemoryTransport.createLinkedPair();
-    await server.connect(serverTransport);
-    await client.connect(clientTransport);
-    const result = await client.callTool({
-      name: "image_read",
-      arguments: {
-        reason: "Inspect the requested resource",
-        project_id: "00000000-0000-4000-8000-000000000000",
-        path: "pixel.png",
-      },
-    });
-    expect(result.isError).toBe(false);
-    expect(ipc.call).toHaveBeenCalledWith(
-      "image_read",
-      {
-        project_id: "00000000-0000-4000-8000-000000000000",
-        path: "pixel.png",
-      },
-      "test-client",
-    );
-    expect(result.content[0]).toEqual({
-      type: "text",
-      text: expect.stringMatching(
-        /^Image URL: https:\/\/dev\.example\.test\/media\//,
-      ),
-    });
-    expect(result.structuredContent).toMatchObject({
-      ok: true,
-      data: {
-        url: expect.stringMatching(
-          /^https:\/\/dev\.example\.test\/media\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/,
-        ),
-        path: "pixel.png",
-        mimeType: "image/png",
-        size: 68,
-      },
-      truncated: false,
-    });
-    await client.close();
-    await server.close();
-  });
-
   it("records the owner and returned process id for process starts", async () => {
     const data = await mkdtemp(path.join(os.tmpdir(), "mcp-process-audit-"));
     temporary.push(data);
@@ -275,8 +199,6 @@ describe("MCP tool catalog", () => {
       audit: new AuditLogger(data),
       resourceMetadataUrl:
         "https://dev.example.test/.well-known/oauth-protected-resource",
-      mediaBaseUrl: "https://dev.example.test",
-      mediaSigningSecret: "test-media-secret",
     });
     const client = new Client({ name: "process-test", version: "1.0.0" });
     const [clientTransport, serverTransport] =
@@ -341,8 +263,6 @@ describe("MCP tool catalog", () => {
       audit,
       resourceMetadataUrl:
         "https://dev.example.test/.well-known/oauth-protected-resource",
-      mediaBaseUrl: "https://dev.example.test",
-      mediaSigningSecret: "test-media-secret",
     });
     const client = new Client({ name: "reason-test", version: "1.0.0" });
     const [clientTransport, serverTransport] =

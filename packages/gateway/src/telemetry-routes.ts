@@ -2,7 +2,7 @@ import type { Express, Request, Response } from "express";
 import type { GatewayConfig } from "./config.ts";
 import type { User, UserStore } from "./user-store.ts";
 import { browserSession } from "./browser-session.ts";
-import { adminView } from "./admin-view.ts";
+import { adminView, dateIso } from "./admin-view.ts";
 import { errorPage, sendPage } from "./pages.ts";
 import {
   RunnerTelemetryStore,
@@ -166,6 +166,13 @@ export function installTelemetryRoutes(
         current: formatMetric(key, data.current.values[key]),
         average: formatMetric(key, data.statistics[key].average),
         max: formatMetric(key, data.statistics[key].max),
+        p50: formatPercentile(key, data.statistics[key].p50),
+        p95: formatPercentile(key, data.statistics[key].p95),
+        p99: formatPercentile(key, data.statistics[key].p99),
+        percentileTitle:
+          data.statistics[key].percentileRelativeError === null
+            ? "분포 기록이 없는 구간의 백분위는 표시되지 않습니다."
+            : `근사 백분위 · 상대 오차 상한 ${decimal(data.statistics[key].percentileRelativeError * 100)}%`,
       })),
       totals: [
         {
@@ -201,6 +208,7 @@ export function installTelemetryRoutes(
               .toISOString()
               .replace("T", " ")
               .slice(0, 19) + " UTC",
+      observedDateTime: dateIso(data.current.observedAt),
       coverageLabel:
         `선택 기간 중 ${durationLabel(data.history.observedMs)} 기록 · ${decimal(data.history.coverageRatio * 100)}%` +
         (data.history.truncated ? " · 일부 기록만 표시" : ""),
@@ -281,6 +289,9 @@ function formatMetric(key: TelemetryMetric, value: number | null): string {
     return decimal(value) + " 코어";
   }
   return formatBytes(value) + (key.endsWith("PerSecond") ? "/s" : "");
+}
+function formatPercentile(key: TelemetryMetric, value: number | null): string {
+  return value === null ? "—" : "≈ " + formatMetric(key, value);
 }
 function ownerLabel(user: User): string {
   return (user.email ?? user.username) + " 실행 환경";

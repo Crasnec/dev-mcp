@@ -134,6 +134,7 @@ describe("workspace workflow", () => {
       "git_diff",
       "git_log",
       "process_status",
+      "image_read",
     ]) {
       const result = await runtime.dispatch({
         id: "removed",
@@ -167,27 +168,6 @@ describe("workspace workflow", () => {
     );
     expect(timed.ok).toBe(true);
     expect((timed.data as { timedOut: boolean }).timedOut).toBe(true);
-  });
-
-  it("reads supported images as base64 with detected MIME type", async () => {
-    const { runtime, root, projectId } = await runtimeFixture();
-    const png = Buffer.from(
-      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
-      "base64",
-    );
-    await writeFile(path.join(root, "pixel.png"), png);
-    const result = await runtime.dispatch({
-      id: "image-test",
-      method: "image_read",
-      params: { project_id: projectId, path: "pixel.png" },
-    });
-    expect(result.ok).toBe(true);
-    expect(result.data).toEqual({
-      path: "pixel.png",
-      mimeType: "image/png",
-      size: png.length,
-      base64: png.toString("base64"),
-    });
   });
 
   it("tracks logs and stops background process groups", async () => {

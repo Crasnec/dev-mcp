@@ -3,7 +3,6 @@ import express from "express";
 import { ALL_SCOPES, type GatewayConfig, type Scope } from "./config.ts";
 import { AuthStore } from "./auth-store.ts";
 import type { UserStore } from "./user-store.ts";
-import { LoginLimiter, credentialRateKey } from "./login-limiter.ts";
 import type { AuditLogger } from "./audit.ts";
 import { authorizationPage, errorPage, sendPage } from "./pages.ts";
 import { browserSession, cookie } from "./browser-session.ts";
@@ -15,7 +14,6 @@ export function installOAuthRoutes(
   store: AuthStore,
   audit: AuditLogger,
   users: UserStore,
-  loginLimiter: LoginLimiter,
   googleEnabled = false,
 ): void {
   const resource = `${config.publicBaseUrl}/mcp`;
@@ -283,24 +281,6 @@ export function installOAuthRoutes(
     "/oauth/authorize",
     express.urlencoded({ extended: false, limit: "16kb" }),
     async (req, res) => {
-      const username =
-        typeof req.body.username === "string" ? req.body.username : "";
-      const rateKey = credentialRateKey(req.ip, username);
-      if (
-        req.body.authentication !== "session" &&
-        loginLimiter.blocked(rateKey)
-      ) {
-        res.setHeader("Retry-After", "900");
-        return sendPage(
-          res,
-          429,
-          errorPage({
-            status: 429,
-            title: "Too many attempts",
-            message: "Wait 15 minutes before trying to authorize again.",
-          }),
-        );
-      }
       const transaction =
         typeof req.body.transaction === "string" ? req.body.transaction : "";
       const pending = await store.pendingAuthorization(transaction);
@@ -316,14 +296,14 @@ export function installOAuthRoutes(
           }),
         );
       }
-      const sessionMode = req.body.authentication === "session";
-      const session = sessionMode ? await browser.current(req) : undefined;
+      const session = await browser.current(req);
       if (
-        sessionMode &&
-        (!session ||
-          !browser.validCsrf(req, session.csrf) ||
-          !pending.browserBinding ||
-          pending.browserBinding !== tokenHash(cookie(req, consentCookie)))
+        !browser.validCsrf(
+          req,
+          session?.csrf ?? cookie(req, browser.formCookie),
+        ) ||
+        !pending.browserBinding ||
+        pending.browserBinding !== tokenHash(cookie(req, consentCookie))
       ) {
         return sendPage(
           res,
@@ -335,56 +315,33 @@ export function installOAuthRoutes(
           }),
         );
       }
-      if (req.body.decision === "deny") {
-        await store.consumePending(transaction);
-        await audit.write({
-          event: "oauth_authorization_denied",
-          clientId: pending.clientId,
-        });
-        return redirectOAuth(res, pending.redirectUri, {
-          error: "access_denied",
-          error_description: "The resource owner denied the request",
-          state: pending.state,
-        });
-      }
-      const password =
-        typeof req.body.password === "string" ? req.body.password : "";
-      if (!sessionMode) {
-        loginLimiter.failed(rateKey);
-      }
-      const user =
-        session?.user ??
-        (password.length <= 256
-          ? await users.authenticate(username, password)
-          : undefined);
-      if (!user) {
-        await audit.write({
-          event: "oauth_login_failed",
-          clientId: pending.clientId,
-          remote: req.ip,
-        });
+      const decision = req.body.decision;
+      if (decision !== "allow" && decision !== "deny") {
         return sendPage(
           res,
-          401,
-          authorizationPage({
-            transaction,
-            clientName:
-              (await store.client(pending.clientId))?.clientName ?? "ChatGPT",
-            scopes: pending.scopes,
-            username,
-            authorizationEndpoint,
-            error:
-              "아이디·비밀번호를 확인해 주세요. 승인 대기 또는 중지된 계정은 연결할 수 없습니다.",
-            ...(await context(req, res)),
+          400,
+          errorPage({
+            status: 400,
+            title: "연결 승인을 선택해 주세요",
+            message: "연결 승인 또는 취소를 선택해 주세요.",
           }),
-          [
-            authorizationEndpoint,
-            new URL(pending.redirectUri).origin,
-            "'self'",
-          ],
         );
       }
-      loginLimiter.succeeded(rateKey);
+      if (
+        decision === "allow" &&
+        (!session || req.body.authentication !== "session")
+      ) {
+        return sendPage(
+          res,
+          403,
+          errorPage({
+            status: 403,
+            title: "Google로 로그인해 주세요",
+            message:
+              "비밀번호로 연결을 승인할 수 없습니다. Google 로그인 후 연결 승인 화면에서 계속해 주세요.",
+          }),
+        );
+      }
       const consumed = await store.consumePending(transaction);
       if (!consumed) {
         return sendPage(
@@ -398,6 +355,18 @@ export function installOAuthRoutes(
           }),
         );
       }
+      if (decision === "deny") {
+        await audit.write({
+          event: "oauth_authorization_denied",
+          clientId: consumed.clientId,
+        });
+        return redirectOAuth(res, consumed.redirectUri, {
+          error: "access_denied",
+          error_description: "The resource owner denied the request",
+          state: consumed.state,
+        });
+      }
+      const user = session!.user;
       const code = await store.createCode(consumed, {
         userId: user.id,
         authVersion: user.authVersion,

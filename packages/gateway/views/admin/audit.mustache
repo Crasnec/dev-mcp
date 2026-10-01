@@ -9,7 +9,7 @@
       <tbody data-audit-rows role="rowgroup">
         {{#rows}}
         <tr id="audit-row-{{id}}" data-audit-id="{{id}}" class="audit-row{{#expanded}} expanded{{/expanded}}" role="row">
-          <td class="audit-time" role="cell">{{at}}</td>
+          <td class="audit-time" role="cell"><time datetime="{{atDateTime}}" data-local-time>{{at}}</time></td>
           <td class="audit-event" role="cell"><div class="audit-event-heading"><strong>{{event}}</strong>{{#tool}}<code class="audit-tool">{{tool}}</code>{{/tool}}</div>{{#reason}}<p class="audit-reason">{{reason}}</p>{{/reason}}</td>
           <td class="audit-actor" role="cell">{{actor}}</td>
           <td class="audit-action" role="cell"><a class="button small audit-detail-toggle" data-audit-toggle data-detail-url="/admin/audit/{{id}}/detail" href="{{detailHref}}" aria-expanded="{{expandedText}}" aria-controls="audit-detail-{{id}}">{{detailLabel}}</a></td>

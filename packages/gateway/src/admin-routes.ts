@@ -19,6 +19,7 @@ import { renderFragment } from "./views.ts";
 import {
   adminView,
   dateLabel,
+  dateIso,
   pageOf,
   query,
   sortList,
@@ -81,6 +82,7 @@ interface AuditRow {
   tool?: string;
   reason?: string;
   at: string;
+  atDateTime?: string;
   sortAt: string;
   event: string;
   actor: string;
@@ -276,6 +278,7 @@ export function installAdminRoutes(
           ...process,
           statusLabel: statusLabel(process.status),
           startedLabel: dateLabel(process.startedAt),
+          startedDateTime: dateIso(process.startedAt),
           output,
           empty: !output && !logs?.error,
           logError:
@@ -611,6 +614,7 @@ export function installAdminRoutes(
           }[observation.state] ?? observation.state)
         : "확인 중 · 상태 정보 없음",
       observedLabel: dateLabel(observation?.observedAt),
+      observedDateTime: dateIso(observation?.observedAt),
       canCreate: owner.runner !== "primary" && owner.status === "active",
       canStart: owner.status === "active",
       limits: {
@@ -683,6 +687,7 @@ export function installAdminRoutes(
         ...entry,
         statusLabel: statusLabel(entry.status),
         startedLabel: dateLabel(entry.startedAt),
+        startedDateTime: dateIso(entry.startedAt),
         href:
           "/admin/processes/" +
           selection.owner.id +
@@ -791,6 +796,7 @@ export function installAdminRoutes(
         ...process,
         statusLabel: statusLabel(process.status),
         startedLabel: dateLabel(process.startedAt),
+        startedDateTime: dateIso(process.startedAt),
       },
       running: process.status === "running",
       output: logs.ok ? (logs.data as ProcessLogPage).output : "",
@@ -862,6 +868,7 @@ export function installAdminRoutes(
       .map((client) => ({
         ...client,
         createdLabel: dateLabel(client.createdAt),
+        createdDateTime: dateIso(client.createdAt),
         grants: grants
           .filter((grant) => grant.clientId === client.clientId)
           .map((grant) => ({
@@ -901,6 +908,8 @@ export function installAdminRoutes(
         username: names.get(session.userId) ?? "알 수 없음",
         createdLabel: dateLabel(session.createdAt),
         expiresLabel: dateLabel(session.expiresAt),
+        createdDateTime: dateIso(session.createdAt),
+        expiresDateTime: dateIso(session.expiresAt),
       }));
     const sortedSessions = sortList(
       sessionRows,
@@ -1134,6 +1143,7 @@ function auditRow(entry: Record<string, unknown>, users: User[]): AuditRow {
     tool: stringValue(entry.tool),
     reason: stringValue(entry.reason)?.trim() || undefined,
     at: dateLabel(typeof entry.at === "string" ? entry.at : undefined),
+    atDateTime: dateIso(typeof entry.at === "string" ? entry.at : undefined),
     sortAt: typeof entry.at === "string" ? entry.at : "",
     event: String(entry.event ?? "unknown"),
     actor: actor || "시스템",

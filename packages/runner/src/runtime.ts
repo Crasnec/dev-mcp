@@ -65,8 +65,6 @@ export class RunnerRuntime {
             optionalInt(p, "start_line") ?? 1,
             optionalInt(p, "line_count") ?? 200,
           );
-        case "image_read":
-          return this.files.readImage(str(p, "project_id"), str(p, "path"));
         case "file_search":
           return this.files.search(
             str(p, "project_id"),

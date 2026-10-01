@@ -90,14 +90,19 @@ function currentPageHref(req: Request): string {
   return req.baseUrl + req.path + (suffix ? "?" + suffix : "");
 }
 
-export function dateLabel(value: number | string | undefined): string {
-  if (value === undefined) {
-    return "기록 없음";
+export function dateIso(
+  value: number | string | null | undefined,
+): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
   }
   const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? "기록 없음"
-    : date.toISOString().replace("T", " ").slice(0, 16) + " UTC";
+  return Number.isFinite(date.getTime()) ? date.toISOString() : undefined;
+}
+
+export function dateLabel(value: number | string | undefined): string {
+  const iso = dateIso(value);
+  return iso ? iso.replace("T", " ").slice(0, 16) + " UTC" : "기록 없음";
 }
 
 export function query(req: Request, key: string): string {
@@ -336,5 +341,6 @@ export const userRow = (user: User) => ({
   statusLabel: statusLabel(user.status),
   roleLabel: user.role === "admin" ? "관리자" : "사용자",
   createdLabel: dateLabel(user.createdAt),
+  createdDateTime: dateIso(user.createdAt),
   href: "/admin/users/" + user.id,
 });

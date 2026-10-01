@@ -19,12 +19,12 @@ New users have dedicated runner containers, workspace/log volumes, IPC keys, and
 ## Accounts and administration
 
 - `/signup`: Google-only registration; new accounts remain pending until approved. Password signup is rejected server-side.
-- `/login` and `/account`: Google sign-in, project overview, and explicit Google linking for existing accounts. Existing password accounts retain login/password-change access; new Google accounts have no local password.
+- `/login` and `/account`: Google sign-in, project overview, and explicit Google linking for existing accounts. Username/password login and password-change endpoints have been removed. OAuth consent also requires an existing session or Google sign-in.
 - `/admin`: ERP-style dashboard with a persistent navigation sidebar. Each management area and detail view has its own URL (see below).
-- On the first startup, `users.json` is created with username `admin` and the existing `ADMIN_PASSWORD_HASH`. Change the password from the account page. Later startups do not overwrite that password.
-- Existing OAuth credentials without a user identity are rejected after upgrading. Reconnect each MCP client, sign in with Google (or an existing password account), and explicitly approve its requested permissions.
-- Passwords use scrypt. Browser session tokens are stored as hashes and sent in HttpOnly, SameSite=Lax cookies (Secure on HTTPS). Forms require CSRF tokens. The final active administrator cannot be disabled or demoted.
-- Password changes, account status/role changes, and “revoke all” invalidate previous browser sessions, OAuth codes/tokens, MCP session reuse, and signed image URLs. Already running commands are not killed automatically.
+- Existing Google-linked accounts keep their account IDs, roles and workspaces. A fresh installation requires the one-time operator bootstrap below before the first administrator can sign in. `ADMIN_PASSWORD_HASH` remains a legacy configuration/storage field; it no longer enables browser or OAuth password authentication.
+- Existing OAuth credentials without a user identity are rejected after upgrading. Reconnect each MCP client, sign in with Google, and explicitly approve its requested permissions.
+- Browser session tokens are stored as hashes and sent in HttpOnly, SameSite=Lax cookies (Secure on HTTPS). Forms require CSRF tokens. The final active administrator, and the final active Google-linked administrator, cannot be disabled or demoted.
+- Account status/role changes and “revoke all” invalidate previous browser sessions, OAuth codes/tokens, and MCP session reuse. Already running commands are not killed automatically.
 
 ### Google login setup
 
@@ -37,23 +37,49 @@ New users have dedicated runner containers, workspace/log volumes, IPC keys, and
    ```
 
    Continue including the overlay for subsequent Compose operations. If Docker runs in another filesystem namespace, set `GOOGLE_CLIENT_ID_SOURCE` and `GOOGLE_CLIENT_SECRET_SOURCE` to the copied files' absolute paths **on the Docker host**. Do not point the container at an unreadable owner-only source file or make plan-app's original files public.
-4. The initial administrator signs in using the existing password, then opens **내 계정 → Google 계정 연결** before using that Google identity for login. Linking preserves the account ID, administrator role and primary workspace, while invalidating old sessions/MCP credentials. Signing in with a new Google identity first creates a separate pending account; accounts are never auto-merged by email.
+4. Existing Google-linked administrators can sign in immediately. On a fresh installation, register the intended administrator through Google, then use the one-time operator bootstrap below to approve that verified pending account. Existing authenticated users can still use **내 계정 → Google 계정 연결** to connect an unlinked account explicitly. Linking preserves its account ID, role and workspace and invalidates old sessions/MCP credentials. Accounts are never auto-merged by email.
 
 Copied files live inside a mode-0700 `data/google` directory; individual files are read-only and readable by the non-root gateway through Compose secret mounts. Neither the directory nor the source filenames are included in Git or the Docker build context. Only the gateway receives these mounts. Never print `docker compose config` with credentials supplied as literal environment values. For non-Docker runs, configure `GOOGLE_CLIENT_ID_FILE` and `GOOGLE_CLIENT_SECRET_FILE` (or the corresponding environment values, but never both).
 
-The gateway validates the ID token's signature, issuer, audience, expiry, nonce, authorized party and verified email, and identifies accounts by Google's stable `sub`, **not email**. It requests only `openid email` and does not retain Google access/refresh tokens. The callback uses single-use state bound to an HttpOnly browser cookie plus PKCE. Pending/disabled accounts cannot receive login sessions or MCP tokens. Closing registration blocks new Google identities but leaves existing users able to log in. Without Google credentials, new signup remains unavailable (it never falls back to password signup).
+The gateway validates the ID token's signature, issuer, audience, expiry, nonce, authorized party and verified email, and identifies accounts by Google's stable `sub`, **not email**. It requests only `openid email` and does not retain Google access/refresh tokens. The callback uses single-use state bound to an HttpOnly browser cookie plus PKCE. Pending/disabled accounts cannot receive login sessions or MCP tokens. Closing registration blocks new Google identities but leaves existing users able to log in. Without Google credentials, sign-in and registration remain unavailable; there is no password fallback.
 
 For MCP connections, Google login returns to a browser-bound consent page, never directly to the external client's callback. The user must approve the requested scopes, with session CSRF protection. Unfinished Google login state expires after 10 minutes or a gateway restart. Auth callback/consent URLs are excluded from Caddy access logging to avoid logging codes or transaction identifiers. The application records sanitized authentication audit events instead. Other upstream proxies must apply equivalent redaction.
+
+### First Google administrator on a new installation
+
+Complete Google registration first so the pending account has a verified provider identity. As the host operator, list only the pending Google account IDs and emails:
+
+```bash
+docker compose -f compose.yaml -f compose.google.yaml exec -T gateway node --input-type=module -e '
+import { readFile, stat } from "node:fs/promises";
+import path from "node:path";
+const file = path.join(process.env.GATEWAY_DATA_DIR, "users.json");
+if ((await stat(file)).size > 8 * 1024 * 1024) throw new Error("Account database exceeds inspection limit");
+const { users } = JSON.parse(await readFile(file, "utf8"));
+console.log(users.filter(u => u.status === "pending" && u.googleSub).map(u => ({ id: u.id, email: u.email })));
+'
+```
+
+Check the exact intended account, then stop the gateway before the one-time write. Include any deployment-specific Compose overlays used by your installation in each command:
+
+```bash
+docker compose -f compose.yaml -f compose.google.yaml stop gateway provisioner
+docker compose -f compose.yaml -f compose.google.yaml run --rm --no-deps gateway \
+  node scripts/bootstrap-google-admin.mjs --gateway-stopped '<pending-user-UUID>' '<exact-Google-email>'
+docker compose -f compose.yaml -f compose.google.yaml up -d gateway provisioner
+```
+
+The bootstrap rejects an incorrect email, an unverified/non-pending account, or an installation that already has an active Google administrator. It approves the selected Google account with its own runner identity and records an audit event; it does not merge it with the legacy primary-workspace account. Sign in with Google again after completion. Never run the bootstrap concurrently with the gateway: account updates use a process-local queue.
 
 ### Management pages
 
 | URL | Management functions |
 | --- | --- |
-| `/account` | Current user's runner, projects, Google link, and password settings |
+| `/account` | Current user's runner, projects, and Google link |
 | `/admin` | User/approval/session/client counts, pending approvals, recent activity |
 | `/admin/users` | Search and status filters; account detail, approval, suspension, role changes, revoke all authentication |
 | `/admin/projects` | Owner-specific project list and search; register existing directories; Git status; unregister or permanently delete with name confirmation |
-| `/admin/usage` | Live and historical CPU, memory, disk and network charts; host, all runners or one owner; period averages, sampled peaks and transfer totals |
+| `/admin/usage` | Live and historical CPU, memory, disk and network charts; host, all runners or one owner; period averages, P50/P95/P99, sampled peaks and transfer totals |
 | `/admin/runners` | Per-user connectivity, lifecycle operations, network access and resource/quota controls |
 | `/admin/processes` | Owner/status filters; process detail, paged logs, stop a running process |
 | `/admin/connections` | Browser sessions and individual revocation; OAuth clients, callback URLs and grant counts; client removal with ID confirmation |
@@ -118,7 +144,7 @@ The interactive setup command:
 - creates the host workspace directory;
 - detects the host UID and GID;
 - asks for the public domain and ACME email;
-- generates the administrator scrypt hash without storing the password;
+- generates the legacy bootstrap scrypt field for configuration compatibility (this does not enable password login);
 - writes a mode-`0600` `.env` file with absolute host paths;
 - builds the Fedora runner, gateway, and Caddy stack;
 - starts the services with Docker Compose.
@@ -205,18 +231,18 @@ Errors include `error.code`, `error.message`, and optional `error.details`.
 | Area      | Tools                                                                                       |
 | --------- | ------------------------------------------------------------------------------------------- |
 | Projects  | `project_list`, `project_register`, `project_clone`, `project_unregister`, `project_delete` |
-| Files     | `file_list`, `file_read`, `image_read`, `file_search`, `file_apply_patch`                   |
+| Files     | `file_list`, `file_read`, `file_search`, `file_apply_patch`                   |
 | Commands  | `command_run`, `command_output`                                                             |
 | Processes | `process_start`, `process_list`, `process_logs`, `process_stop`                             |
 | Git       | `git_read`, `git_commit`                                                                 |
 
-The catalog has 18 tools. Use `git_read` with `operation: "status" | "diff" | "log"`; `staged` applies to diffs and `limit` to logs. This replaces `git_status`, `git_diff`, and `git_log`. Use `process_list` (optionally filtered by `project_id`) for current process state instead of `process_status`. Refresh the connected client's tool catalog after updating.
+The catalog has 17 tools. Use `git_read` with `operation: "status" | "diff" | "log"`; `staged` applies to diffs and `limit` to logs. This replaces `git_status`, `git_diff`, and `git_log`. Use `process_list` (optionally filtered by `project_id`) for current process state instead of `process_status`. Refresh the connected client's tool catalog after updating.
 
 The browser UI contains connection instructions, OAuth consent, and error pages. The separate `/security` introduction page has been removed; the security model is documented below.
 
 `command_run` and `process_start` require `network_intent` to be `none`, `read`, or `write`. This value is used for OAuth authorization, ChatGPT confirmation policy, and auditing; it is not a runner-side network firewall. Command and Git output over 64 KiB is saved in runner data and paginated through `command_output`. Process logs use the `process_logs` cursor.
 
-`image_read` validates a project image and returns a short-lived HTTPS URL. The gateway serves the image through the runner without mounting the workspace into the gateway; the URL is a bearer credential and expires after ten minutes.
+The `image_read` tool and its signed `/media` URLs have been removed. Refresh the connected client’s tool catalog after upgrading.
 
 Tool annotations distinguish reads, writes, destructive actions, and external communication. Shell calls always advertise `destructiveHint: true` and `openWorldHint: true`. The design follows the [OpenAI tool guidance](https://developers.openai.com/apps-sdk/plan/tools).
 
@@ -251,7 +277,7 @@ Each tool publishes its OAuth policy. Insufficient-scope results include an MCP 
 - Compose applies no default CPU, memory, or command-duration limit. It limits synchronous commands to four and background processes to eight by default; `.env` can change these values.
 - Audit records are stored in `gateway-data/audit.jsonl`. Patch bodies and continuation/token values are omitted; command strings are limited to 2,000 characters.
 
-This service deliberately exposes arbitrary shell execution and destructive file operations to an OAuth-authorized client. Use a unique administrator password and consider firewall, rate limiting, or an additional access-control layer.
+This service deliberately exposes arbitrary shell execution and destructive file operations to an OAuth-authorized client. Secure administrator Google accounts and consider firewall, rate limiting, or an additional access-control layer.
 
 ## Development and verification
 
@@ -277,7 +303,7 @@ docker compose -f compose.yaml -f compose.telemetry.yaml up -d --no-deps --no-bu
 
 These targeted commands preserve running runners and the provisioner. Keep `compose.telemetry.yaml` in subsequent deployment commands. The collector has no network listener and uses Docker's Unix socket plus read-only host observations; treat it as a trusted host administrator. The gateway receives only the read-only `runner-status` volume. The collector does not apply limits, provision environments, or restart jobs.
 
-Open the usage page (`/admin/usage`) to select the host, all runners, or an individual owner's environment and the last hour, day, week, or 30 days. Visible pages update every five seconds; background tabs pause. Charts support pointer and keyboard inspection. Current values and period statistics remain available without JavaScript. Administrator session authorization applies to the page and JSON endpoint (`/admin/telemetry`); ordinary accounts cannot read host or other users' measurements.
+Open the usage page (`/admin/usage`) to select the host, all runners, or an individual owner's environment and the last hour, day, week, or 30 days. Visible pages update every five seconds; background tabs pause. Charts support pointer and keyboard inspection, with a shared average/P50/P95/P99 selector. Displayed timestamps and chart axes follow the browser’s locale and time zone, including daylight-saving changes; stored timestamps remain UTC. Current values and period statistics remain available without JavaScript. Administrator session authorization applies to the page and JSON endpoint (`/admin/telemetry`); ordinary accounts cannot read host or other users' measurements.
 
 Metric definitions:
 
@@ -288,7 +314,7 @@ Metric definitions:
 
 CPU/rate averages are weighted by valid observation time. Peaks are sampled maxima, not guarantees that every short spike was captured. Restarted counters, unavailable collectors, and gaps remain missing rather than being plotted as zero. Disk-space timestamps can be older than CPU/network observations because scans run less frequently. The page distinguishes unavailable or stale data.
 
-History begins when the collector is enabled. There is no reconstructed usage before that time. `runner-status/telemetry` holds atomic current snapshots and append-only hourly/daily JSONL shards: five-second observations for two hours, minute rollups for 48 hours, and hourly rollups for 30 days. `TELEMETRY_MAX_HISTORY_MIB` (default 512) bounds history storage and can shorten effective retention; the UI reports incomplete retained history. `TELEMETRY_MAX_RUNNERS` (default 256) bounds each collection pass; omitted environments make aggregate coverage incomplete. Back up this volume if monitoring history must survive volume removal; ordinary gateway/collector recreation retains it. Long-range views use rollups and preserve sampled maxima and valid transfer totals.
+History begins when the collector is enabled. There is no reconstructed usage before that time. `runner-status/telemetry` holds atomic current snapshots and append-only hourly/daily JSONL shards: five-second observations for two hours, minute rollups for 48 hours, and hourly rollups for 30 days. `TELEMETRY_MAX_HISTORY_MIB` (default 512) bounds history storage and can shorten effective retention; the UI reports incomplete retained history. `TELEMETRY_MAX_RUNNERS` (default 256) bounds each collection pass; omitted environments make aggregate coverage incomplete. Back up this volume if monitoring history must survive volume removal; ordinary gateway/collector recreation retains it. Long-range views use rollups and preserve sampled maxima and valid transfer totals. Percentiles use mergeable, elapsed-time-weighted histograms of valid measurements, with bounded storage and approximation metadata. Historical rollups written before percentile collection have no recoverable distribution: their percentiles remain unavailable instead of being estimated from averages.
 
 The CPU and memory definitions follow [Docker's container statistics](https://docs.docker.com/reference/cli/docker/container/stats/) and [runtime metric documentation](https://docs.docker.com/engine/containers/runmetrics/). Host block traffic follows [Linux block statistics](https://cdn.kernel.org/doc/html/latest/block/stat.html).
 

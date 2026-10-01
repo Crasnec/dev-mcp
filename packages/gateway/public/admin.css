@@ -1669,6 +1669,66 @@ tbody tr:hover {
 .usage-readout-heading {
   flex-wrap: wrap;
 }
+.usage-percentiles {
+  border-top: 1px solid var(--line);
+}
+.usage-percentiles summary {
+  padding: 14px 20px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.usage-percentiles .help {
+  margin: 0;
+  padding: 0 20px 14px;
+  font-size: 12px;
+}
+.usage-chart-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px 24px;
+  margin: 4px 0 16px;
+}
+.usage-chart-controls > div:first-child {
+  flex: 1 1 320px;
+}
+.usage-chart-controls h2 {
+  margin: 0 0 5px;
+  font-size: 15px;
+}
+.usage-chart-controls p,
+.usage-percentile-notice {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.usage-percentile-notice {
+  margin-bottom: 16px;
+}
+.telemetry-stat-options {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.telemetry-stat-options button {
+  min-height: 36px;
+  padding: 6px 12px;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  font-size: 12px;
+}
+.telemetry-stat-options button[aria-pressed="true"] {
+  background: var(--accent-tint);
+  color: var(--accent);
+}
 .usage-status {
   display: flex;
   flex-wrap: wrap;
@@ -1727,6 +1787,9 @@ tbody tr:hover {
 .usage-totals {
   margin: 0;
   padding: 4px 20px 8px;
+}
+.usage-totals-panel {
+  align-self: start;
 }
 .usage-totals:empty {
   display: none;
@@ -2381,6 +2444,9 @@ tbody tr:hover {
   .usage-filter .filter-field {
     flex: 1 1 calc(50% - 4px);
   }
+  .telemetry-stat-options button {
+    min-height: 40px;
+  }
   .usage-filter button {
     flex: 1 0 100%;
   }
@@ -2455,15 +2521,7 @@ tbody tr:hover {
     font-size: 11px;
     font-weight: 600;
     letter-spacing: 0;
-  }
-  .usage-table td:nth-child(2)::before {
-    content: "현재";
-  }
-  .usage-table td:nth-child(3)::before {
-    content: "기간 평균";
-  }
-  .usage-table td:nth-child(4)::before {
-    content: "기간 최대";
+    content: attr(data-stat-label);
   }
   .usage-table td.empty-state {
     grid-column: 1 / -1;

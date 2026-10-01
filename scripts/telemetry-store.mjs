@@ -16,6 +16,13 @@ import {
   number,
   validScope,
 } from "./telemetry-metrics.mjs";
+import {
+  distribution,
+  addObservation,
+  compactDistribution,
+  encodeDistribution,
+  decodeDistribution,
+} from "./telemetry-distribution.mjs";
 
 export const RETENTION_MS = {
   raw: 2 * 3600_000,
@@ -41,11 +48,15 @@ export async function readBoundedJson(filename, maxBytes = MAX_FILE_BYTES) {
   }
 }
 
-export async function atomicJson(filename, value) {
+export async function atomicJson(
+  filename,
+  value,
+  serialized = JSON.stringify(value),
+) {
   await mkdir(path.dirname(filename), { recursive: true, mode: 0o755 });
   const temp = filename + "." + randomUUID() + ".tmp";
   try {
-    await writeFile(temp, JSON.stringify(value), { mode: 0o644 });
+    await writeFile(temp, serialized, { mode: 0o644 });
     await rename(temp, filename);
   } finally {
     await rm(temp, { force: true });
@@ -56,10 +67,19 @@ export function bucket(ts, durationMs) {
   return {
     ts: Math.floor(ts / durationMs) * durationMs,
     durationMs,
+    distributionLimit: durationMs <= 60_000 ? 24 : 256,
     metrics: Object.fromEntries(
       METRICS.map((name) => [
         name,
-        { sum: 0, weightMs: 0, max: null, last: null, lastAt: null, count: 0 },
+        {
+          sum: 0,
+          weightMs: 0,
+          max: null,
+          last: null,
+          lastAt: null,
+          count: 0,
+          distribution: encodeDistribution(distribution()),
+        },
       ]),
     ),
     deltas: Object.fromEntries(DELTAS.map((name) => [name, null])),
@@ -82,6 +102,19 @@ export function addToBucket(target, sample, durationMs) {
     )
       continue;
     const metric = target.metrics[name];
+    const histogram =
+      decodeDistribution(metric.distribution, metric.weightMs) ??
+      distribution();
+    const limit =
+      Number.isInteger(target.distributionLimit) &&
+      target.distributionLimit >= 4 &&
+      target.distributionLimit <= 256
+        ? target.distributionLimit
+        : target.durationMs <= 60_000
+          ? 24
+          : 256;
+    addObservation(histogram, value, durationMs, limit);
+    metric.distribution = encodeDistribution(histogram);
     metric.sum += value * durationMs;
     metric.weightMs += durationMs;
     metric.max = metric.max === null ? value : Math.max(metric.max, value);
@@ -149,12 +182,14 @@ export class TelemetryStore {
     {
       maxBytes = 512 * 1024 * 1024,
       maxFileBytes = MAX_FILE_BYTES,
+      maxCheckpointBytes = MAX_FILE_BYTES,
       intervalMs = 5000,
     } = {},
   ) {
     this.directory = directory;
     this.maxBytes = maxBytes;
     this.maxFileBytes = maxFileBytes;
+    this.maxCheckpointBytes = maxCheckpointBytes;
     this.intervalMs = intervalMs;
     this.pending = {};
     this.lastPrunedAt = 0;
@@ -363,11 +398,47 @@ export class TelemetryStore {
       }
     }
     this.lastTs = Math.max(this.lastTs, ts);
-    await atomicJson(path.join(this.directory, "pending.json"), {
+    const checkpoint = {
       schemaVersion: 1,
       ts: this.lastTs,
       scopes: this.pending,
-    });
+    };
+    let serialized = JSON.stringify(checkpoint);
+    while (Buffer.byteLength(serialized) > this.maxCheckpointBytes) {
+      let compacted = false;
+      for (const tiers of Object.values(this.pending)) {
+        for (const current of Object.values(tiers)) {
+          const limit =
+            current.distributionLimit ??
+            (current.durationMs <= 60_000 ? 24 : 256);
+          if (limit <= 4) {
+            continue;
+          }
+          current.distributionLimit = Math.max(4, Math.floor(limit / 2));
+          compacted = true;
+          for (const metric of Object.values(current.metrics)) {
+            const histogram = decodeDistribution(
+              metric.distribution,
+              metric.weightMs,
+            );
+            if (!histogram) {
+              continue;
+            }
+            compactDistribution(histogram, current.distributionLimit);
+            metric.distribution = encodeDistribution(histogram);
+          }
+        }
+      }
+      if (!compacted) {
+        throw new Error("Telemetry checkpoint exceeds limit");
+      }
+      serialized = JSON.stringify(checkpoint);
+    }
+    await atomicJson(
+      path.join(this.directory, "pending.json"),
+      checkpoint,
+      serialized,
+    );
     if (ts - this.lastPrunedAt >= 60_000) {
       await this.prune(ts);
     }

@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdir, mkdtemp, rm, truncate, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  truncate,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -104,6 +111,149 @@ function rollup(
 }
 
 describe("read-only telemetry history", () => {
+  it("returns elapsed weighted P50/P95/P99 from real samples across rollups and collector restarts", async () => {
+    const h = await fixture();
+    let writer = new CollectorStore(h.root);
+    await writer.initialize(NOW - 100000);
+    const observations = [
+      [NOW - 80000, 0, 20000],
+      [NOW - 60000, 0, 20000],
+      [NOW - 50000, 0, 10000],
+      [NOW - 30000, 1, 20000],
+      [NOW - 10000, 1, 20000],
+      [NOW - 5000, 1, 5000],
+      [NOW - 1000, 8, 4000],
+      [NOW, 16, 1000],
+    ];
+    for (const [index, [ts, cpu, duration]] of observations.entries()) {
+      if (index === 3) {
+        writer = new CollectorStore(h.root);
+        await writer.initialize(NOW - 50000);
+      }
+      await writer.record(
+        {
+          host: collectorSample({
+            ts,
+            intervalMs: duration,
+            values: { cpuUsedCores: cpu },
+          }),
+        },
+        ts,
+      );
+    }
+    for (const range of ["1h", "24h", "7d", "30d"] as TelemetryRange[]) {
+      const result = await h.store.read("host", range);
+      expect(result.statistics.cpuUsedCores).toMatchObject({
+        p50: 0,
+        p95: 1,
+        p99: 8,
+        observedMs: 100000,
+        percentileObservedMs: 100000,
+        percentileCoverageRatio: 1,
+        percentileComplete: true,
+      });
+      expect(result.statistics.cpuUsedCores.average).toBeCloseTo(0.93);
+      expect(
+        result.statistics.cpuUsedCores.percentileRelativeError,
+      ).toBeLessThan(0.011);
+    }
+    const last = (await h.store.read("host", "1h")).series.at(-1)!;
+    expect(last.values.cpuUsedCores).toBeCloseTo(9.6);
+    expect(last.p50.cpuUsedCores).toBe(8);
+    expect(last.p95.cpuUsedCores).toBe(16);
+    expect(last.p99.cpuUsedCores).toBe(16);
+    expect(last.percentileCoverageRatio.cpuUsedCores).toBe(1);
+  });
+
+  it("leaves old or malformed rollup percentiles unavailable instead of treating their means as a distribution", async () => {
+    const h = await fixture();
+    const at = Math.floor(NOW / 60000) * 60000 - 60000;
+    const old = rollup(at, 60000, 5, 60000, 50);
+    await h.history("host", "minute", [old]);
+    const result = await h.store.read("host", "24h");
+    expect(result.statistics.cpuUsedCores).toMatchObject({
+      average: 5,
+      max: 50,
+      p50: null,
+      p95: null,
+      p99: null,
+      percentileObservedMs: 0,
+      percentileCoverageRatio: 0,
+      percentileComplete: false,
+    });
+    expect(
+      result.series.every((point) => point.p99.cpuUsedCores === null),
+    ).toBe(true);
+    await h.history("host", "minute", [
+      {
+        ...old,
+        metrics: {
+          cpuUsedCores: {
+            ...old.metrics.cpuUsedCores,
+            distribution: [1, 0, "bad-input"],
+          },
+        },
+      },
+    ]);
+    expect(
+      (await h.store.read("host", "24h")).statistics.cpuUsedCores.p95,
+    ).toBeNull();
+  });
+
+  it("marks distributions incomplete when new observations join a legacy pending bucket", async () => {
+    const h = await fixture();
+    const first = new CollectorStore(h.root);
+    await first.initialize(NOW - 10000);
+    await first.record(
+      {
+        host: collectorSample({
+          ts: NOW - 5000,
+          intervalMs: 5000,
+          values: { cpuUsedCores: 1 },
+        }),
+      },
+      NOW - 5000,
+    );
+    const checkpoint = JSON.parse(
+      await readFile(path.join(h.root, "pending.json"), "utf8"),
+    );
+    for (const tier of ["minute", "hour"]) {
+      for (const metric of Object.values(
+        checkpoint.scopes.host[tier].metrics,
+      ) as Array<Record<string, unknown>>)
+        delete metric.distribution;
+    }
+    await h.json("pending.json", checkpoint);
+    const resumed = new CollectorStore(h.root);
+    await resumed.initialize(NOW - 5000);
+    await resumed.record(
+      {
+        host: collectorSample({
+          ts: NOW,
+          intervalMs: 5000,
+          values: { cpuUsedCores: 8 },
+        }),
+      },
+      NOW,
+    );
+    for (const range of ["24h", "7d", "30d"] as TelemetryRange[]) {
+      expect(
+        (await h.store.read("host", range)).statistics.cpuUsedCores,
+      ).toMatchObject({
+        average: 4.5,
+        p50: null,
+        p95: null,
+        p99: null,
+        percentileObservedMs: 5000,
+        percentileCoverageRatio: 0.5,
+        percentileComplete: false,
+      });
+    }
+    // Raw observations still contain the actual old values and remain usable.
+    expect(
+      (await h.store.read("host", "1h")).statistics.cpuUsedCores,
+    ).toMatchObject({ p50: 1, p95: 8, p99: 8, percentileComplete: true });
+  });
   it("reads the actual collector's current, raw and open rollup files consistently", async () => {
     const h = await fixture();
     const writer = new CollectorStore(h.root);

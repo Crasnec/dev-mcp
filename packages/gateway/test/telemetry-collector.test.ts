@@ -18,7 +18,14 @@ import {
   TelemetryStore,
   readBoundedJson,
   RETENTION_MS,
+  bucket,
+  addToBucket,
 } from "../../../scripts/telemetry-store.mjs";
+import {
+  decodeDistribution,
+  distributionWeight,
+} from "../../../scripts/telemetry-distribution.mjs";
+import { METRICS } from "../../../scripts/telemetry-metrics.mjs";
 import {
   Collector,
   DockerApi,
@@ -402,6 +409,105 @@ describe("collector ownership and storage isolation", () => {
 });
 
 describe("bounded telemetry history", () => {
+  it("compacts an oversized checkpoint without losing metric weights, sums, maxima or byte totals and restores its budget", async () => {
+    const dir = await directory();
+    const store = new TelemetryStore(dir, { maxCheckpointBytes: 12000 });
+    await store.initialize(NOW);
+    const hour = bucket(NOW, 3600000);
+    const minute = bucket(NOW + 300000, 60000);
+    for (let i = 0; i < 256; i++) {
+      const value = 2 ** (i / 16);
+      const observation = sample({
+        ts: NOW + (i + 1) * 1000,
+        intervalMs: 1000,
+        values: Object.fromEntries(METRICS.map((metric) => [metric, value])),
+        deltas: { networkRxBytes: 10 },
+      });
+      addToBucket(hour, observation, 1000);
+      if (i < 24) {
+        addToBucket(minute, observation, 1000);
+      }
+    }
+    const original = structuredClone(hour.metrics.cpuUsedCores);
+    const originalDelta = hour.deltas.networkRxBytes;
+    store.pending.host = { minute, hour };
+    await store.record(
+      { host: sample({ ts: NOW + 359000, intervalMs: 0 }) },
+      NOW + 359000,
+    );
+    const persisted = await readFile(path.join(dir, "pending.json"));
+    expect(persisted.byteLength).toBeLessThanOrEqual(12000);
+    expect(hour.distributionLimit).toBeLessThan(256);
+    expect(hour.metrics.cpuUsedCores.sum).toBe(original.sum);
+    expect(hour.metrics.cpuUsedCores.max).toBe(original.max);
+    expect(hour.metrics.cpuUsedCores.weightMs).toBe(original.weightMs);
+    expect(hour.deltas.networkRxBytes).toBe(originalDelta);
+    expect(
+      distributionWeight(
+        decodeDistribution(
+          hour.metrics.cpuUsedCores.distribution,
+          original.weightMs,
+        )!,
+      ),
+    ).toBe(original.weightMs);
+    const resumed = new TelemetryStore(dir, { maxCheckpointBytes: 12000 });
+    await resumed.initialize(NOW + 359000);
+    expect(resumed.pending.host.hour.distributionLimit).toBe(
+      hour.distributionLimit,
+    );
+    await resumed.record(
+      {
+        host: sample({
+          ts: NOW + 360000,
+          intervalMs: 1000,
+          values: { cpuUsedCores: 2 ** 20 },
+          deltas: { networkRxBytes: 100 },
+        }),
+      },
+      NOW + 360000,
+    );
+    expect(resumed.pending.host.hour.metrics.cpuUsedCores.sum).toBe(
+      original.sum + 2 ** 20 * 1000,
+    );
+    expect(resumed.pending.host.hour.deltas.networkRxBytes).toBe(
+      originalDelta + 100,
+    );
+    const restored = decodeDistribution(
+      resumed.pending.host.hour.metrics.cpuUsedCores.distribution,
+      original.weightMs + 1000,
+    )!;
+    expect(restored.bins.size).toBeLessThanOrEqual(
+      resumed.pending.host.hour.distributionLimit,
+    );
+    expect(distributionWeight(restored)).toBe(original.weightMs + 1000);
+  });
+
+  it("keeps dense minute/day and hour/day histogram shards within the existing file bound", () => {
+    const minute = bucket(NOW, 60000);
+    const hour = bucket(NOW, 3600000);
+    for (let i = 0; i < 720; i++) {
+      const observation = sample({
+        ts: NOW + (i + 1) * 5000,
+        intervalMs: 5000,
+        values: Object.fromEntries(
+          METRICS.map((metric, index) => [
+            metric,
+            1.23456789012345 * 2 ** (((i * 17 + index * 11) % 1440) / 16 - 20),
+          ]),
+        ),
+      });
+      addToBucket(hour, observation, 5000);
+      if (i < 60)
+        addToBucket(minute, { ...observation, intervalMs: 1000 }, 1000);
+    }
+    expect(
+      Buffer.byteLength(JSON.stringify(minute) + "\n") * 1440,
+    ).toBeLessThan(8 * 1024 * 1024);
+    expect(Buffer.byteLength(JSON.stringify(hour) + "\n") * 24).toBeLessThan(
+      8 * 1024 * 1024,
+    );
+    expect(Buffer.byteLength(JSON.stringify(hour))).toBeLessThan(64 * 1024);
+  });
   it("splits intervals at bucket boundaries and keeps weighted totals exact", async () => {
     const store = new TelemetryStore(await directory());
     await store.initialize(NOW);

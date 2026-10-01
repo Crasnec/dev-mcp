@@ -196,6 +196,22 @@ export class UserStore {
           "마지막 관리자는 비활성화하거나 일반 사용자로 변경할 수 없습니다.",
         );
       }
+      if (
+        user.role === "admin" &&
+        user.status === "active" &&
+        user.googleSub &&
+        (changes.role !== "admin" || changes.status !== "active") &&
+        db.users.filter(
+          (entry) =>
+            entry.role === "admin" &&
+            entry.status === "active" &&
+            entry.googleSub,
+        ).length === 1
+      ) {
+        throw new Error(
+          "마지막 Google 로그인 관리자는 비활성화하거나 일반 사용자로 변경할 수 없습니다.",
+        );
+      }
       Object.assign(user, changes);
       user.authVersion += 1;
       revokeSessions(db, id);

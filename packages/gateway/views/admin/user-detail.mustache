@@ -3,7 +3,7 @@
   <section class="panel padded">
     <h2>계정 정보</h2>
     {{#target.googleLinked}}<p class="context-message">Google 로그인 · {{target.email}}</p>{{/target.googleLinked}}
-    <dl class="properties"><div><dt>사용자 ID</dt><dd><code>{{target.id}}</code></dd></div><div><dt>가입일</dt><dd>{{target.createdLabel}}</dd></div><div><dt>로그인 세션</dt><dd>{{sessionCount}}개</dd></div></dl>
+    <dl class="properties"><div><dt>사용자 ID</dt><dd><code>{{target.id}}</code></dd></div><div><dt>가입일</dt><dd><time datetime="{{target.createdDateTime}}" data-local-time>{{target.createdLabel}}</time></dd></div><div><dt>로그인 세션</dt><dd>{{sessionCount}}개</dd></div></dl>
     <form method="post" action="/admin/users/{{target.id}}">
       {{> partials/csrf}}
       <label>계정 상태<select name="status">{{#statuses}}<option value="{{value}}" {{#selected}}selected{{/selected}}>{{label}}</option>{{/statuses}}</select></label>

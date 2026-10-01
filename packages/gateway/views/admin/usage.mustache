@@ -11,18 +11,27 @@
     <section class="panel usage-readout" aria-labelledby="usage-readout-title">
       <div class="panel-heading usage-readout-heading">
         <div><h2 id="usage-readout-title">{{scopeLabel}}</h2><p>{{rangeLabel}} · 현재 값과 기간 통계</p></div>
-        <dl class="usage-status"><div><dt>마지막 측정</dt><dd data-telemetry-observed-at>{{observedAtLabel}}</dd></div><div><dt>기록</dt><dd data-telemetry-coverage>{{coverageLabel}}</dd></div></dl>
+        <dl class="usage-status"><div><dt>마지막 측정</dt><dd><time datetime="{{observedDateTime}}" data-local-time data-time-precision="second" data-telemetry-observed-at>{{observedAtLabel}}</time></dd></div><div><dt>기록</dt><dd data-telemetry-coverage>{{coverageLabel}}</dd></div></dl>
       </div>
       <div class="table-scroll">
         <table class="usage-table">
           <caption class="sr-only">{{scopeLabel}} 자원 사용 요약 ({{rangeLabel}})</caption>
           <thead><tr><th scope="col">지표</th><th scope="col">현재</th><th scope="col">기간 평균</th><th scope="col">기간 최대</th></tr></thead>
           <tbody>
-            {{#metrics}}<tr><th scope="row">{{label}}</th><td data-telemetry-value="{{key}}">{{current}}</td><td data-telemetry-average="{{key}}">{{average}}</td><td data-telemetry-max="{{key}}">{{max}}</td></tr>{{/metrics}}
+            {{#metrics}}<tr><th scope="row">{{label}}</th><td data-telemetry-value="{{key}}" data-stat-label="현재">{{current}}</td><td data-telemetry-average="{{key}}" data-stat-label="기간 평균">{{average}}</td><td data-telemetry-max="{{key}}" data-stat-label="기간 최대">{{max}}</td></tr>{{/metrics}}
             {{^metrics}}<tr><td colspan="4" class="empty-state">아직 측정값이 없습니다. 수집이 시작되면 이곳에 표시됩니다.</td></tr>{{/metrics}}
           </tbody>
         </table>
       </div>
+      <details class="usage-percentiles">
+        <summary>P50 · P95 · P99</summary>
+        <p class="help">선택 기간 전체의 근사 백분위입니다. 분포 기록이 부족하면 —로 표시합니다.</p>
+        <div class="table-scroll"><table class="usage-table usage-percentile-table">
+          <caption class="sr-only">{{scopeLabel}} 선택 기간 전체 백분위 통계</caption>
+          <thead><tr><th scope="col">지표</th><th scope="col">P50</th><th scope="col">P95</th><th scope="col">P99</th></tr></thead>
+          <tbody>{{#metrics}}<tr><th scope="row">{{label}}</th><td data-telemetry-p50="{{key}}" data-stat-label="P50" title="{{percentileTitle}}">{{p50}}</td><td data-telemetry-p95="{{key}}" data-stat-label="P95" title="{{percentileTitle}}">{{p95}}</td><td data-telemetry-p99="{{key}}" data-stat-label="P99" title="{{percentileTitle}}">{{p99}}</td></tr>{{/metrics}}</tbody>
+        </table></div>
+      </details>
     </section>
     <section class="panel usage-totals-panel" aria-labelledby="usage-totals-title">
       <div class="panel-heading"><div><h2 id="usage-totals-title">기간 누적</h2><p>{{rangeLabel}} 동안 기록된 합계</p></div></div>
@@ -30,6 +39,11 @@
       {{^totals}}<p class="empty-state">아직 누적 기록이 없습니다.</p>{{/totals}}
     </section>
   </div>
+  <div class="usage-chart-controls" data-telemetry-stat-controls hidden>
+    <div><h2>사용량 추이</h2><p>그래프는 시간 구간별, 표는 선택 기간 전체의 근사 백분위입니다. 관측값이 하나인 구간에서는 P50·P95·P99가 같습니다.</p></div>
+    <div class="telemetry-stat-options" role="group" aria-label="차트 통계 선택"><button type="button" data-telemetry-stat="average" aria-pressed="true">평균</button><button type="button" data-telemetry-stat="p50" aria-pressed="false">P50</button><button type="button" data-telemetry-stat="p95" aria-pressed="false">P95</button><button type="button" data-telemetry-stat="p99" aria-pressed="false">P99</button></div>
+  </div>
+  <p class="usage-percentile-notice" data-telemetry-percentile-notice hidden>분포 기록이 없는 구간의 백분위는 표시되지 않습니다. 새로 수집된 구간은 그래프에서 확인할 수 있습니다.</p>
   <div class="usage-charts">
     <section class="panel telemetry-card" aria-labelledby="usage-chart-cpu-title">
       <div class="telemetry-card-heading">
@@ -76,6 +90,7 @@
         <li>CPU는 코어 단위로 표시합니다. 용량 대비 비율은 따로 표시합니다.</li>
         <li>기록은 수집을 시작한 시점부터 쌓이며, 그 이전 구간은 비어 있습니다.</li>
         <li>차트는 기간에 따라 측정값의 평균을 표시합니다. 기간 최대는 실제로 수집된 측정값 중 가장 높은 값입니다.</li>
+        <li>P50·P95·P99는 관측된 시간의 50%·95%·99%가 해당 값 이하였음을 뜻합니다. 값은 근사치이며, 확인 가능한 오차 상한을 차트 툴팁과 통계 값의 도움말에 표시합니다.</li>
       </ul>
     </section>
   </div>

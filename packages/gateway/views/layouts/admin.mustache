@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="/assets/admin.css">
   <link rel="stylesheet" href="/assets/message-dialogs.css">
   <script src="/assets/message-dialogs.js" defer></script>
+  <script src="/assets/local-time.js" defer></script>
   {{#livePage}}<script src="/assets/live-updates.js" defer></script>{{/livePage}}
   {{#liveAudit}}<script src="/assets/audit-updates.js" defer></script>{{/liveAudit}}
   {{#telemetryPage}}<script src="/assets/telemetry.js" defer></script>{{/telemetryPage}}
@@ -33,7 +34,7 @@
         {{> partials/notice}}
         {{{body}}}
       </main>
-      <footer class="workspace-footer"><span>Dev MCP 관리</span><span>시간 표기: UTC</span></footer>
+      <footer class="workspace-footer"><span>Dev MCP 관리</span><span data-local-timezone>시간 표기</span></footer>
     </div>
   </div>
 </body>

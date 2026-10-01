@@ -18,6 +18,7 @@ afterEach(async () => {
   );
 });
 const password = "a-long-user-password";
+const sessionStores = new WeakMap<ReturnType<typeof createApp>, UserStore>();
 
 async function fixture() {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "mcp-users-http-"));
@@ -37,6 +38,7 @@ async function fixture() {
     },
     { users },
   );
+  sessionStores.set(app, users);
   return { app, users, admin, dataDir, auth: new AuthStore(dataDir) };
 }
 type App = ReturnType<typeof createApp>;
@@ -66,21 +68,19 @@ function cookies(response: { headers: Record<string, unknown> }): string {
 function csrf(html: string): string {
   return /name="csrf" value="([^"]+)"/.exec(html)![1]!;
 }
-async function login(app: App, username: string, secret = password) {
-  const page = await inject(app, { method: "GET", url: "/login" });
-  const result = await post(
-    app,
-    "/login",
-    { username, password: secret, csrf: csrf(page.payload) },
-    cookies(page),
-  );
-  return { result, cookie: cookies(result) };
+async function sessionFor(app: App, username: string) {
+  const users = sessionStores.get(app)!;
+  const user = (await users.list()).find(
+    (entry) => entry.username === username,
+  )!;
+  const session = await users.createSession(user);
+  return { cookie: "__Host-dev-mcp-session=" + session.token };
 }
 
 describe("multi-user accounts and administration", () => {
   it("authorizes runner operations, validates limits and rejects stale admin forms", async () => {
     const { app, users, admin, dataDir } = await fixture();
-    const signedIn = await login(app, "admin");
+    const signedIn = await sessionFor(app, "admin");
     const page = await inject(app, {
       method: "GET",
       url: "/admin/runners/" + admin.id,
@@ -133,7 +133,7 @@ describe("multi-user accounts and administration", () => {
       ).toBe(400);
     }
     await users.update(admin.id, target.id, { status: "active", role: "user" });
-    const regular = await login(app, target.username);
+    const regular = await sessionFor(app, target.username);
     expect((await post(app, url, limits, regular.cookie)).statusCode).toBe(403);
     expect((await post(app, url, limits, signedIn.cookie)).statusCode).toBe(
       303,
@@ -184,7 +184,7 @@ describe("multi-user accounts and administration", () => {
 
   it("serves separate ERP pages and assets, enforces guards on every management action", async () => {
     const { app, users, admin, dataDir } = await fixture();
-    const signedIn = await login(app, "admin");
+    const signedIn = await sessionFor(app, "admin");
     const dashboard = await inject(app, {
       method: "GET",
       url: "/admin",
@@ -260,7 +260,7 @@ describe("multi-user accounts and administration", () => {
     expect(account.payload).not.toContain('class="notice"');
     const alice = await legacyUser(users, dataDir, "alice", password);
     await users.update(admin.id, alice.id, { status: "active", role: "user" });
-    const ordinary = await login(app, "alice");
+    const ordinary = await sessionFor(app, "alice");
     const ordinaryAccount = await inject(app, {
       method: "GET",
       url: "/account",
@@ -329,7 +329,7 @@ describe("multi-user accounts and administration", () => {
         role: "user",
       });
     }
-    const signedIn = await login(app, "admin");
+    const signedIn = await sessionFor(app, "admin");
     const response = await inject(app, {
       method: "GET",
       url: "/admin/users?q=a&status=active&page=2&sort=username&direction=desc",
@@ -366,7 +366,7 @@ describe("multi-user accounts and administration", () => {
 
   it("persists signup settings, escapes messages, and revokes sessions and OAuth clients", async () => {
     const { app, users, auth, admin, dataDir } = await fixture();
-    const signedIn = await login(app, "admin");
+    const signedIn = await sessionFor(app, "admin");
     const dashboard = await inject(app, {
       method: "GET",
       url: "/admin",
@@ -518,7 +518,7 @@ describe("multi-user accounts and administration", () => {
         }
         return { ok: true, data: { output: "<script>runner data</script>" } };
       });
-    const signedIn = await login(app, "admin");
+    const signedIn = await sessionFor(app, "admin");
     const dashboard = await inject(app, {
       method: "GET",
       url: "/admin",
@@ -633,17 +633,27 @@ describe("multi-user accounts and administration", () => {
     expect(ipc.mock.calls.length).toBe(count);
   });
 
-  it("does not let another account's successful login reset a user's attempt limit", async () => {
-    const { app, users, admin, dataDir } = await fixture();
-    const alice = await legacyUser(users, dataDir, "alice", password);
-    await users.update(admin.id, alice.id, { status: "active", role: "user" });
-    for (let attempt = 0; attempt < 8; attempt++) {
-      expect((await login(app, "alice", "incorrect")).result.statusCode).toBe(
-        401,
+  it("never authenticates passwords through the retired login endpoint", async () => {
+    const { app, users } = await fixture();
+    const authenticate = vi.spyOn(users, "authenticate");
+    const createSession = vi.spyOn(users, "createSession");
+    const page = await inject(app, { method: "GET", url: "/login" });
+    expect(page.payload).toContain('action="/auth/google"');
+    expect(page.payload).not.toContain('name="password"');
+    expect(page.payload).not.toContain('name="username"');
+    for (const secret of ["incorrect", password]) {
+      const response = await post(
+        app,
+        "/login",
+        { username: "admin", password: secret, csrf: csrf(page.payload) },
+        cookies(page),
       );
+      expect(response.statusCode).toBe(410);
+      expect(response.payload).toContain("Google로 로그인해 주세요");
+      expect(response.headers["set-cookie"]).toBeUndefined();
     }
-    expect((await login(app, "admin")).result.statusCode).toBe(303);
-    expect((await login(app, "alice")).result.statusCode).toBe(429);
+    expect(authenticate).not.toHaveBeenCalled();
+    expect(createSession).not.toHaveBeenCalled();
   });
 
   it("requires approval, protects admin writes with sessions and CSRF, and keeps the last admin", async () => {
@@ -671,15 +681,8 @@ describe("multi-user accounts and administration", () => {
       status: "pending",
       runner: alice.id,
     });
-    expect((await login(app, "alice")).result.statusCode).toBe(401);
-    const adminLogin = await login(app, "admin");
-    expect(adminLogin.result.statusCode).toBe(303);
-    expect(adminLogin.result.headers["set-cookie"]).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining("HttpOnly"),
-        expect.stringContaining("Secure"),
-      ]),
-    );
+    await expect(users.createSession(alice)).rejects.toThrow();
+    const adminLogin = await sessionFor(app, "admin");
     const dashboard = await inject(app, {
       method: "GET",
       url: "/admin",
@@ -708,8 +711,7 @@ describe("multi-user accounts and administration", () => {
       (await post(app, "/admin/users/" + alice.id, update, adminLogin.cookie))
         .statusCode,
     ).toBe(303);
-    const aliceLogin = await login(app, "alice");
-    expect(aliceLogin.result.statusCode).toBe(303);
+    const aliceLogin = await sessionFor(app, "alice");
     const forbidden = await inject(app, {
       method: "GET",
       url: "/admin",
@@ -745,7 +747,7 @@ describe("multi-user accounts and administration", () => {
     );
   });
 
-  it("invalidates browser sessions and OAuth credentials on password change and never resets bootstrap credentials", async () => {
+  it("retires password changes without invalidating existing sessions or OAuth credentials", async () => {
     const { app, users, auth, admin, dataDir } = await fixture();
     const principal = { userId: admin.id, authVersion: admin.authVersion };
     const client = await auth.registerClient("test", [
@@ -756,12 +758,15 @@ describe("multi-user accounts and administration", () => {
       ["workspace:read"],
       principal,
     );
-    const signedIn = await login(app, "admin");
+    const signedIn = await sessionFor(app, "admin");
     const account = await inject(app, {
       method: "GET",
       url: "/account",
       headers: { cookie: signedIn.cookie },
     });
+    expect(account.payload).not.toContain('action="/account/password"');
+    expect(account.payload).not.toContain('type="password"');
+    const before = await readFile(path.join(dataDir, "users.json"), "utf8");
     const newPassword = "a-new-long-password";
     const changed = await post(
       app,
@@ -773,7 +778,11 @@ describe("multi-user accounts and administration", () => {
       },
       signedIn.cookie,
     );
-    expect(changed.statusCode).toBe(303);
+    expect(changed.statusCode).toBe(410);
+    expect(changed.headers["set-cookie"]).toBeUndefined();
+    expect(await readFile(path.join(dataDir, "users.json"), "utf8")).toBe(
+      before,
+    );
     expect(
       (
         await inject(app, {
@@ -782,25 +791,19 @@ describe("multi-user accounts and administration", () => {
           headers: { cookie: signedIn.cookie },
         })
       ).statusCode,
-    ).toBe(303);
+    ).toBe(200);
     expect(
-      (
-        await inject(app, {
-          method: "GET",
-          url: "/mcp",
-          headers: { authorization: "Bearer " + issued.accessToken },
-        })
-      ).statusCode,
-    ).toBe(401);
+      await users.valid((await auth.access(issued.accessToken))!),
+    ).toBeTruthy();
     const refresh = await post(app, "/oauth/token", {
       grant_type: "refresh_token",
       refresh_token: issued.refreshToken,
       client_id: client.clientId,
     });
-    expect(refresh.statusCode).toBe(400);
+    expect(refresh.statusCode).toBe(200);
     const reloaded = new UserStore(dataDir, await hashPassword(password));
-    expect(await reloaded.authenticate("admin", password)).toBeUndefined();
-    expect(await reloaded.authenticate("admin", newPassword)).toBeTruthy();
+    expect(await reloaded.authenticate("admin", password)).toBeTruthy();
+    expect(await reloaded.authenticate("admin", newPassword)).toBeUndefined();
   });
 
   it("binds OAuth grants to each approved user and rejects cached refreshes after disabling an account", async () => {
@@ -818,19 +821,26 @@ describe("multi-user accounts and administration", () => {
       code_challenge: pkceChallenge("v".repeat(64)),
       code_challenge_method: "S256",
     });
+    const aliceSession = await sessionFor(app, "alice");
     const page = await inject(app, {
       method: "GET",
       url: "/oauth/authorize?" + query,
+      headers: { cookie: aliceSession.cookie },
     });
     const transaction = /name="transaction" value="([^"]+)"/.exec(
       page.payload,
     )![1]!;
-    const allowed = await post(app, "/oauth/authorize", {
-      transaction,
-      username: "alice",
-      password,
-      decision: "allow",
-    });
+    const allowed = await post(
+      app,
+      "/oauth/authorize",
+      {
+        transaction,
+        authentication: "session",
+        csrf: csrf(page.payload),
+        decision: "allow",
+      },
+      aliceSession.cookie + "; " + cookies(page),
+    );
     expect(allowed.statusCode).toBe(302);
     const code = new URL(String(allowed.headers.location)).searchParams.get(
       "code",

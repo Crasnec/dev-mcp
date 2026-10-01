@@ -8,7 +8,7 @@
     <section class="panel padded">
       <h2>실행 환경 운영</h2>
       <div data-live-region="runner-state">
-      <dl class="properties"><div><dt>컨테이너 상태</dt><dd>{{containerState}}</dd></div><div><dt>마지막 확인</dt><dd>{{observedLabel}}</dd></div></dl>
+      <dl class="properties"><div><dt>컨테이너 상태</dt><dd>{{containerState}}</dd></div><div><dt>마지막 확인</dt><dd><time datetime="{{observedDateTime}}" data-local-time>{{observedLabel}}</time></dd></div></dl>
       {{^observationFresh}}<p class="help">관리 서비스의 상태 정보가 아직 없거나 오래되었습니다. 새 상태가 확인되면 여기에 표시됩니다.</p>{{/observationFresh}}
       </div>
       <form method="post" action="/admin/runners/{{owner.id}}/operations">

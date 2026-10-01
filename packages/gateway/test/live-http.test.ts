@@ -12,8 +12,6 @@ import { legacyUser } from "./legacy-user.ts";
 
 const temporary: string[] = [];
 const password = "a-long-live-test-password";
-type App = ReturnType<typeof createApp>;
-
 afterEach(async () => {
   vi.restoreAllMocks();
   await Promise.all(
@@ -21,28 +19,12 @@ afterEach(async () => {
   );
 });
 
-function cookies(response: { headers: Record<string, unknown> }): string {
-  const value = response.headers["set-cookie"];
-  return (Array.isArray(value) ? value : value ? [value] : [])
-    .map((entry) => String(entry).split(";")[0])
-    .join("; ");
-}
-
-async function login(app: App, username: string): Promise<string> {
-  const page = await inject(app, { method: "GET", url: "/login" });
-  const csrf = /name="csrf" value="([^"]+)"/.exec(page.payload)![1]!;
-  const response = await inject(app, {
-    method: "POST",
-    url: "/login",
-    headers: {
-      "content-type": "application/x-www-form-urlencoded",
-      origin: "https://dev.example.test",
-      cookie: cookies(page),
-    },
-    payload: new URLSearchParams({ username, password, csrf }).toString(),
-  });
-  expect(response.statusCode).toBe(303);
-  return cookies(response);
+async function login(users: UserStore, username: string): Promise<string> {
+  const user = (await users.list()).find(
+    (entry) => entry.username === username,
+  )!;
+  const session = await users.createSession(user);
+  return "__Host-dev-mcp-session=" + session.token;
 }
 
 function success(data: unknown, extra: Partial<ToolResult> = {}): ToolResult {
@@ -94,7 +76,7 @@ async function fixture() {
       }
       throw new Error("Unexpected runner method: " + method);
     });
-  const cookie = await login(app, "admin");
+  const cookie = await login(users, "admin");
   const get = (url: string, selectedCookie = cookie) =>
     inject(app, {
       method: "GET",
@@ -118,7 +100,7 @@ describe("automatic process and runner updates over HTTP", () => {
       role: "user",
       status: "active",
     });
-    const regularCookie = await login(app, regular.username);
+    const regularCookie = await login(users, regular.username);
     const denied = await get(detailUrl + "/live", regularCookie);
     expect(denied.statusCode).toBe(403);
     expect(ipc).not.toHaveBeenCalled();

@@ -1,15 +1,14 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createHmac } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import inject from "light-my-request";
 import { createApp } from "../src/app.ts";
-import { IpcClient } from "../src/ipc-client.ts";
+import type { IpcClient } from "../src/ipc-client.ts";
 import { UserStore } from "../src/user-store.ts";
-import { createMediaUrl } from "../src/media.ts";
 
 const temporary: string[] = [];
-
 afterEach(async () => {
   await Promise.all(
     temporary
@@ -18,49 +17,28 @@ afterEach(async () => {
   );
 });
 
-describe("media HTTP endpoint", () => {
-  it("serves an image through a signed URL", async () => {
-    const dataDir = await mkdtemp(path.join(os.tmpdir(), "mcp-media-http-"));
+describe("removed image endpoint", () => {
+  it("rejects even a valid previously issued URL without calling a runner", async () => {
+    const dataDir = await mkdtemp(path.join(os.tmpdir(), "mcp-media-removed-"));
     temporary.push(dataDir);
     const users = new UserStore(dataDir, "secret");
     const admin = (await users.list())[0]!;
-    const png = Buffer.from(
-      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
-      "base64",
-    );
-    const ipc = {
-      call: async (
-        method: string,
-        params: Record<string, unknown>,
-        actor: string,
-      ) => {
-        expect(method).toBe("image_read");
-        expect(params).toEqual({
-          project_id: "00000000-0000-4000-8000-000000000000",
-          path: "pixel.png",
-        });
-        expect(actor).toBe("media:test-client");
-        return {
-          ok: true,
-          data: {
-            path: "pixel.png",
-            mimeType: "image/png",
-            size: png.length,
-            base64: png.toString("base64"),
-          },
-          truncated: false,
-        };
-      },
-    } as unknown as IpcClient;
-
-    const projectId = "00000000-0000-4000-8000-000000000000";
-    const media = createMediaUrl("https://dev.example.test", "secret", {
-      projectId,
-      path: "pixel.png",
-      actor: "test-client",
-      userId: admin.id,
-      authVersion: admin.authVersion,
-    });
+    // Sign the old wire format to ensure removal, rather than invalid-token rejection.
+    const claims = Buffer.from(
+      JSON.stringify({
+        v: 1,
+        projectId: "00000000-0000-4000-8000-000000000000",
+        path: "pixel.png",
+        actor: "test-client",
+        userId: admin.id,
+        authVersion: admin.authVersion,
+        expiresAt: Date.now() + 600_000,
+      }),
+    ).toString("base64url");
+    const signature = createHmac("sha256", "secret")
+      .update(claims)
+      .digest("base64url");
+    const call = vi.fn();
     const app = createApp(
       {
         port: 3000,
@@ -69,22 +47,13 @@ describe("media HTTP endpoint", () => {
         runnerSocket: path.join(dataDir, "runner.sock"),
         adminPasswordHash: "secret",
       },
-      { ipc },
+      { users, ipc: { call } as unknown as IpcClient },
     );
-
     const response = await inject(app, {
       method: "GET",
-      url: new URL(media.url).pathname,
+      url: `/media/${claims}.${signature}`,
     });
-    expect(response.statusCode).toBe(200);
-    expect(response.headers["content-type"]).toContain("image/png");
-    expect(response.headers["cache-control"]).toBe("private, no-store");
-    expect(response.rawPayload).toEqual(png);
-    await users.revokeAccess(admin.id, admin.id);
-    const revoked = await inject(app, {
-      method: "GET",
-      url: new URL(media.url).pathname,
-    });
-    expect(revoked.statusCode).toBe(404);
+    expect(response.statusCode).toBe(404);
+    expect(call).not.toHaveBeenCalled();
   });
 });

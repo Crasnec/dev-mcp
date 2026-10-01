@@ -56,8 +56,6 @@ export function authorizationPage(options: {
   clientName: string;
   scopes: Scope[];
   authorizationEndpoint: string;
-  error?: string;
-  username?: string;
   csrf?: string;
   signedInUsername?: string;
   googleEnabled?: boolean;

@@ -126,6 +126,8 @@ describe("Google-only registration and browser login", () => {
     const { app, google } = await fixture();
     for (const route of ["/login", "/signup"]) {
       const page = await get(app, route);
+      expect(page.payload).not.toContain('name="password"');
+      expect(page.payload).not.toContain('name="username"');
       expect(page.headers["referrer-policy"]).toBe("same-origin");
       expect(page.headers["content-security-policy"]).toContain(
         "form-action 'self' https://accounts.google.com;",
@@ -224,11 +226,34 @@ describe("Google-only registration and browser login", () => {
     expect(response.statusCode).toBe(303);
     expect(response.headers.location).toBe("/account");
     expect(cookies(response)).toContain("__Host-dev-mcp-session=");
+    expect(response.headers["set-cookie"]).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/__Host-dev-mcp-session=.*HttpOnly.*Secure/),
+      ]),
+    );
     const account = await get(app, "/account", cookies(response));
     expect(account.payload).toContain(identity.email);
     expect(account.payload).toContain('aria-label="관리 메뉴"');
     expect(account.payload).not.toContain('href="/admin/users"');
     expect(account.payload).not.toContain('action="/account/password"');
+    expect(
+      (await post(app, "/logout", { csrf: "wrong" }, cookies(response)))
+        .statusCode,
+    ).toBe(403);
+    expect((await get(app, "/account", cookies(response))).statusCode).toBe(
+      200,
+    );
+    const logout = await post(
+      app,
+      "/logout",
+      { csrf: csrf(account.payload) },
+      cookies(response),
+    );
+    expect(logout.statusCode).toBe(303);
+    expect(logout.headers.location).toBe("/login");
+    expect(
+      (await get(app, "/account", cookies(response))).headers.location,
+    ).toBe("/login");
     await users.update(admin.id, user.id, { status: "disabled", role: "user" });
     flow = await start(app);
     response = await get(app, flow.callback, flow.jar);
@@ -342,6 +367,9 @@ describe("Google-only registration and browser login", () => {
         state: "mcp-state",
       });
     const page = await get(app, request);
+    expect(page.payload).not.toContain('name="password"');
+    expect(page.payload).not.toContain('name="username"');
+    expect(page.payload).not.toContain('value="allow"');
     expect(page.headers["referrer-policy"]).toBe("same-origin");
     expect(page.headers["content-security-policy"]).toContain(
       "https://accounts.google.com",

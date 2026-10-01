@@ -1,5 +1,15 @@
 import path from "node:path";
 import { open, stat } from "node:fs/promises";
+import {
+  distribution,
+  distributionWeight,
+  addObservation,
+  mergeDistribution,
+  decodeDistribution,
+  percentile,
+  relativeError,
+  type Distribution,
+} from "../../../scripts/telemetry-distribution.mjs";
 
 export const TELEMETRY_METRICS = [
   "cpuUsedCores",
@@ -77,6 +87,11 @@ export interface TelemetryResponse {
     at: number;
     values: Values;
     maxValues: Values;
+    p50: Values;
+    p95: Values;
+    p99: Values;
+    percentileCoverageRatio: Values;
+    percentileRelativeError: Values;
     coverage: Coverage;
   }>;
   statistics: Record<
@@ -86,6 +101,13 @@ export interface TelemetryResponse {
       max: number | null;
       latest: number | null;
       observedMs: number;
+      p50: number | null;
+      p95: number | null;
+      p99: number | null;
+      percentileObservedMs: number;
+      percentileCoverageRatio: number;
+      percentileComplete: boolean;
+      percentileRelativeError: number | null;
     }
   >;
   totals: Record<TelemetryDelta, number | null>;
@@ -107,6 +129,7 @@ type MetricAccumulator = {
   max: number | null;
   last: number | null;
   lastAt: number;
+  histogram: Distribution;
 };
 type NormalizedRow = {
   at: number;
@@ -163,7 +186,14 @@ function accumulators(): Record<TelemetryMetric, MetricAccumulator> {
   return Object.fromEntries(
     TELEMETRY_METRICS.map((metric) => [
       metric,
-      { sum: 0, weightMs: 0, max: null, last: null, lastAt: 0 },
+      {
+        sum: 0,
+        weightMs: 0,
+        max: null,
+        last: null,
+        lastAt: 0,
+        histogram: distribution(),
+      },
     ]),
   ) as Record<TelemetryMetric, MetricAccumulator>;
 }
@@ -398,26 +428,66 @@ export class RunnerTelemetryStore {
       to: now,
       stepMs: config.stepMs,
       current,
-      series: buckets.map((bucket) => ({
-        at: bucket.at,
-        values: Object.fromEntries(
+      series: buckets.map((bucket) => {
+        const summaries = Object.fromEntries(
           TELEMETRY_METRICS.map((metric) => [
             metric,
-            average(bucket.metrics[metric]),
+            percentileSummary(bucket.metrics[metric]),
           ]),
-        ) as Values,
-        maxValues: Object.fromEntries(
-          TELEMETRY_METRICS.map((metric) => [
-            metric,
-            bucket.metrics[metric].max,
+        ) as Record<TelemetryMetric, ReturnType<typeof percentileSummary>>;
+        const percentiles = Object.fromEntries(
+          [
+            "p50",
+            "p95",
+            "p99",
+            "percentileCoverageRatio",
+            "percentileRelativeError",
+          ].map((key) => [
+            key,
+            Object.fromEntries(
+              TELEMETRY_METRICS.map((metric) => [
+                metric,
+                summaries[metric][
+                  key as
+                    | "p50"
+                    | "p95"
+                    | "p99"
+                    | "percentileCoverageRatio"
+                    | "percentileRelativeError"
+                ],
+              ]),
+            ),
           ]),
-        ) as Values,
-        coverage: {
-          ...bucket.coverage,
-          complete:
-            bucket.coverage.complete && bucket.coveredMs >= config.stepMs,
-        },
-      })),
+        ) as Pick<
+          TelemetryResponse["series"][number],
+          | "p50"
+          | "p95"
+          | "p99"
+          | "percentileCoverageRatio"
+          | "percentileRelativeError"
+        >;
+        return {
+          at: bucket.at,
+          ...percentiles,
+          values: Object.fromEntries(
+            TELEMETRY_METRICS.map((metric) => [
+              metric,
+              average(bucket.metrics[metric]),
+            ]),
+          ) as Values,
+          maxValues: Object.fromEntries(
+            TELEMETRY_METRICS.map((metric) => [
+              metric,
+              bucket.metrics[metric].max,
+            ]),
+          ) as Values,
+          coverage: {
+            ...bucket.coverage,
+            complete:
+              bucket.coverage.complete && bucket.coveredMs >= config.stepMs,
+          },
+        };
+      }),
       statistics: Object.fromEntries(
         TELEMETRY_METRICS.map((metric) => [
           metric,
@@ -426,6 +496,7 @@ export class RunnerTelemetryStore {
             max: totalMetrics[metric].max,
             latest: current.values[metric] ?? totalMetrics[metric].last,
             observedMs: totalMetrics[metric].weightMs,
+            ...percentileSummary(totalMetrics[metric]),
           },
         ]),
       ) as TelemetryResponse["statistics"],
@@ -627,12 +698,15 @@ function normalize(
         at <= ts &&
         Number.isFinite(numeric * durationMs)
       ) {
+        const histogram = distribution();
+        addObservation(histogram, numeric, durationMs);
         metrics[metric] = {
           sum: numeric * durationMs,
           weightMs: durationMs,
           max: numeric,
           last: numeric,
           lastAt: ts,
+          histogram,
         };
       }
     } else {
@@ -653,6 +727,8 @@ function normalize(
           max: maximumValue,
           last: number(source.last),
           lastAt: timestamp(source.lastAt, now) ?? ts,
+          histogram:
+            decodeDistribution(source.distribution, weightMs) ?? distribution(),
         };
       }
     }
@@ -681,6 +757,24 @@ function normalize(
 function average(metric: MetricAccumulator): number | null {
   return metric.weightMs > 0 ? metric.sum / metric.weightMs : null;
 }
+function percentileSummary(metric: MetricAccumulator) {
+  const observedMs = distributionWeight(metric.histogram);
+  const ratio =
+    metric.weightMs > 0 ? Math.min(1, observedMs / metric.weightMs) : 0;
+  const complete =
+    metric.weightMs > 0 &&
+    Math.abs(observedMs - metric.weightMs) <=
+      Math.max(1e-6, metric.weightMs * 1e-9);
+  return {
+    p50: complete ? percentile(metric.histogram, 0.5, metric.max) : null,
+    p95: complete ? percentile(metric.histogram, 0.95, metric.max) : null,
+    p99: complete ? percentile(metric.histogram, 0.99, metric.max) : null,
+    percentileObservedMs: observedMs,
+    percentileCoverageRatio: ratio,
+    percentileComplete: complete,
+    percentileRelativeError: complete ? relativeError(metric.histogram) : null,
+  };
+}
 function addMetrics(
   target: Record<TelemetryMetric, MetricAccumulator>,
   source: Record<TelemetryMetric, MetricAccumulator>,
@@ -694,6 +788,7 @@ function addMetrics(
     const current = target[metric];
     current.sum += incoming.sum * fraction;
     current.weightMs += incoming.weightMs * fraction;
+    mergeDistribution(current.histogram, incoming.histogram, fraction);
     current.max = Math.max(current.max ?? 0, incoming.max ?? 0);
     if (incoming.lastAt >= current.lastAt) {
       current.lastAt = incoming.lastAt;

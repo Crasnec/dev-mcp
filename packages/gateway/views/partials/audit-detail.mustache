@@ -10,7 +10,7 @@
       {{#processes}}
       <article class="audit-process-card" data-audit-process="{{id}}" data-live-url="{{liveUrl}}" data-running="{{runningText}}" data-more="{{moreText}}">
         <header data-audit-process-header>
-          <div class="audit-process-identity"><div class="audit-process-facts"><span class="badge {{status}}" data-process-status>{{statusLabel}}</span><span>PID {{pid}}</span><span>{{startedLabel}} 시작</span></div><strong class="audit-process-command">{{command}}</strong><code class="audit-process-id">{{id}}</code></div>
+          <div class="audit-process-identity"><div class="audit-process-facts"><span class="badge {{status}}" data-process-status>{{statusLabel}}</span><span>PID {{pid}}</span><span><time datetime="{{startedDateTime}}" data-local-time>{{startedLabel}}</time> 시작</span></div><strong class="audit-process-command">{{command}}</strong><code class="audit-process-id">{{id}}</code></div>
           <a class="audit-text-link" href="{{href}}">프로세스 상세 →</a>
         </header>
         {{#logError}}<p class="audit-log-error" data-log-error role="alert">{{logError}}</p>{{/logError}}

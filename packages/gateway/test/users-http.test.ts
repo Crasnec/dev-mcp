@@ -197,7 +197,6 @@ describe("multi-user accounts and administration", () => {
       "/runners",
       "/runners/" + admin.id,
       "/processes",
-      "/connections",
       "/audit",
       "/settings",
     ]) {
@@ -432,12 +431,12 @@ describe("multi-user accounts and administration", () => {
     });
     const connections = await inject(app, {
       method: "GET",
-      url: "/admin/connections",
+      url: "/admin/users/" + admin.id,
       headers: { cookie: signedIn.cookie },
     });
     expect(connections.payload).toContain("&lt;img");
-    expect(connections.payload).toContain('class="client-summary"');
-    expect(connections.payload).toContain('class="client-created"');
+    expect(connections.payload).toContain("MCP 연결");
+    expect(connections.payload).toContain("활성 MCP 세션");
     expect(connections.payload).not.toContain(issued.accessToken);
     expect(connections.payload).not.toContain(issued.refreshToken);
     const url = "/admin/connections/clients/" + client.clientId + "/delete";

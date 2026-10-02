@@ -1,6 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { mkdir, open, readFile, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  readlink,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import type { NetworkIntent, ToolResult } from "./protocol.ts";
@@ -25,6 +33,7 @@ interface ProcessRecord {
   signal?: NodeJS.Signals | null;
   endedAt?: string;
   logFile: string;
+  origin?: "mcp" | "terminal";
 }
 interface ProcessRegistry {
   processes: ProcessRecord[];
@@ -38,6 +47,7 @@ export class ProcessService {
   private readonly store: JsonStore<ProcessRegistry>;
   private readonly logDir: string;
   private readonly logCompletions = new Map<string, Promise<ProcessExit>>();
+  private readonly discovered = new Map<string, ProcessRecord>();
 
   constructor(
     private readonly config: RunnerConfig,
@@ -98,11 +108,11 @@ export class ProcessService {
       const child = spawn("/bin/bash", ["-lc", command], {
         cwd: workingDirectory,
         env: cleanEnvironment({
-          home: this.config.dataDir,
-          ...(this.config.gitAuthorName
+          home: this.config.userHome ?? this.config.dataDir,
+          ...(!this.config.userHome && this.config.gitAuthorName
             ? { gitAuthorName: this.config.gitAuthorName }
             : {}),
-          ...(this.config.gitAuthorEmail
+          ...(!this.config.userHome && this.config.gitAuthorEmail
             ? { gitAuthorEmail: this.config.gitAuthorEmail }
             : {}),
         }),
@@ -130,6 +140,7 @@ export class ProcessService {
         startedAt: new Date().toISOString(),
         status: "running",
         logFile,
+        origin: "mcp",
       };
       this.logCompletions.set(id, completion);
       await this.store.update((value) => {
@@ -164,7 +175,10 @@ export class ProcessService {
     await this.refresh();
     const registry = await this.store.read();
     return ok({
-      processes: registry.processes
+      processes: [
+        ...registry.processes,
+        ...(await this.discover(registry.processes)),
+      ]
         .filter((entry) => !projectId || entry.projectId === projectId)
         .map(publicRecord),
     });
@@ -172,9 +186,10 @@ export class ProcessService {
 
   private async status(id: string): Promise<ToolResult> {
     await this.refresh();
-    const record = (await this.store.read()).processes.find(
-      (entry) => entry.id === id,
-    );
+    const record = [
+      ...(await this.store.read()).processes,
+      ...this.discovered.values(),
+    ].find((entry) => entry.id === id);
     return record
       ? ok({ process: publicRecord(record) })
       : fail("PROCESS_NOT_FOUND", `Unknown process: ${id}`);
@@ -186,6 +201,18 @@ export class ProcessService {
     maxBytes = this.config.maxOutputBytes,
   ): Promise<ToolResult> {
     try {
+      if (id.startsWith("workspace:")) {
+        const record = await this.external(id);
+        return record
+          ? ok({
+              output:
+                "터미널에서 시작한 프로세스입니다. 출력은 시작한 터미널에서 확인하세요. MCP process_start로 실행하면 로그를 여기서 볼 수 있습니다.",
+              cursor: "",
+              offset: 0,
+              nextOffset: 0,
+            })
+          : fail("PROCESS_NOT_FOUND", "Terminal process is no longer running");
+      }
       const record = (await this.store.read()).processes.find(
         (entry) => entry.id === id,
       );
@@ -243,6 +270,9 @@ export class ProcessService {
 
   async stop(id: string): Promise<ToolResult> {
     try {
+      if (id.startsWith("workspace:")) {
+        return this.stopExternal(id);
+      }
       const record = (await this.store.read()).processes.find(
         (entry) => entry.id === id,
       );
@@ -316,6 +346,138 @@ export class ProcessService {
     });
   }
 
+  private async discover(managed: ProcessRecord[]): Promise<ProcessRecord[]> {
+    if (!this.config.discoverWorkspaceProcesses) {
+      return [];
+    }
+    const listed = await this.projects.list();
+    if (!listed.ok) {
+      return [];
+    }
+    const roots: Array<{ id: string; root: string }> = [];
+    for (const project of (listed.data as { projects: Array<{ id: string }> })
+      .projects) {
+      try {
+        roots.push({
+          id: project.id,
+          root: (await this.projects.get(project.id)).root,
+        });
+      } catch {}
+    }
+    const processes = new Map<
+      number,
+      {
+        start: string;
+        parent: number;
+        cwd: string;
+        command: string;
+        uid: number;
+      }
+    >();
+    for (const name of await readdir("/proc")) {
+      if (!/^[0-9]+$/.test(name)) {
+        continue;
+      }
+      try {
+        const pid = Number(name);
+        const value = await readFile(`/proc/${pid}/stat`, "utf8");
+        const fields = value.slice(value.lastIndexOf(")") + 2).split(" ");
+        const cwd = await readlink(`/proc/${pid}/cwd`);
+        const command = (await readFile(`/proc/${pid}/comm`, "utf8")).trim();
+        const uid = (await stat(`/proc/${pid}`)).uid;
+        if (fields[0] !== "Z") {
+          processes.set(pid, {
+            start: fields[19]!,
+            parent: Number(fields[1]),
+            cwd,
+            command,
+            uid,
+          });
+        }
+      } catch {}
+    }
+    const managedPids = new Set(
+      managed
+        .filter((entry) => processes.get(entry.pid)?.start === entry.procStart)
+        .map((entry) => entry.pid),
+    );
+    const candidates = new Map<number, ProcessRecord>();
+    for (const [pid, info] of processes) {
+      if (
+        pid === process.pid ||
+        info.uid !== process.getuid?.() ||
+        ["bash", "sh", "sshd", "sshd-session", "sshd-auth"].includes(
+          info.command,
+        )
+      ) {
+        continue;
+      }
+      const root = roots.find(
+        (entry) =>
+          info.cwd === entry.root || info.cwd.startsWith(entry.root + path.sep),
+      );
+      if (!root) {
+        continue;
+      }
+      let ancestor = pid;
+      const visited = new Set<number>();
+      while (ancestor && !visited.has(ancestor) && !managedPids.has(ancestor)) {
+        visited.add(ancestor);
+        ancestor = processes.get(ancestor)?.parent ?? 0;
+      }
+      if (managedPids.has(ancestor)) {
+        continue;
+      }
+      const id = `workspace:${pid}:${info.start}`;
+      candidates.set(pid, {
+        id,
+        pid,
+        procStart: info.start,
+        projectId: root.id,
+        command: info.command,
+        cwd: path.relative(root.root, info.cwd) || ".",
+        networkIntent: "none",
+        startedAt:
+          this.discovered.get(id)?.startedAt ?? new Date().toISOString(),
+        status: "running",
+        logFile: "",
+        origin: "terminal",
+      });
+    }
+    const result = [...candidates.values()].filter(
+      (entry) => !candidates.has(processes.get(entry.pid)!.parent),
+    );
+    this.discovered.clear();
+    for (const entry of result) {
+      this.discovered.set(entry.id, entry);
+    }
+    return result;
+  }
+  private async external(id: string): Promise<ProcessRecord | undefined> {
+    await this.discover((await this.store.read()).processes);
+    return this.discovered.get(id);
+  }
+  private async stopExternal(id: string): Promise<ToolResult> {
+    const record = await this.external(id);
+    if (!record || !(await sameProcess(record.pid, record.procStart))) {
+      return fail("PROCESS_STALE", "Terminal process is no longer running");
+    }
+    process.kill(record.pid, "SIGTERM");
+    if (!(await waitForExit(record.pid, record.procStart, 2000))) {
+      // Revalidate immediately before sending a signal to a potentially reused PID.
+      if (await sameProcess(record.pid, record.procStart)) {
+        process.kill(record.pid, "SIGKILL");
+      }
+      if (!(await waitForExit(record.pid, record.procStart, 2000))) {
+        return fail("PROCESS_STOP_FAILED", "Terminal process remained alive");
+      }
+    }
+    record.status = "stopped";
+    record.endedAt = new Date().toISOString();
+    this.discovered.delete(id);
+    return ok({ process: publicRecord(record) });
+  }
+
   private async markDead(
     id: string,
     status: "exited" | "stopped",
@@ -342,7 +504,9 @@ async function processStart(pid: number): Promise<string> {
 }
 async function sameProcess(pid: number, expected: string): Promise<boolean> {
   try {
-    return (await processStart(pid)) === expected;
+    const value = await readFile(`/proc/${pid}/stat`, "utf8");
+    const fields = value.slice(value.lastIndexOf(")") + 2).split(" ");
+    return fields[0] !== "Z" && fields[19] === expected;
   } catch {
     return false;
   }

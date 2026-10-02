@@ -57,7 +57,9 @@ export class GitService {
       const { root } = await this.projects.get(projectId);
       const result = await execFile("git", args, {
         cwd: root,
-        env: cleanEnvironment({ home: this.config.dataDir }),
+        env: cleanEnvironment({
+          home: this.config.userHome ?? this.config.dataDir,
+        }),
         maxCaptureBytes: 64 * 1024 * 1024,
       });
       if (result.exitCode !== 0) {
@@ -85,7 +87,10 @@ export class GitService {
     paths?: string[],
   ): Promise<ToolResult> {
     try {
-      if (!this.config.gitAuthorName || !this.config.gitAuthorEmail) {
+      if (
+        !this.config.userHome &&
+        (!this.config.gitAuthorName || !this.config.gitAuthorEmail)
+      ) {
         return fail(
           "GIT_IDENTITY_REQUIRED",
           "GIT_AUTHOR_NAME and GIT_AUTHOR_EMAIL must be configured before committing",
@@ -99,9 +104,13 @@ export class GitService {
       for (const selectedPath of selected ?? [])
         await resolveForWrite(root, selectedPath);
       const env = cleanEnvironment({
-        home: this.config.dataDir,
-        gitAuthorName: this.config.gitAuthorName,
-        gitAuthorEmail: this.config.gitAuthorEmail,
+        home: this.config.userHome ?? this.config.dataDir,
+        gitAuthorName: this.config.userHome
+          ? undefined
+          : this.config.gitAuthorName,
+        gitAuthorEmail: this.config.userHome
+          ? undefined
+          : this.config.gitAuthorEmail,
       });
       const add = await execFile(
         "git",

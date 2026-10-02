@@ -24,7 +24,8 @@
 </section>
 <section class="onboarding-step">
   <h2><span class="step-number">2</span>작업 공간 루트</h2>
-  <p class="help">각 계정의 작업 공간이 이 디렉터리 아래 하위 디렉터리로 만들어져, VS Code 같은 호스트 편집기에서 열 수 있습니다. 쓰지 않으면 지금처럼 Docker 볼륨을 씁니다.</p>
+  <p class="help">선택 사항입니다. 비워두면 각 계정의 전용 Docker 볼륨을 사용합니다. 호스트 편집기에서 파일을 직접 열려면 경로를 지정하세요. 각 계정의 작업 공간이 이 경로 아래 하위 디렉터리로 만들어집니다.</p>
+  {{^root}}<p class="context-message" role="status">현재 계정별 Docker 볼륨을 사용하도록 설정되어 있습니다.</p>{{/root}}
   {{#root}}
   {{#rootChecking}}<p class="context-message" role="status">관리 서비스가 <code>{{root}}</code>를 확인하고 있습니다. 잠시 후 자동으로 새로고침됩니다.</p>{{/rootChecking}}
   {{#rootReady}}<p class="context-message" role="status"><code>{{root}}</code> · {{rootMessage}}</p>{{/rootReady}}
@@ -33,10 +34,10 @@
   {{#overlap}}<p class="error-banner" role="alert">이 경로는 다른 실행 환경이 쓰는 호스트 작업 공간(<code>{{overlap}}</code>) 안에 있어 쓸 수 없습니다. 그 실행 환경이 다른 계정의 파일에 접근하지 않도록 바깥 경로를 지정해 주세요.</p>{{/overlap}}
   <form method="post" action="/workspace-root">
     {{> partials/csrf}}
-    <label for="workspace-root">Docker 호스트 기준 절대경로</label>
+    <label for="workspace-root">Docker 호스트 기준 절대경로 (선택)</label>
     <input id="workspace-root" type="text" name="workspaceRoot" maxlength="512" autocomplete="off" spellcheck="false" placeholder="/srv/dev-mcp/workspaces" value="{{rootInput}}">
     <p class="field-hint">디렉터리는 호스트에 미리 있어야 하고, 실행 환경 사용자(DEV_UID)가 쓸 수 있어야 합니다. 이미 있는 디렉터리는 계정에 배정되지 않고, 다른 실행 환경의 호스트 작업 공간 안은 쓸 수 없습니다.</p>
-    <div class="settings-actions"><button class="primary" type="submit" name="mode" value="host">경로 저장하고 확인</button>{{#root}}<button type="submit" name="mode" value="none" formnovalidate>사용 안 함</button>{{/root}}</div>
+    <div class="settings-actions"><button class="primary" type="submit" name="mode" value="host">경로 저장하고 확인</button><button type="submit" name="mode" value="none" formnovalidate>Docker 볼륨 사용</button></div>
   </form>
 </section>
 <section class="onboarding-step">

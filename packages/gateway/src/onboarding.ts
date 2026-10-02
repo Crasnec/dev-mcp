@@ -251,8 +251,9 @@ export function createOnboardingApp(options: OnboardingOptions): Express {
 
   app.post("/workspace-root", async (req, res) => {
     requireSession(req);
+    const root = field(req, "workspaceRoot");
     const value =
-      field(req, "mode") === "none" ? undefined : field(req, "workspaceRoot");
+      field(req, "mode") === "none" || !root.trim() ? undefined : root;
     const updated = await installation.setWorkspaceRoot(value);
     await audit.write({
       event: "onboarding_workspace_root",

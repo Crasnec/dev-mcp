@@ -426,6 +426,28 @@ export class AuthStore {
       }
     }
   }
+
+  async revokeConnection(userId: string, clientId: string): Promise<void> {
+    await this.store.update((db) => {
+      for (const records of [db.accessTokens, db.refreshTokens]) {
+        for (const [key, token] of Object.entries(records)) {
+          if (token.userId === userId && token.clientId === clientId) {
+            delete records[key];
+          }
+        }
+      }
+      for (const [key, code] of Object.entries(db.codes)) {
+        if (code.principal.userId === userId && code.clientId === clientId) {
+          delete db.codes[key];
+        }
+      }
+    });
+    for (const [key, cached] of this.recentRefreshes) {
+      if (!(await this.access(cached.value.accessToken))) {
+        this.recentRefreshes.delete(key);
+      }
+    }
+  }
 }
 
 function refreshRequestKey(input: {

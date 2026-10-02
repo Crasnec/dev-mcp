@@ -3,6 +3,8 @@ import path from "node:path";
 export interface RunnerConfig {
   workspaceRoot: string;
   dataDir: string;
+  userHome?: string;
+  discoverWorkspaceProcesses?: boolean;
   socketPath: string;
   ipcSecretFile?: string;
   maxConcurrentCommands: number;
@@ -28,6 +30,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RunnerConfig {
   return {
     workspaceRoot: path.resolve(env.WORKSPACE_ROOT ?? "/workspace"),
     dataDir: path.resolve(env.RUNNER_DATA_DIR ?? "/var/lib/dev-mcp"),
+    ...(env.RUNNER_USER_HOME
+      ? { userHome: path.resolve(env.RUNNER_USER_HOME) }
+      : {}),
+    discoverWorkspaceProcesses:
+      env.RUNNER_DISCOVER_WORKSPACE_PROCESSES === "true",
     socketPath: path.resolve(env.RUNNER_SOCKET ?? "/ipc/runner.sock"),
     ipcSecretFile: env.RUNNER_IPC_SECRET_FILE,
     maxConcurrentCommands: nonNegativeInt(env.MAX_CONCURRENT_COMMANDS, 4) || 1,

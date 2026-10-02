@@ -55,11 +55,11 @@ export class CommandService {
         const result = await runToLog("/bin/bash", ["-lc", command], log, {
           cwd: workingDirectory,
           env: cleanEnvironment({
-            home: this.config.dataDir,
-            ...(this.config.gitAuthorName
+            home: this.config.userHome ?? this.config.dataDir,
+            ...(!this.config.userHome && this.config.gitAuthorName
               ? { gitAuthorName: this.config.gitAuthorName }
               : {}),
-            ...(this.config.gitAuthorEmail
+            ...(!this.config.userHome && this.config.gitAuthorEmail
               ? { gitAuthorEmail: this.config.gitAuthorEmail }
               : {}),
           }),

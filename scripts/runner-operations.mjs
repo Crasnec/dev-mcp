@@ -592,7 +592,14 @@ export class RunnerOperations {
       // The original named volume always remains.
       await this.docker("rename", name, previousName);
       renamed = true;
-      await this.provision(user, limits, false, false, workspace.path);
+      await this.provision(
+        user,
+        limits,
+        false,
+        false,
+        workspace.path,
+        !wasRunning,
+      );
     } catch (error) {
       if (renamed) {
         const replacement = await this.owned(user);
@@ -670,7 +677,9 @@ export class RunnerOperations {
       pids: Math.max(0, host.PidsLimit ?? 0),
       fileSizeMiB: Math.max(0, fsize) / MiB,
       network: Object.keys(info.NetworkSettings.Networks).some(
-        (name) => name !== "none",
+        (name) =>
+          name !== "none" &&
+          name !== "dev-mcp-ssh-" + info.Config.Labels?.["dev-mcp.user"],
       ),
     };
   }
@@ -806,6 +815,7 @@ export class RunnerOperations {
             migrate || quotaStorage,
             false,
             workspace?.path,
+            !wasRunning,
           );
           if (wasRunning) {
             await this.docker("start", name);
@@ -838,7 +848,10 @@ export class RunnerOperations {
     info = (await this.owned(user)).info;
     const network = name;
     for (const attached of Object.keys(info.NetworkSettings.Networks)) {
-      if (!limits.network || attached !== network) {
+      if (
+        attached !== "dev-mcp-ssh-" + user.id &&
+        (!limits.network || attached !== network)
+      ) {
         await this.docker("network", "disconnect", attached, name);
       }
     }

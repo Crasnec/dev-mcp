@@ -1,5 +1,5 @@
 import type { NetworkIntent, RpcRequest, ToolResult } from "./protocol.ts";
-import { errorMessage, fail } from "./protocol.ts";
+import { errorMessage, fail, ok } from "./protocol.ts";
 import type { RunnerConfig } from "./config.ts";
 import { CommandService } from "./command-service.ts";
 import { FileService } from "./file-service.ts";
@@ -7,6 +7,7 @@ import { GitService } from "./git-service.ts";
 import { OutputStore } from "./output-store.ts";
 import { ProcessService } from "./process-service.ts";
 import { ProjectService } from "./project-service.ts";
+import { cleanEnvironment, execFile } from "./subprocess.ts";
 
 export class RunnerRuntime {
   readonly projects: ProjectService;
@@ -34,6 +35,23 @@ export class RunnerRuntime {
     const p = request.params;
     try {
       switch (request.method) {
+        case "development_status": {
+          const env = cleanEnvironment({
+            home: this.config.userHome ?? this.config.dataDir,
+          });
+          const gh = await execFile("gh", ["auth", "status"], {
+            cwd: this.config.workspaceRoot,
+            env,
+            timeoutMs: 5000,
+            maxCaptureBytes: 1024,
+          }).catch(() => undefined);
+          return ok({
+            githubInstalled: !!gh,
+            githubConnected: gh?.exitCode === 0,
+            home: env.HOME,
+            sharedEnvironment: !!this.config.userHome,
+          });
+        }
         case "project_list":
           return this.projects.list();
         case "project_register":

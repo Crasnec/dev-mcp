@@ -143,6 +143,9 @@ export class UserStore {
           "마지막 관리자는 비활성화하거나 일반 사용자로 변경할 수 없습니다.",
         );
       }
+      if (user.role === changes.role && user.status === changes.status) {
+        return publicUser(user);
+      }
       Object.assign(user, changes);
       user.authVersion += 1;
       revokeSessions(db, id);
@@ -239,14 +242,16 @@ export class UserStore {
     });
   }
 
-  async revokeBrowserSession(actorId: string, id: string): Promise<void> {
-    await this.store.update((db) => {
+  async revokeBrowserSession(actorId: string, id: string): Promise<string> {
+    return this.store.update((db) => {
       requireAdmin(db, actorId);
       const key = Object.keys(db.sessions).find((key) => tokenHash(key) === id);
       if (!key) {
         throw new Error("이미 종료되었거나 존재하지 않는 세션입니다.");
       }
+      const userId = db.sessions[key]!.userId;
       delete db.sessions[key];
+      return userId;
     });
   }
 }

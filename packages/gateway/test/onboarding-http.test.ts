@@ -285,7 +285,46 @@ describe("local installer onboarding", () => {
     expect((await installation.read()).workspaceRoot).toBe("/home/me");
   });
 
-  it("can finish without a workspace root and explains missing Google login", async () => {
+  it("saves a blank workspace root as Docker volumes and completes onboarding", async () => {
+    const { users, installation, signIn, post } = await fixture();
+    const { user } = await users.googleAccount(
+      { sub: "installer-subject", email: "installer@example.test" },
+      true,
+    );
+    const session = await signIn();
+    expect(session.page.payload).toContain('name="mode" value="none"');
+    expect(
+      (
+        await post(
+          "/admin",
+          { userId: user.id, csrf: session.csrf },
+          session.cookie,
+        )
+      ).statusCode,
+    ).toBe(303);
+    for (const workspaceRoot of ["", "   "]) {
+      await installation.setWorkspaceRoot("/srv/ws");
+      expect(
+        (
+          await post(
+            "/workspace-root",
+            { csrf: session.csrf, mode: "host", workspaceRoot },
+            session.cookie,
+          )
+        ).statusCode,
+      ).toBe(303);
+      expect((await installation.read()).workspaceRoot).toBeUndefined();
+    }
+    expect(
+      (await post("/complete", { csrf: session.csrf }, session.cookie))
+        .statusCode,
+    ).toBe(303);
+    expect(await installation.read()).toMatchObject({
+      onboardingCompletedBy: "local_installer",
+    });
+  });
+
+  it("explains missing Google login and requires an administrator to complete", async () => {
     const { signIn, post, installation } = await fixture(false);
     const session = await signIn();
     expect(session.page.payload).toContain("Google 로그인이 설정되지 않아");

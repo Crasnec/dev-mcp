@@ -27,10 +27,13 @@ import { PreviewAuth } from "./preview-proxy.ts";
 import { installPreviewRoutes } from "./preview-routes.ts";
 import { installSshRoutes } from "./ssh-routes.ts";
 import { SshAccessStore } from "./ssh-access-store.ts";
+import type { McpSessionManager } from "./mcp-sessions.ts";
 
 const SESSION_IDLE_TIMEOUT_MS = 24 * 60 * 60_000;
 
 interface McpSession {
+  createdAt: number;
+  lastSeenAt: number;
   actor: string;
   userId: string;
   authVersion: number;
@@ -94,6 +97,7 @@ export function createApp(
   };
 
   const touchSession = (sessionId: string, session: McpSession): void => {
+    session.lastSeenAt = Date.now();
     if (session.idleTimer) {
       clearTimeout(session.idleTimer);
     }
@@ -101,6 +105,30 @@ export function createApp(
       void closeSession(sessionId, session);
     }, SESSION_IDLE_TIMEOUT_MS);
     session.idleTimer.unref();
+  };
+
+  const mcpSessions: McpSessionManager = {
+    list: (userId) =>
+      [...sessions]
+        .filter(([, session]) => session.userId === userId)
+        .map(([id, session]) => ({
+          id,
+          clientId: session.actor,
+          createdAt: session.createdAt,
+          lastSeenAt: session.lastSeenAt,
+        })),
+    close: async (userId, filter = {}) => {
+      await Promise.all(
+        [...sessions]
+          .filter(
+            ([id, session]) =>
+              session.userId === userId &&
+              (!filter.id || id === filter.id) &&
+              (!filter.clientId || session.actor === filter.clientId),
+          )
+          .map(([id, session]) => closeSession(id, session)),
+      );
+    },
   };
 
   app.use(
@@ -159,6 +187,7 @@ export function createApp(
     settings,
     installation,
     apps,
+    mcpSessions,
   );
   installOAuthRoutes(app, config, auth, audit, users, !!google);
 
@@ -218,6 +247,8 @@ export function createApp(
         resourceMetadataUrl: `${config.publicBaseUrl}/.well-known/oauth-protected-resource`,
       });
       session = {
+        createdAt: Date.now(),
+        lastSeenAt: Date.now(),
         actor: token.clientId,
         userId: token.userId,
         authVersion: token.authVersion,
@@ -244,7 +275,10 @@ export function createApp(
     } catch (error) {
       await audit.write({
         event: "mcp_error",
-        actor: token.clientId,
+        actor: `${token.userId}:${token.clientId}`,
+        userId: token.userId,
+        clientId: token.clientId,
+        sessionId: sessionHeader(req),
         message: error instanceof Error ? error.message : String(error),
       });
       if (!res.headersSent) {
@@ -273,7 +307,10 @@ export function createApp(
       } catch (error) {
         await audit.write({
           event: "mcp_error",
-          actor: token.clientId,
+          actor: `${token.userId}:${token.clientId}`,
+          userId: token.userId,
+          clientId: token.clientId,
+          sessionId: sessionId,
           message: error instanceof Error ? error.message : String(error),
         });
         if (!res.headersSent) {

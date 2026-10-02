@@ -86,7 +86,7 @@ if (args[0] === "ps") {
   const networks = name === "dddddddddddd" ? state.entryNetworks : state.metadata[name]?.networks;
   if (networks) {
     if (args[1] === "connect") {
-      networks[args[2]] = {};
+      networks[args.at(-2)] = {};
     } else {
       delete networks[args[2]];
     }
@@ -166,8 +166,7 @@ it("creates only approved dedicated runners with isolated mounts and no publishe
   const creation = state.calls.find((args: string[]) => args[0] === "create");
   expect(creation).toEqual(
     expect.arrayContaining([
-      "--read-only",
-      "no-new-privileges:true",
+      "dev-mcp.runtime=unified",
       `type=volume,source=dev-mcp-user-${alice}-workspace,target=/workspace`,
       `type=volume,source=dev-mcp-user-${alice}-data,target=/var/lib/dev-mcp`,
       `type=bind,source=/host/user-ipc/${alice},target=/ipc`,
@@ -314,7 +313,7 @@ it("mounts approved users' workspaces from the onboarding root", async () => {
   });
 });
 
-it("adds a separate workspace to approved users without adding SSH or public ports to their runners", async () => {
+it("runs MCP and SSH together with private auth mounts and no public ports", async () => {
   const f = await fixture([
     { ...account(alice), authVersion: 1 },
     account(bob, "pending"),
@@ -329,11 +328,10 @@ it("adds a separate workspace to approved users without adding SSH or public por
   const state = await f.state();
   expect(state.containers).toEqual({
     ["dev-mcp-user-" + alice]: "running",
-    ["dev-mcp-workspace-" + alice]: "running",
   });
   const workspace = state.calls.find(
     (args: string[]) =>
-      args.includes("dev-mcp.role=workspace") && args[0] === "create",
+      args.includes("dev-mcp.runtime=unified") && args[0] === "create",
   );
   expect(workspace).toEqual(
     expect.arrayContaining([
@@ -343,19 +341,20 @@ it("adds a separate workspace to approved users without adding SSH or public por
       "type=volume,source=dev-mcp-workspace-auth,target=/run/dev-mcp-ssh,volume-subpath=" +
         alice +
         ",readonly",
-      "--cap-drop",
-      "ALL",
+      "SSH_WORKSPACE=true",
     ]),
   );
-  expect(workspace.join(" ")).not.toMatch(
-    /docker.sock|\/ipc|\/var\/lib\/dev-mcp/,
-  );
+  expect(workspace.join(" ")).not.toMatch(/docker.sock|gateway-data/);
   expect(workspace).not.toContain("--publish");
   const runner = state.calls.find(
     (args: string[]) =>
       args[0] === "create" && args.includes("dev-mcp-user-" + alice),
   );
-  expect(runner.join(" ")).not.toMatch(/SSH|sshd|dev-mcp-ssh/);
+  expect(runner).toContain("SSH_WORKSPACE=true");
+  expect(runner).not.toContain("--read-only");
+  expect(state.metadata["dev-mcp-user-" + alice].networks).toHaveProperty(
+    "dev-mcp-ssh-" + alice,
+  );
   const status = JSON.parse(
     await readFile(path.join(dir, "status/status.json"), "utf8"),
   );
@@ -388,7 +387,7 @@ it("applies personal workspace requests once, preserves stop across reconciliati
   expect(
     (await f.state()).calls.filter(
       (args: string[]) =>
-        args[0] === "restart" && args.at(-1) === "dev-mcp-workspace-" + alice,
+        args[0] === "restart" && args.at(-1) === "dev-mcp-user-" + alice,
     ),
   ).toHaveLength(1);
   const status = JSON.parse(await readFile(statusFile, "utf8"));
@@ -410,6 +409,6 @@ it("applies personal workspace requests once, preserves stop across reconciliati
   await f.run(env);
   await f.run(env);
   const state = await f.state();
-  expect(state.containers["dev-mcp-workspace-" + alice]).toBe("exited");
-  expect(state.containers["dev-mcp-user-" + alice]).toBe("running");
+  expect(state.containers["dev-mcp-user-" + alice]).toBe("exited");
+  expect(state.containers["dev-mcp-workspace-" + alice]).toBeUndefined();
 }, 30000);

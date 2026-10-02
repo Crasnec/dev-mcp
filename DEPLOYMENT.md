@@ -1,13 +1,13 @@
 # Current server deployment
 
-Updated on 2026-10-01 at `https://dev.crasnec.com`.
+Updated on 2026-10-02 at `https://dev.crasnec.com`.
 
 ## Deployment command
 
 ```bash
-C="-f compose.yaml -f compose.google.yaml -f compose.server.yaml -f compose.telemetry.yaml"
-sudo docker compose $C build runner gateway provisioner telemetry
-sudo docker compose $C up -d --no-deps --wait gateway provisioner telemetry
+C="-f compose.yaml -f compose.google.yaml -f compose.server.yaml -f compose.telemetry.yaml -f compose.ssh.yaml"
+sudo docker compose $C build runner gateway provisioner telemetry ssh-entry
+sudo docker compose $C up -d --no-deps --wait gateway provisioner telemetry ssh-entry
 node scripts/verify-public.mjs https://dev.crasnec.com
 ```
 
@@ -15,7 +15,45 @@ A new runner image applies to runners created afterwards; existing per-account r
 
 `compose.server.yaml` is a host-local, Git-ignored override. It maps Google credential copies and `/user-ipc` through the Docker host's `/home/crasnec/workspace/dev-mcp/data` directory. This development environment sees that repository as `/workspace/dev-mcp`. Do not replace these mappings with container-local paths.
 
-The public reverse proxy is the existing `plan-app-caddy-1`, connected to `dev-mcp_edge`. Do **not** start this repository's separate `caddy` service on this server: the existing proxy owns ports 80/443. Its active configuration has access logging disabled. Other plan-app services were not changed.
+The public reverse proxy is the standalone `edge-proxy-caddy-1`, operated from `/home/crasnec/services/caddy/compose.yaml` outside application Git repositories and connected to `dev-mcp_edge`. Do **not** start this repository's separate `caddy` service on this server: the standalone proxy owns ports 80/443. Its active configuration has access logging disabled. If the proxy is stopped, start it with `sudo docker compose -f /home/crasnec/services/caddy/compose.yaml up -d`.
+
+## Standalone HTTPS proxy (2026-10-02)
+
+Caddy operations were moved out of plan-app's repository into `/home/crasnec/services/caddy`. The current Caddyfile was retained, including all four existing site routes, and bind-mounted read-only into the official `caddy:2.11.4` image. Certificate and runtime configuration data were copied while the previous proxy was stopped to the independent external volumes `edge-proxy-caddy-data` and `edge-proxy-caddy-config`. The standalone proxy joins the existing `caddy` and `dev-mcp_edge` networks; application containers are managed separately.
+
+plan-app's `deploy/Caddyfile`, `deploy/Caddyfile.example`, `deploy/Dockerfile.caddy` and `compose.edge.yaml` were removed from its entire reachable Git history, including GitHub main. Documentation and Git/Docker exclusion rules were updated. Its four unpushed application commits remain local. Rewritten GitHub main: `3b3a1ff`; local main: `2c6f891`.
+
+The standalone Compose and Caddy configurations validate, the operational directory is outside Git, and dev-mcp public HTTPS health returns 200. Historical sections below refer to the previous proxy names and locations.
+
+## Fresh onboarding reset (2026-10-02)
+
+At the owner's request, all existing accounts, OAuth/browser credentials, account SSH registrations, app/control state, project registries, runner logs, telemetry history and installation assignments were cleared. Existing per-account runner/workspace containers and the legacy shared runner were removed, along with their runtime-data volumes and user networks. The gateway, provisioner, telemetry and SSH entry were then recreated with fresh state.
+
+The administrator's `/home/crasnec/workspace` bind mount and its legacy reserved-workspace assignment are gone. The original host files and the old dedicated user's workspace volume remain preserved and detached; new accounts cannot access them. No account is seeded or restored. Administrators use the same provisioning path as every other account. With the onboarding workspace root left empty, each approved account receives its own named workspace volume.
+
+Google OAuth client configuration and the public HTTPS proxy were retained. SSH entry's host key was retained to preserve client trust; all account authorizations and per-account host keys were cleared. Existing account SSH aliases and MCP authorizations must be configured again after registration.
+
+Verification: zero users, no completed onboarding timestamp, no configured workspace root or reserved workspace, no account runner/workspace containers, and HTTP 200 from the local onboarding code page. Gateway, telemetry and SSH entry are healthy, provisioner is running, and public HTTPS verification passed.
+
+Onboarding is available at `http://127.0.0.1:3100/` on the Docker host or through host SSH port forwarding. Obtain the current installation code from `sudo docker logs dev-mcp-gateway-1 2>&1 | rg onboarding_available`, register through Google, and select that pending account as the first administrator in onboarding. Keep the workspace root empty to use per-account Docker volumes.
+
+The deployment history below predates this reset.
+
+## Empty workspace root form fix (2026-10-02)
+
+The gateway was rebuilt and recreated after fixing empty workspace-root submissions: an empty or whitespace-only value now selects per-account Docker volumes and clears a previously configured host root. The onboarding form always shows **Docker 볼륨 사용** and marks the host path optional. Existing state was retained and onboarding was not completed. Gateway restart invalidates the local onboarding session and generates a new installation code.
+
+Verification: all 24 onboarding and runner-workspace tests passed, formatting and style checks passed, the gateway image compiled successfully, and public HTTPS verification passed. Deployed gateway image: `87c7938d0337`.
+
+## Native SSH workspaces (deployed 2026-10-02)
+
+Commit `3a87f76` is deployed with `compose.ssh.yaml`. Gateway, provisioner, telemetry and SSH entry were built and started; the derived workspace image was built after the runner image. The retired `dev-fedora` remains stopped, and SSH entry now publishes host TCP 2222. Only dev-mcp services, both accounts' runners/workspaces and the existing HTTPS proxy were restarted after the requested shutdown. The plan-app application, matchamap application and PostgreSQL remain stopped.
+
+Existing account runners retain their previous images and storage mounts. Both SSH workspaces use `dev-mcp-workspace:latest` and share their respective account's existing work storage. No data volumes or host workspace files were removed.
+
+Verification: public and local HTTPS health return 200, `verify-public.mjs` passed, both accounts' signed `project_list` calls succeeded, and host port 2222 returns an OpenSSH banner and host key. Gateway, telemetry and SSH entry are healthy; provisioner is running without reconciliation errors.
+
+Neither account has registered an SSH public key yet. Their workspace containers are running, but SSH is disabled by the fresh authorization manifests, so their SSH health checks report unhealthy until a key is registered at `/account/workspace`. Register a public key there and download the generated SSH configuration before connecting with VS Code Remote - SSH.
 
 ## Per-account runners only, onboarding and host workspaces (deployed 2026-10-01)
 
@@ -65,19 +103,23 @@ Rollback:
 5. Start `dev-mcp-runner-1`.
 6. Redeploy the `rollback-20261001-before-accounts` gateway, provisioner and telemetry images.
 
-## Pending: apps public URLs (code deployed, not enabled)
+## Apps public URLs (enabled 2026-10-02)
 
 Apps go under the console host: `https://<name>.dev.crasnec.com`.
 
-1. Deploy a gateway that accepts the console host as `PREVIEW_DOMAIN`; the image deployed on 2026-10-01 refuses it and would not start. Then set `PREVIEW_DOMAIN=dev.crasnec.com` in `.env` and recreate the gateway.
-2. Add a Cloudflare DNS record `*.dev` as a CNAME to `crasnec.duckdns.org`, the same dynamic-DNS target as `dev` and `plan`. Keep it DNS only, so Caddy can answer the HTTP certificate challenges.
-3. Add the app site to plan-app's Caddy, which owns ports 80/443 here:
+Commit `067dd4e` was deployed at about 00:13 UTC on 2026-10-02. Only the gateway image changed (`bf03b6e7a62e`); runner, provisioner and telemetry rebuilt from cache with unchanged IDs. The previous images, and `plan-app-caddy` `e65ed7f25d44`, are tagged `rollback-20261002-before-preview`. Type checking, formatting and all 234 tests passed (the tests ran in the runner image).
+
+1. Done. The gateway was deployed with the documented command, then `PREVIEW_DOMAIN=dev.crasnec.com` was added to `.env` and the gateway recreated. It logs `preview_ready` on port 3200, and from `plan-app-caddy-1` the TLS ask endpoint answers 404 for unknown hosts.
+2. Done. `*.dev.crasnec.com` resolves as a CNAME to `crasnec.duckdns.org`.
+3. Done at about 00:17 UTC. plan-app's Caddy, which owns ports 80/443 here, now has:
    - the global `on_demand_tls { ask http://gateway:3200/__dev-mcp/tls-allowed }`;
    - a `*.dev.crasnec.com { tls { on_demand } reverse_proxy gateway:3200 { flush_interval -1 } }` block, as in this repository's `Caddyfile.preview`.
 
-   Then validate it, rebuild the `plan-app-caddy` image and recreate only that service. It also fronts `plan.crasnec.com` and `matcha.oaknamu.com`. The proxy already shares `dev-mcp_edge` with the gateway.
+   The change is in `/workspace/plan-app/deploy/Caddyfile`, uncommitted, like its earlier `matcha.oaknamu.com` block. `caddy validate` passed, the `plan-app-caddy` image was rebuilt (`25257a1c8a2a`) and only that service was recreated. Afterwards `plan.crasnec.com`, `matcha.oaknamu.com` and `dev.crasnec.com/healthz` returned 200, `verify-public.mjs` passed all 36 checks, and an unknown app host gets no certificate (TLS handshake fails).
 
-4. Verify with an app in the administrator's account:
+   Rollback: remove `PREVIEW_DOMAIN` from `.env` and recreate the gateway, or redeploy `dev-mcp-gateway:rollback-20261002-before-preview`. For the proxy, remove the two blocks above from the Caddyfile and rebuild, or recreate the service from `plan-app-caddy:rollback-20261002-before-preview`.
+
+4. Pending: no app exists yet. Verify with an app in the administrator's account:
    1. Open a private app; it should go through the console sign-in redirect.
    2. Switch it to public and open it again.
 
@@ -131,3 +173,11 @@ Deployed image IDs:
 - Provisioner: `sha256:8017bcc4fdf92732cb9bf38ead9dac3015ba5e1f9cafb822525ba3c2f4a7a1a2`.
 
 The immediately preceding images are retained as `dev-mcp-gateway:rollback-20260922-before-controls` and `dev-mcp-provisioner:rollback-20260922-before-controls`. These are separate from the older single-user rollback assets above. Preserve any subsequently applied runner settings and quota storage when planning a rollback.
+
+## Unified development containers
+
+Build `runner gateway provisioner ssh-entry` with the existing overlays (including `compose.ssh.yaml`), then recreate only `gateway provisioner telemetry ssh-entry`. The provisioner migrates legacy runner/workspace pairs while preserving account storage, keys, limits and stopped state. It removes old containers after the replacement is reachable through IPC. Each active account now has one `dev-mcp-user-<id>` development container; `dev-mcp-workspace-<id>` remains a private network alias for existing SSH configurations.
+
+MCP and SSH share `/workspace` and HOME `/workspace/.dev-mcp-home`. Sudo works inside the container. Use `dev-mcp-install <packages>` to persist a package list and automatically restore it after recreation; use `dev-mcp-install --restore` to retry. Direct changes to the container image filesystem last until recreation. GitHub authentication configured with `gh auth login --web --git-protocol https` and `gh auth setup-git` is usable from both MCP and SSH. Project pages offer HTTPS clone and registration.
+
+SSH and MCP stop/restart together. Per-user telemetry includes both. Browser sessions, active MCP sessions and per-user OAuth grant revocation are in administrator user details; `/admin/connections` redirects to the searchable user list. Audit records resolve users to emails, identify installation events as system actions, preserve target metadata and support `owner` filtering.

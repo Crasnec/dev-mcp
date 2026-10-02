@@ -125,8 +125,11 @@ export class ProjectService {
       }
       const result = await execFile("git", args, {
         cwd: workspace,
-        env: cleanEnvironment({ home: this.config.dataDir }),
+        env: cleanEnvironment({
+          home: this.config.userHome ?? this.config.dataDir,
+        }),
         maxCaptureBytes: this.config.maxOutputBytes,
+        timeoutMs: 300_000,
       });
       if (result.exitCode !== 0) {
         return fail(
@@ -216,7 +219,13 @@ export function validateCloneUrl(value: string): URL {
       { code: "INVALID_REPO_URL" },
     );
   }
-  if (!url.pathname || url.pathname === "/" || url.search || url.hash) {
+  if (
+    (url.port && url.port !== "443") ||
+    !url.pathname ||
+    url.pathname === "/" ||
+    url.search ||
+    url.hash
+  ) {
     throw Object.assign(
       new Error("Repository URL must contain only a repository path"),
       { code: "INVALID_REPO_URL" },

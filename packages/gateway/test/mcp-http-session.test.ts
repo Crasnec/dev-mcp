@@ -19,6 +19,105 @@ afterEach(async () => {
 });
 
 describe("MCP HTTP sessions", () => {
+  it("closes selected user sessions and revokes one user's connection without affecting another", async () => {
+    const dataDir = await mkdtemp(
+      path.join(os.tmpdir(), "mcp-session-management-"),
+    );
+    temporary.push(dataDir);
+    const users = new UserStore(dataDir),
+      store = new AuthStore(dataDir);
+    const admin = await adminAccount(users, dataDir);
+    const pending = await pendingAccount(users, dataDir, "owner");
+    const owner = await users.update(admin.id, pending.id, {
+      role: "user",
+      status: "active",
+    });
+    const client = await store.registerClient("shared-client", [
+      "https://example.test/callback",
+    ]);
+    const tokens = await Promise.all(
+      [admin, owner].map((user) =>
+        store.issueTokens(client.clientId, ["workspace:read"], {
+          userId: user.id,
+          authVersion: user.authVersion,
+        }),
+      ),
+    );
+    const app = createApp(
+      { port: 3000, publicBaseUrl: "https://dev.example.test", dataDir },
+      { users },
+    );
+    const initialize = (token: string) =>
+      mcpPost(app, token, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: LATEST_PROTOCOL_VERSION,
+          capabilities: {},
+          clientInfo: { name: "test", version: "1" },
+        },
+      });
+    const initialized = await Promise.all(
+      tokens.map((issued) => initialize(issued.accessToken)),
+    );
+    const ids = initialized.map((response) =>
+      String(response.headers["mcp-session-id"]),
+    );
+    const login = await users.createSession(admin);
+    const post = (url: string) =>
+      inject(app, {
+        method: "POST",
+        url,
+        headers: {
+          cookie: "__Host-dev-mcp-session=" + login.token,
+          origin: "https://dev.example.test",
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        payload: new URLSearchParams({ csrf: login.csrf }).toString(),
+      });
+    const list = (index: number) =>
+      mcpPost(
+        app,
+        tokens[index]!.accessToken,
+        { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
+        ids[index],
+      );
+    const detail = await inject(app, {
+      method: "GET",
+      url: "/admin/users/" + owner.id,
+      headers: { cookie: "__Host-dev-mcp-session=" + login.token },
+    });
+    expect(detail.payload).toContain(ids[1]);
+    expect(detail.payload).not.toContain(ids[0]);
+    expect(
+      (await post(`/admin/users/${admin.id}/mcp-sessions/${ids[1]}/close`))
+        .statusCode,
+    ).toBe(404);
+    expect(
+      (await post(`/admin/users/${owner.id}/mcp-sessions/${ids[1]}/close`))
+        .statusCode,
+    ).toBe(303);
+    expect((await list(1)).statusCode).toBe(404);
+    expect(await store.access(tokens[1]!.accessToken)).toBeTruthy();
+    expect((await list(0)).statusCode).toBe(200);
+    const replacement = await initialize(tokens[1]!.accessToken);
+    ids[1] = String(replacement.headers["mcp-session-id"]);
+    expect(
+      (
+        await post(
+          `/admin/users/${owner.id}/connections/${client.clientId}/revoke`,
+        )
+      ).statusCode,
+    ).toBe(303);
+    expect((await list(1)).statusCode).toBe(401);
+    expect((await list(0)).statusCode).toBe(200);
+    await inject(app, {
+      method: "DELETE",
+      url: "/mcp",
+      headers: mcpHeaders(tokens[0]!.accessToken, ids[0]),
+    });
+  });
   it("keeps a session across requests and access-token rotation", async () => {
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "mcp-http-session-"));
     temporary.push(dataDir);

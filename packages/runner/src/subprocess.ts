@@ -14,7 +14,9 @@ export function cleanEnvironment(options: {
   gitAuthorEmail?: string;
 }): NodeJS.ProcessEnv {
   return {
-    PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    PATH: `${options.home}/.local/bin:${options.home}/bin:${options.home}/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
+    GIT_TERMINAL_PROMPT: "0",
+    GH_PROMPT_DISABLED: "1",
     HOME: options.home,
     LANG: "C.UTF-8",
     LC_ALL: "C.UTF-8",

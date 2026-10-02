@@ -1,5 +1,5 @@
 services:
-  # Build runner first, then workspace. Only workspace runs an SSH server.
+  # The runner image includes SSH; this image alias is kept for older scripts.
   workspace:
     build:
       context: .
@@ -43,7 +43,7 @@ services:
   provisioner:
     environment:
       WORKSPACE_SSH_ENABLED: "true"
-      WORKSPACE_IMAGE: ${WORKSPACE_IMAGE:-dev-mcp-workspace:latest}
+      WORKSPACE_IMAGE: ${RUNNER_IMAGE:-dev-mcp-runner:latest}
       SSH_ENTRY_DATA_DIR: /ssh-entry-data
       WORKSPACE_AUTH_DIR: /workspace-auth
       WORKSPACE_AUTH_VOLUME: ${COMPOSE_PROJECT_NAME:-dev-mcp}-workspace-auth

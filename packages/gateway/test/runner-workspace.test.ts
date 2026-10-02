@@ -244,7 +244,14 @@ it("keeps host directories across recreation and rejects storage quotas", async 
     storageMiB: 0,
   };
   await ops.apply(user, { action: "apply", limits });
-  expect(provision).toHaveBeenCalledWith(user, limits, false, false, dir);
+  expect(provision).toHaveBeenCalledWith(
+    user,
+    limits,
+    false,
+    false,
+    dir,
+    false,
+  );
   expect(helperCalls("verify")).toHaveLength(1);
   await expect(
     ops.apply(user, {
@@ -307,6 +314,7 @@ it("moves a volume workspace to a host directory and keeps the original volume",
     false,
     false,
     dir,
+    false,
   );
   expect(docker).toHaveBeenCalledWith("rm", name + "-previous");
   expect(docker.mock.calls.flat()).not.toContain("--volumes");

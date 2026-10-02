@@ -28,8 +28,7 @@ const docker = async (...args) =>
   ).stdout.trim();
 const runnerImage =
   process.env.SSH_TEST_RUNNER_IMAGE ?? "dev-mcp-runner:workspace-test";
-const workspaceImage =
-  process.env.SSH_TEST_WORKSPACE_IMAGE ?? "dev-mcp-workspace:workspace-test";
+process.env.RUNNER_IMAGE = runnerImage;
 const entryImage =
   process.env.SSH_TEST_ENTRY_IMAGE ?? "dev-mcp-ssh-entry:workspace-test";
 const entry = project + "-entry";
@@ -41,9 +40,80 @@ const users = [0, 1].map(() => {
 });
 const [alice, bob] = users;
 const registry = new SshRegistry("/ssh-entry-data", "/workspace-auth");
-const runners = new RunnerOperations(docker, async () => {}, temp, project);
+const provision = async (user) => {
+  const runner = "dev-mcp-user-" + user.id;
+  const image = await runners.runnerImage();
+  const { uid, gid } = await workspaces.identity(image);
+  await registry.prepare(user, uid, gid);
+  if (
+    !(await docker(
+      "network",
+      "ls",
+      "--filter",
+      "name=^" + runner + "$",
+      "--format",
+      "{{.ID}}",
+    ))
+  ) {
+    await docker(
+      "network",
+      "create",
+      "--label",
+      "dev-mcp.user=" + user.id,
+      runner,
+    );
+  }
+  await docker(
+    "run",
+    "--rm",
+    "--user",
+    "0:0",
+    "--network",
+    "none",
+    "--mount",
+    `type=volume,source=${runner}-ipc,target=/ipc`,
+    "--entrypoint",
+    "node",
+    image,
+    "-e",
+    'const fs=require("node:fs");fs.chmodSync("/ipc",511);fs.writeFileSync("/ipc/secret","a".repeat(64),{mode:292})',
+  );
+  await docker(
+    "create",
+    "--name",
+    runner,
+    "--hostname",
+    runner,
+    "--label",
+    "dev-mcp.user=" + user.id,
+    "--label",
+    "dev-mcp.runtime=unified",
+    "--network",
+    runner,
+    "--init",
+    "--tmpfs",
+    "/tmp:rw,nosuid,nodev,exec,mode=1777",
+    "--mount",
+    `type=volume,source=${runner}-workspace,target=/workspace`,
+    "--mount",
+    `type=volume,source=${runner}-data,target=/var/lib/dev-mcp`,
+    "--mount",
+    `type=volume,source=${runner}-ipc,target=/ipc`,
+    "--mount",
+    `type=volume,source=${project}-auth,target=/run/dev-mcp-ssh,volume-subpath=${user.id},readonly`,
+    "--env",
+    "RUNNER_IPC_SECRET_FILE=/ipc/secret",
+    "--env",
+    "SSH_WORKSPACE=true",
+    "--env",
+    "SSH_MANIFEST_FILE=/run/dev-mcp-ssh/access.json",
+    "--env",
+    "SSH_CONFIG_FILE=/etc/ssh/dev-mcp-sshd_config",
+    image,
+  );
+};
+const runners = new RunnerOperations(docker, provision, temp, project);
 const workspaces = new WorkspaceOperations(docker, runners, registry, project, {
-  image: workspaceImage,
   authVolume: project + "-auth",
 });
 const clients = new Set();
@@ -169,37 +239,9 @@ try {
     const runner = "dev-mcp-user-" + user.id;
     assert.equal(await runners.inspect(runner), undefined);
     networks.push(runner, "dev-mcp-ssh-" + user.id);
-    volumes.push(runner + "-workspace");
-    containers.push(runner, workspaceContainer(user.id));
-    await docker(
-      "network",
-      "create",
-      "--label",
-      "dev-mcp.user=" + user.id,
-      runner,
-    );
-    await docker(
-      "run",
-      "--detach",
-      "--name",
-      runner,
-      "--label",
-      "dev-mcp.user=" + user.id,
-      "--network",
-      runner,
-      "--read-only",
-      "--cap-drop",
-      "ALL",
-      "--security-opt",
-      "no-new-privileges:true",
-      "--mount",
-      `type=volume,source=${runner}-workspace,target=/workspace`,
-      "--entrypoint",
-      "node",
-      runnerImage,
-      "-e",
-      "setInterval(()=>{},1000)",
-    );
+    volumes.push(runner + "-workspace", runner + "-data", runner + "-ipc");
+    containers.push(runner);
+    await runners.create(user);
     await workspaces.sync(user);
   }
   await registry.sync(users, access);
@@ -218,11 +260,11 @@ try {
   ]);
   assert.deepEqual(
     results.map((value) => value.trim()),
-    [workspaceContainer(alice.id), workspaceContainer(alice.id)],
+    ["dev-mcp-user-" + alice.id, "dev-mcp-user-" + alice.id],
   );
   assert.equal(
     (await ssh(bobConfig, "workspace", "cat /proc/sys/kernel/hostname")).trim(),
-    workspaceContainer(bob.id),
+    "dev-mcp-user-" + bob.id,
   );
   console.log(
     "PASS native ProxyJump and concurrent clients reach their own workspace",
@@ -297,7 +339,30 @@ try {
     { timeout: 15_000 },
   );
   assert.equal(await readFile(temp + "/download", "utf8"), "sftp-files");
-  console.log("PASS shared volume, persistent home, PTY and SFTP");
+  assert.equal(
+    (await ssh(aliceConfig, "workspace", "sudo -n id -u")).trim(),
+    "0",
+  );
+  await ssh(
+    aliceConfig,
+    "workspace",
+    "git config --global dev-mcp.shared yes; dev-mcp-install jq",
+  );
+  assert.equal(
+    await docker(
+      "exec",
+      ownRunner,
+      "git",
+      "config",
+      "--global",
+      "dev-mcp.shared",
+    ),
+    "yes",
+  );
+  assert.equal(await docker("exec", ownRunner, "sudo", "-n", "id", "-u"), "0");
+  console.log(
+    "PASS shared HOME and Git credentials, sudo, package manifest, PTY and SFTP",
+  );
 
   const http = client(
     aliceConfig,
@@ -342,7 +407,7 @@ try {
     "network-blocked-ssh-ok",
   );
   await workspaces.apply(alice, request("stop"));
-  assert.equal((await runners.owned(alice)).info.State.Running, true);
+  assert.equal((await runners.owned(alice)).info.State.Running, false);
   await workspaces.sync(alice, { autoStart: false });
   assert.equal((await workspaces.owned(alice)).info.State.Running, false);
   await workspaces.apply(alice, request("start"));
@@ -357,11 +422,11 @@ try {
     "persistent",
   );
   console.log(
-    "PASS network blocking retains SSH and independent workspace lifecycle preserves data",
+    "PASS network blocking retains SSH and unified development lifecycle preserves data",
   );
 
   const previousHostKey = (await workspaces.observe(alice)).sshHostFingerprint;
-  await docker("rm", "--force", workspaceContainer(alice.id));
+  await docker("rm", "--force", ownRunner);
   await workspaces.sync(alice);
   await waitFor(
     async () => (await workspaces.observe(alice)).sshReady,
@@ -377,8 +442,12 @@ try {
     ).trim(),
     "persistent",
   );
+  assert.match(
+    await ssh(aliceConfig, "workspace", "cat ~/.dev-mcp/packages.txt"),
+    /jq/,
+  );
   console.log(
-    "PASS workspace recreation preserves work files, VS Code home and host key",
+    "PASS recreation preserves work files, HOME, package manifest and host key",
   );
 
   const existing = client(aliceConfig, "workspace", "sleep 60");

@@ -71,12 +71,31 @@ async function users() {
 }
 const operations = new RunnerOperations(
   docker,
-  async (user, limits, quotaStorage, start = true, workspaceDir = "") => {
+  async (
+    user,
+    limits,
+    quotaStorage,
+    start = true,
+    workspaceDir = "",
+    keepStopped = false,
+  ) => {
+    if (registry) {
+      const { uid, gid } = await workspaces.identity(
+        await operations.runnerImage(),
+      );
+      await registry.prepare(user, uid, gid);
+    }
     await execute("bash", [helper, user.id], {
       env: {
         ...process.env,
         GATEWAY_CONTAINER_ID: gatewayId,
         RUNNER_IMAGE_ID: await operations.runnerImage(),
+        RUNNER_GIT_AUTHOR_NAME:
+          user.email?.split("@")[0] ??
+          user.username ??
+          "Dev MCP user " + user.id,
+        RUNNER_GIT_AUTHOR_EMAIL:
+          user.email ?? user.id + "@users.dev-mcp.invalid",
         RUNNER_MEMORY_MIB: String(limits?.memoryMiB ?? 0),
         RUNNER_CPUS: String(limits?.cpus ?? 0),
         RUNNER_PIDS: String(limits?.pids ?? 0),
@@ -85,6 +104,7 @@ const operations = new RunnerOperations(
         RUNNER_QUOTA_STORAGE: String(quotaStorage ?? false),
         RUNNER_QUOTA_VOLUME: project + "-quota-pool",
         RUNNER_START: String(start),
+        RUNNER_KEEP_STOPPED: String(keepStopped),
         RUNNER_WORKSPACE_HOST_DIR: workspaceDir,
       },
       timeout: 300_000,
@@ -270,7 +290,10 @@ async function reconcile() {
       if (
         request?.action !== "stop" &&
         current.status === "active" &&
-        (!info || (!request && info.State.Status === "created"))
+        (!info ||
+          (!request &&
+            info.State.Status === "created" &&
+            info.Config.Labels?.["dev-mcp.keep-stopped"] !== "true"))
       ) {
         // Legacy automatic creation, including retry on the next pass.
         const latest = (await users()).find((entry) => entry.id === user.id);

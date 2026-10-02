@@ -100,6 +100,8 @@ async function fixture() {
       calls.push({ ownerId: owner.id, method, params, actor });
       const state = states.get(owner.id)!;
       switch (method) {
+        case "development_status":
+          return success({ githubInstalled: true, githubConnected: false });
         case "project_list":
           return success({ projects: [state.project] });
         case "project_register":

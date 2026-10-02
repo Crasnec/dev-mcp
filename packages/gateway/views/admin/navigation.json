@@ -89,14 +89,6 @@
     }
   },
   {
-    "key": "connections",
-    "href": "/admin/connections",
-    "label": "연결·세션",
-    "mark": "⇄",
-    "navGroup": "접근·운영",
-    "description": "브라우저 세션과 MCP 클라이언트의 접근을 관리합니다."
-  },
-  {
     "key": "audit",
     "href": "/admin/audit",
     "label": "감사 기록",
@@ -106,7 +98,8 @@
       "href": "/account/audit",
       "label": "작업 기록",
       "description": "내 도구 실행 이유와 작업 이력을 확인합니다."
-    }
+    },
+    "navGroup": "접근·운영"
   },
   {
     "key": "settings",

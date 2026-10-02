@@ -100,6 +100,20 @@ it("preserves original container and volumes if quota migration fails", async ()
   ).toBe(false);
   expect(provision).not.toHaveBeenCalled();
 });
+
+it("keeps the private SSH network when blocking Internet and excludes it from external access status", async () => {
+  const { ops, docker, info } = await fixture();
+  const ssh = "dev-mcp-ssh-" + id;
+  info.NetworkSettings.Networks[ssh] = {};
+  await ops.apply(user, {
+    action: "apply",
+    limits: { ...defaults, network: false },
+  });
+  expect(docker).toHaveBeenCalledWith("network", "disconnect", name, name);
+  expect(docker).not.toHaveBeenCalledWith("network", "disconnect", ssh, name);
+  info.NetworkSettings.Networks = { [ssh]: {} };
+  expect(ops.limits(info).network).toBe(false);
+});
 it("restores the original container name if replacement creation fails", async () => {
   const { ops, docker, provision } = await fixture();
   provision.mockRejectedValue(new Error("create failed"));
@@ -118,7 +132,14 @@ it("does not restart stopped users when changing a file-size limit", async () =>
   info.State = { Running: false, Status: "exited" };
   const limits = { ...defaults, fileSizeMiB: 64 };
   await ops.apply(user, { action: "apply", limits });
-  expect(provision).toHaveBeenCalledWith(user, limits, false, false, undefined);
+  expect(provision).toHaveBeenCalledWith(
+    user,
+    limits,
+    false,
+    false,
+    undefined,
+    true,
+  );
   expect(docker.mock.calls.some((args) => args[0] === "start")).toBe(false);
 });
 it("rejects resource operations on a container labelled for another user", async () => {

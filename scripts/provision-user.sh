@@ -64,6 +64,9 @@ if ! docker network inspect "$container" >/dev/null 2>&1; then
   docker network create --label "dev-mcp.user=$user_id" "$container" >/dev/null
 fi
 resource_args=()
+if [[ "${RUNNER_KEEP_STOPPED:-false}" == true ]]; then
+  resource_args+=(--label dev-mcp.keep-stopped=true)
+fi
 for value in "${RUNNER_MEMORY_MIB:-0}" "${RUNNER_PIDS:-0}" "${RUNNER_FILE_SIZE_MIB:-0}"; do
   [[ "$value" =~ ^[0-9]+$ ]] || exit 2
 done
@@ -107,13 +110,18 @@ if [[ -n "$workspace_host_dir" ]]; then
   resource_args+=(--label dev-mcp.workspace=host)
 fi
 create_command=(run --detach)
+ssh_args=()
+if [[ "${WORKSPACE_SSH_ENABLED:-false}" == true ]]; then
+  ssh_args+=(--mount "type=volume,source=${WORKSPACE_AUTH_VOLUME:-dev-mcp-workspace-auth},target=/run/dev-mcp-ssh,volume-subpath=$user_id,readonly")
+  ssh_args+=(--env SSH_WORKSPACE=true --env SSH_MANIFEST_FILE=/run/dev-mcp-ssh/access.json --env SSH_CONFIG_FILE=/etc/ssh/dev-mcp-sshd_config)
+fi
 if [[ "${RUNNER_START:-true}" == false ]]; then
   create_command=(create)
 fi
 docker "${create_command[@]}" --name "$container" --label "dev-mcp.user=$user_id" \
+  --label dev-mcp.runtime=unified \
   --network "$network" "${resource_args[@]}" \
-  --read-only --init --restart unless-stopped \
-  --cap-drop ALL --security-opt no-new-privileges:true \
+  --init --restart unless-stopped "${ssh_args[@]}" \
   --tmpfs /tmp:rw,nosuid,nodev,exec,mode=1777 \
   --mount "$workspace_mount" \
   --mount "$data_mount" \
@@ -122,8 +130,8 @@ docker "${create_command[@]}" --name "$container" --label "dev-mcp.user=$user_id
   --env WORKSPACE_ROOT=/workspace --env RUNNER_DATA_DIR=/var/lib/dev-mcp \
   --env RUNNER_SOCKET=/ipc/runner.sock \
   --env RUNNER_IPC_SECRET_FILE=/run/dev-mcp-ipc-key \
-  --env "GIT_AUTHOR_NAME=Dev MCP user $user_id" \
-  --env "GIT_AUTHOR_EMAIL=$user_id@users.dev-mcp.invalid" \
+  --env "GIT_AUTHOR_NAME=${RUNNER_GIT_AUTHOR_NAME:-Dev MCP user $user_id}" \
+  --env "GIT_AUTHOR_EMAIL=${RUNNER_GIT_AUTHOR_EMAIL:-$user_id@users.dev-mcp.invalid}" \
   "$runner_image"
 
 echo "Created $container. Refresh the user's execution environment in /admin."

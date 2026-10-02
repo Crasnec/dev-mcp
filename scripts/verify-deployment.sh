@@ -47,11 +47,12 @@ for runner_id in $runner_ids; do
       exit 1
     fi
   done
-  "${docker_command[@]}" exec "$runner_id" sh -c 'test ! -S /var/run/docker.sock && test -z "$(find "$HOME/.ssh" -type f -print -quit 2>/dev/null)" && test ! -e "$HOME/.codex" && test ! -e /var/lib/gateway && test -r /run/dev-mcp-ipc-key'
-  if "${docker_command[@]}" exec "$runner_id" sh -c 'touch /root-filesystem-write-test' 2>/dev/null; then
-    echo "Runner $runner_id root filesystem unexpectedly accepted a write" >&2
+  "${docker_command[@]}" exec "$runner_id" sh -c 'test ! -S /var/run/docker.sock && test ! -e /var/lib/gateway && test -r /run/dev-mcp-ipc-key && test "$HOME" = /workspace/.dev-mcp-home && test "$(sudo -n id -u)" = 0 && command -v gh >/dev/null'
+  readonly="$("${docker_command[@]}" inspect "$runner_id" --format '{{.HostConfig.ReadonlyRootfs}}')"
+  if [[ "$readonly" != false ]]; then
+    echo "Development container must permit package installation" >&2
     exit 1
   fi
 done
 
-echo "Deployment metadata, authentication challenge, mount isolation, and read-only root checks passed."
+echo "Deployment metadata, authentication challenge, mount isolation, and development tools and sudo checks passed."

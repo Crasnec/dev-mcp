@@ -7,6 +7,7 @@ import express, {
 import { createHash } from "node:crypto";
 import type { GatewayConfig } from "./config.ts";
 import type { User, UserStore } from "./user-store.ts";
+import type { McpSessionManager } from "./mcp-sessions.ts";
 import type { AuthStore } from "./auth-store.ts";
 import type { AuditLogger } from "./audit.ts";
 import type { RunnerRouter } from "./runner-router.ts";
@@ -122,6 +123,7 @@ export function installAdminRoutes(
   settings: SettingsStore,
   installation: InstallationStore,
   apps: AppService,
+  mcpSessions: McpSessionManager = { list: () => [], close: async () => {} },
 ): void {
   installConsoleRoutes(
     app,
@@ -134,6 +136,7 @@ export function installAdminRoutes(
     installation,
     apps,
     false,
+    mcpSessions,
   );
   installConsoleRoutes(
     app,
@@ -146,6 +149,7 @@ export function installAdminRoutes(
     installation,
     apps,
     true,
+    mcpSessions,
   );
 }
 
@@ -160,6 +164,7 @@ function installConsoleRoutes(
   installation: InstallationStore,
   apps: AppService,
   selfScope: boolean,
+  mcpSessions: McpSessionManager,
 ): void {
   const base = selfScope ? "/account" : "/admin";
   const router = express.Router();
@@ -353,7 +358,7 @@ function installConsoleRoutes(
           ":owner:" +
           owner.id,
         {
-          timeoutMs: 5000,
+          timeoutMs: method === "project_clone" ? 310_000 : 5000,
         },
       );
   };
@@ -560,12 +565,12 @@ function installConsoleRoutes(
         {
           label: "브라우저 세션",
           value: sessions.length,
-          href: base + "/connections",
+          href: base + "/users",
         },
         {
           label: "MCP 클라이언트",
           value: clients.length,
-          href: base + "/connections",
+          href: base + "/users",
         },
       ],
       pending: all
@@ -614,7 +619,43 @@ function installConsoleRoutes(
     const sessions = (await users.browserSessions()).filter(
       (session) => session.userId === target.id,
     );
+    const [clients, grants, recent] = await Promise.all([
+      auth.clients(),
+      auth.connectionSummary([
+        { userId: target.id, authVersion: target.authVersion },
+      ]),
+      audit.recent(),
+    ]);
     return adminView(req, res, "users", "admin/user-detail", {
+      browserSessions: sessions.map((session) => ({
+        ...session,
+        createdLabel: dateLabel(session.createdAt),
+        expiresLabel: dateLabel(session.expiresAt),
+      })),
+      connections: grants.map((grant) => ({
+        ...grant,
+        name:
+          clients.find((client) => client.clientId === grant.clientId)
+            ?.clientName ?? grant.clientId,
+      })),
+      mcpSessions: mcpSessions.list(target.id).map((session) => ({
+        ...session,
+        name:
+          clients.find((client) => client.clientId === session.clientId)
+            ?.clientName ?? session.clientId,
+        createdLabel: dateLabel(session.createdAt),
+        lastSeenLabel: dateLabel(session.lastSeenAt),
+      })),
+      recent: recent.records
+        .filter(
+          (entry) =>
+            entry.userId === target.id ||
+            entry.actor === target.id ||
+            (typeof entry.actor === "string" &&
+              entry.actor.startsWith(target.id + ":")),
+        )
+        .slice(0, 8)
+        .map((entry) => auditRow(entry, [target, actor(res)])),
       target: userRow(target),
       sessionCount: sessions.length,
       statuses: ["pending", "active", "disabled"].map((value) => ({
@@ -637,7 +678,14 @@ function installConsoleRoutes(
     ) {
       throw new AdminError("올바른 역할과 계정 상태를 선택해 주세요.");
     }
-    await users.update(actor(res).id, String(req.params.id), { role, status });
+    const before = await user(String(req.params.id), res);
+    const updated = await users.update(actor(res).id, before.id, {
+      role,
+      status,
+    });
+    if (updated.authVersion !== before.authVersion) {
+      await mcpSessions.close(before.id);
+    }
     await record(res, "user_updated", { userId: req.params.id, role, status });
     return res.redirect(
       303,
@@ -646,11 +694,58 @@ function installConsoleRoutes(
   });
   router.post("/users/:id/revoke", async (req, res) => {
     await users.revokeAccess(actor(res).id, String(req.params.id));
+    await mcpSessions.close(String(req.params.id));
     await record(res, "user_access_revoked", { userId: req.params.id });
     return res.redirect(
       303,
       base + "/users/" + encodeURIComponent(String(req.params.id)) + "?saved=1",
     );
+  });
+
+  router.post("/users/:id/sessions/:session/revoke", async (req, res) => {
+    const target = await user(String(req.params.id), res);
+    const sessionId = String(req.params.session);
+    if (
+      !(await users.browserSessions()).some(
+        (session) => session.userId === target.id && session.id === sessionId,
+      )
+    ) {
+      throw new AdminError("사용자의 로그인 세션을 찾을 수 없습니다.", 404);
+    }
+    await users.revokeBrowserSession(actor(res).id, sessionId);
+    await record(res, "admin_session_revoked", {
+      userId: target.id,
+      sessionId,
+    });
+    return res.redirect(303, base + "/users/" + target.id + "?saved=1");
+  });
+  router.post("/users/:id/connections/:client/revoke", async (req, res) => {
+    const target = await user(String(req.params.id), res);
+    const clientId = String(req.params.client);
+    await auth.revokeConnection(target.id, clientId);
+    await mcpSessions.close(target.id, { clientId });
+    await record(res, "admin_connection_revoked", {
+      userId: target.id,
+      clientId,
+    });
+    return res.redirect(303, base + "/users/" + target.id + "?saved=1");
+  });
+  router.post("/users/:id/mcp-sessions/:session/close", async (req, res) => {
+    const target = await user(String(req.params.id), res);
+    const sessionId = String(req.params.session);
+    const session = mcpSessions
+      .list(target.id)
+      .find((session) => session.id === sessionId);
+    if (!session) {
+      throw new AdminError("사용자의 MCP 세션을 찾을 수 없습니다.", 404);
+    }
+    await mcpSessions.close(target.id, { id: sessionId });
+    await record(res, "admin_mcp_session_closed", {
+      userId: target.id,
+      clientId: session.clientId,
+      sessionId,
+    });
+    return res.redirect(303, base + "/users/" + target.id + "?saved=1");
   });
 
   router.get("/projects", async (req, res) => {
@@ -680,12 +775,58 @@ function installConsoleRoutes(
     ]);
     return adminView(req, res, "projects", "admin/projects", {
       ...selection,
+      owner: userRow(selection.owner),
       ...state,
+      development: state.ready
+        ? (
+            await call(selection.owner, res, "development_status").catch(
+              () => ({ data: undefined }),
+            )
+          ).data
+        : undefined,
       ...pageOf(sorted.items, req),
       q,
       sort: sorted.state,
       sortHeaders: sorted.headers,
     });
+  });
+  router.post("/projects/clone", async (req, res) => {
+    const owner = await user(
+      selfScope ? actor(res).id : field(req, "owner"),
+      res,
+    );
+    const name = field(req, "name").trim(),
+      repoUrl = field(req, "repo_url").trim(),
+      ref = field(req, "ref").trim();
+    if (
+      !name ||
+      name.length > 200 ||
+      !repoUrl ||
+      repoUrl.length > 2048 ||
+      ref.length > 200
+    ) {
+      throw new AdminError(
+        "프로젝트 이름과 저장소 HTTPS 주소를 입력해 주세요.",
+      );
+    }
+    const result = await call(owner, res, "project_clone", {
+      name,
+      repo_url: repoUrl,
+      ...(ref ? { ref } : {}),
+    });
+    if (!result.ok) {
+      throw new AdminError(
+        result.error?.message ??
+          "저장소를 가져오지 못했습니다. SSH에서 Git 인증을 확인해 주세요.",
+      );
+    }
+    await record(res, "admin_project_cloned", {
+      userId: owner.id,
+      name,
+      repoUrl,
+      ref,
+    });
+    return res.redirect(303, base + "/projects?owner=" + owner.id + "&saved=1");
   });
   router.post("/projects", async (req, res) => {
     const owner = await user(
@@ -724,7 +865,7 @@ function installConsoleRoutes(
       operation: "status",
     });
     return adminView(req, res, "projects", "admin/project-detail", {
-      owner,
+      owner: userRow(owner),
       project,
       gitOutput: git.ok
         ? (git.data as { output: string }).output
@@ -1399,120 +1540,19 @@ function installConsoleRoutes(
     await record(res, "app_deleted", { userId: owner.id, app: app.slug });
     return res.redirect(303, base + "/apps?saved=1");
   });
-  router.get("/connections", async (req, res) => {
-    const all = await users.list();
-    const names = new Map(
-      all.map((entry) => [entry.id, entry.email ?? entry.username]),
-    );
-    const [sessions, clients, grants] = await Promise.all([
-      users.browserSessions(),
-      auth.clients(),
-      auth.connectionSummary(
-        all
-          .filter((entry) => entry.status === "active")
-          .map((entry) => ({
-            userId: entry.id,
-            authVersion: entry.authVersion,
-          })),
-      ),
-    ]);
-    const q = query(req, "q").toLowerCase();
-    const clientRows = clients
-      .filter((client) =>
-        (client.clientName + " " + client.clientId).toLowerCase().includes(q),
-      )
-      .map((client) => ({
-        ...client,
-        createdLabel: dateLabel(client.createdAt),
-        createdDateTime: dateIso(client.createdAt),
-        grants: grants
-          .filter((grant) => grant.clientId === client.clientId)
-          .map((grant) => ({
-            ...grant,
-            username: names.get(grant.userId) ?? "알 수 없음",
-          })),
-      }));
-    const sortedClients = sortList(
-      clientRows,
-      req,
-      [
-        {
-          key: "name",
-          label: "이름",
-          value: (entry) => entry.clientName,
-        },
-        {
-          key: "created",
-          label: "등록일",
-          value: (entry) => entry.createdAt,
-          initialDirection: "desc",
-        },
-      ],
-      {
-        defaultKey: "created",
-        defaultDirection: "desc",
-        sortKey: "clientSort",
-        directionKey: "clientDirection",
-      },
-    );
-    const sessionRows = sessions
-      .filter((session) =>
-        (names.get(session.userId) ?? "").toLowerCase().includes(q),
-      )
-      .map((session) => ({
-        ...session,
-        username: names.get(session.userId) ?? "알 수 없음",
-        createdLabel: dateLabel(session.createdAt),
-        expiresLabel: dateLabel(session.expiresAt),
-        createdDateTime: dateIso(session.createdAt),
-        expiresDateTime: dateIso(session.expiresAt),
-      }));
-    const sortedSessions = sortList(
-      sessionRows,
-      req,
-      [
-        {
-          key: "username",
-          label: "사용자",
-          value: (entry) => entry.username,
-        },
-        {
-          key: "created",
-          label: "로그인 시각",
-          value: (entry) => entry.createdAt,
-          initialDirection: "desc",
-        },
-        {
-          key: "expires",
-          label: "만료 시각",
-          value: (entry) => entry.expiresAt,
-          initialDirection: "desc",
-        },
-      ],
-      {
-        defaultKey: "created",
-        defaultDirection: "desc",
-        sortKey: "sessionSort",
-        directionKey: "sessionDirection",
-        pageKey: "sessionsPage",
-      },
-    );
-    const sessionPage = pageOf(sortedSessions.items, req, "sessionsPage");
-    return adminView(req, res, "connections", "admin/connections", {
-      ...pageOf(sortedClients.items, req),
-      q,
-      clientSort: sortedClients.state,
-      clientSortHeaders: sortedClients.headers,
-      sessions: sessionPage.rows,
-      sessionSort: sortedSessions.state,
-      sessionSortHeaders: sortedSessions.headers,
-      sessionPaging: { pagination: sessionPage.pagination },
-    });
-  });
+  router.get("/connections", (req, res) =>
+    res.redirect(
+      303,
+      base +
+        "/users" +
+        (query(req, "q") ? "?q=" + encodeURIComponent(query(req, "q")) : ""),
+    ),
+  );
   router.post("/connections/sessions/:id/revoke", async (req, res) => {
-    await users.revokeBrowserSession(actor(res).id, String(req.params.id));
-    await record(res, "admin_session_revoked", {});
-    return res.redirect(303, base + "/connections?saved=1");
+    const sessionId = String(req.params.id);
+    const userId = await users.revokeBrowserSession(actor(res).id, sessionId);
+    await record(res, "admin_session_revoked", { userId, sessionId });
+    return res.redirect(303, base + "/users/" + userId + "?saved=1");
   });
   router.post("/connections/clients/:id/delete", async (req, res) => {
     const id = String(req.params.id);
@@ -1523,7 +1563,7 @@ function installConsoleRoutes(
     }
     await auth.removeClient(id);
     await record(res, "admin_client_removed", { clientId: id });
-    return res.redirect(303, base + "/connections?saved=1");
+    return res.redirect(303, base + "/users?saved=1");
   });
   router.get(["/audit/:id/detail", "/audit/:id/live"], async (req, res) => {
     const id = String(req.params.id);
@@ -1601,13 +1641,28 @@ function installConsoleRoutes(
       visibleUsers(res),
     ]);
     const q = query(req, "q").toLowerCase(),
-      event = query(req, "event");
+      event = query(req, "event"),
+      owner = query(req, "owner");
     const rows = recent.records
       .map((entry) => auditRow(entry, all))
       .filter(
         (entry) =>
           (!event || entry.event === event) &&
-          (!q || Object.values(entry).join(" ").toLowerCase().includes(q)),
+          (!owner ||
+            entry.ownerId === owner ||
+            entry.source.actor === owner ||
+            (typeof entry.source.actor === "string" &&
+              entry.source.actor.startsWith(owner + ":"))) &&
+          (!q ||
+            (
+              JSON.stringify(entry.source) +
+              " " +
+              entry.actor +
+              " " +
+              (all.find((user) => user.id === entry.ownerId)?.email ?? "")
+            )
+              .toLowerCase()
+              .includes(q)),
       );
     const sorted = sortList(
       rows,
@@ -1668,6 +1723,7 @@ function installConsoleRoutes(
     }
     return adminView(req, res, "audit", "admin/audit", {
       liveAudit: true,
+      owner,
       ...page,
       q,
       event,
@@ -1766,7 +1822,9 @@ function installConsoleRoutes(
             req.path.split("/")[1] ?? "",
           )
           ? "account"
-          : req.path.split("/")[1] || "dashboard",
+          : req.path.split("/")[1] === "connections"
+            ? "users"
+            : req.path.split("/")[1] || "dashboard",
         "admin/error",
         {
           error:
@@ -1791,10 +1849,39 @@ function auditRow(entry: Record<string, unknown>, users: User[]): AuditRow {
   const owner = users.find(
     (user) => actorId === user.id || actorId.startsWith(user.id + ":"),
   );
-  const actor = owner?.username ?? actorId;
+  const actor =
+    owner?.email ??
+    owner?.username ??
+    (
+      {
+        local_installer: "시스템 · 초기 설치",
+        bootstrap_admin: "시스템 · 관리자 초기 설정",
+        system: "시스템",
+      } as Record<string, string>
+    )[actorId] ??
+    actorId;
   const params = recordValue(entry.params);
   const details: Record<string, unknown> = {};
   for (const key of [
+    "at",
+    "event",
+    "actor",
+    "sessionId",
+    "keyId",
+    "fingerprint",
+    "workspaceRoot",
+    "workspace",
+    "publicApps",
+    "editor",
+    "vscodeSshHost",
+    "vscodePathFrom",
+    "vscodePathTo",
+    "registrationMessage",
+    "appId",
+    "visibility",
+    "port",
+    "repoUrl",
+    "ref",
     "userId",
     "clientId",
     "projectId",
@@ -1923,7 +2010,7 @@ function workspaceRequest(req: Request): boolean {
   }
   return (
     req.method === "POST" &&
-    /^\/(?:projects(?:\/[^/]+\/[^/]+\/(?:unregister|delete))?|processes(?:\/[^/]+\/[^/]+\/stop)?|apps(?:\/[a-z0-9-]{1,40}\/(?:start|stop|visibility|delete))?)\/?$/.test(
+    /^\/(?:projects(?:\/clone|\/[^/]+\/[^/]+\/(?:unregister|delete))?|processes(?:\/[^/]+\/[^/]+\/stop)?|apps(?:\/[a-z0-9-]{1,40}\/(?:start|stop|visibility|delete))?)\/?$/.test(
       req.path,
     )
   );

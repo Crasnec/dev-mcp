@@ -204,9 +204,9 @@ export function createMcpServer(options: {
   });
   add({
     name: "project_clone",
-    title: "Clone public project",
+    title: "Clone project",
     description:
-      "Clone a public HTTPS repository from GitHub, GitLab, or Bitbucket into /workspace and register it. Credentials and private network targets are rejected.",
+      "Clone an HTTPS repository from GitHub, GitLab, or Bitbucket into /workspace and register it. Uses Git credentials configured in the shared development HOME, including gh auth setup-git. Credentials embedded in URLs and private network targets are rejected.",
     inputSchema: {
       name: z.string().min(1).max(200),
       repo_url: z.string().url(),

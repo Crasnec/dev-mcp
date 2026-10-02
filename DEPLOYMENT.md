@@ -70,7 +70,7 @@ Rollback:
 Apps go under the console host: `https://<name>.dev.crasnec.com`.
 
 1. Deploy a gateway that accepts the console host as `PREVIEW_DOMAIN`; the image deployed on 2026-10-01 refuses it and would not start. Then set `PREVIEW_DOMAIN=dev.crasnec.com` in `.env` and recreate the gateway.
-2. Add a Cloudflare DNS record `*.dev` → `210.100.135.72`, DNS only like `dev`, so Caddy can answer the HTTP certificate challenges.
+2. Add a Cloudflare DNS record `*.dev` as a CNAME to `crasnec.duckdns.org`, the same dynamic-DNS target as `dev` and `plan`. Keep it DNS only, so Caddy can answer the HTTP certificate challenges.
 3. Add the app site to plan-app's Caddy, which owns ports 80/443 here:
    - the global `on_demand_tls { ask http://gateway:3200/__dev-mcp/tls-allowed }`;
    - a `*.dev.crasnec.com { tls { on_demand } reverse_proxy gateway:3200 { flush_interval -1 } }` block, as in this repository's `Caddyfile.preview`.

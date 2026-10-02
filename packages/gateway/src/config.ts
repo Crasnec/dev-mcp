@@ -66,7 +66,11 @@ export function loadConfig(
   }
   const previewDomain = (env.PREVIEW_DOMAIN ?? "").trim().toLowerCase();
   if (previewDomain) {
-    validatePreviewDomain(previewDomain, url.hostname);
+    validatePreviewDomain(
+      previewDomain,
+      url.hostname,
+      url.protocol === "https:",
+    );
   }
   const clientId = credential(env, "GOOGLE_CLIENT_ID");
   const clientSecret = credential(env, "GOOGLE_CLIENT_SECRET");
@@ -112,9 +116,16 @@ function credential(env: NodeJS.ProcessEnv, name: string): string {
   }
 }
 
-// App pages run arbitrary user code, so they must never share an origin, or a
-// parent/child host, with the console.
-export function validatePreviewDomain(domain: string, consoleHost: string) {
+// App pages run arbitrary user code, so they must never share an origin with
+// the console. Apps may live under the console host (<name>.<console host>):
+// over HTTPS every console cookie is __Host-, which subdomains can neither
+// read nor overwrite. A parent of the console host is refused, since an app
+// could then take the console's own name.
+export function validatePreviewDomain(
+  domain: string,
+  consoleHost: string,
+  consoleSecure: boolean,
+) {
   if (
     !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{1,62}$/.test(
       domain,
@@ -126,13 +137,12 @@ export function validatePreviewDomain(domain: string, consoleHost: string) {
     );
   }
   const host = consoleHost.toLowerCase();
-  if (
-    domain === host ||
-    domain.endsWith("." + host) ||
-    host.endsWith("." + domain)
-  ) {
+  if (host.endsWith("." + domain)) {
+    throw new Error("PREVIEW_DOMAIN must not be a parent of the console host");
+  }
+  if ((domain === host || domain.endsWith("." + host)) && !consoleSecure) {
     throw new Error(
-      "PREVIEW_DOMAIN must not be the console host or a parent or child of it",
+      "PREVIEW_DOMAIN may be the console host or under it only with an HTTPS PUBLIC_BASE_URL",
     );
   }
 }

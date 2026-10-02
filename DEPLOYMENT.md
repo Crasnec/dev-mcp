@@ -67,14 +67,17 @@ Rollback:
 
 ## Pending: apps public URLs (code deployed, not enabled)
 
-1. Set `PREVIEW_DOMAIN=crasnec.duckdns.org` in `.env` and recreate the gateway. `*.crasnec.duckdns.org` already resolves to this host, and `duckdns.org` is a public suffix, so it is a different site from `dev.crasnec.com`.
-2. Add the app site to plan-app's Caddy, which owns ports 80/443 here:
+Apps go under the console host: `https://<name>.dev.crasnec.com`.
+
+1. Deploy a gateway that accepts the console host as `PREVIEW_DOMAIN`; the image deployed on 2026-10-01 refuses it and would not start. Then set `PREVIEW_DOMAIN=dev.crasnec.com` in `.env` and recreate the gateway.
+2. Add a Cloudflare DNS record `*.dev` → `210.100.135.72`, DNS only like `dev`, so Caddy can answer the HTTP certificate challenges.
+3. Add the app site to plan-app's Caddy, which owns ports 80/443 here:
    - the global `on_demand_tls { ask http://gateway:3200/__dev-mcp/tls-allowed }`;
-   - a `*.crasnec.duckdns.org { tls { on_demand } reverse_proxy gateway:3200 { flush_interval -1 } }` block, as in this repository's `Caddyfile.preview`.
+   - a `*.dev.crasnec.com { tls { on_demand } reverse_proxy gateway:3200 { flush_interval -1 } }` block, as in this repository's `Caddyfile.preview`.
 
    Then validate it, rebuild the `plan-app-caddy` image and recreate only that service. It also fronts `plan.crasnec.com` and `matcha.oaknamu.com`. The proxy already shares `dev-mcp_edge` with the gateway.
 
-3. Verify with an app in the administrator's account:
+4. Verify with an app in the administrator's account:
    1. Open a private app; it should go through the console sign-in redirect.
    2. Switch it to public and open it again.
 

@@ -32,7 +32,15 @@ Host-directory workspaces bind-mount `<root>/<name>` from the Docker host. The r
 
 `scripts/migrate-primary-runner.sh` moves an older installation's shared runner account to a dedicated runner. It is an operator command run on the Docker host with gateway and provisioner stopped, and refuses ambiguous or non-Google accounts. It removes the legacy password hash, keeps credential versions, and deletes nothing. The migrated environment keeps its old host directory, with the same access as before.
 
-Apps run arbitrary user code and are served at `<name>.<PREVIEW_DOMAIN>`. That must be a different registrable domain from the console, because a same-origin page could read console pages and act with a visiting administrator's session.
+Apps run arbitrary user code and are served at `<name>.<PREVIEW_DOMAIN>`, never on the console's origin, where a page could read console pages and act with a visiting administrator's session. `PREVIEW_DOMAIN` is either the console host itself, which puts apps at `<name>.<console host>`, or a separate domain. The gateway refuses a parent of the console host, where an app could take the console's own name.
+
+Apps under the console host are same-site with it:
+
+- **Cookies:** every console cookie is `__Host-`, so app pages can neither read nor overwrite them. That holds only over HTTPS, which this layout therefore requires.
+- **Requests:** SameSite does not separate apps from the console. Every console state change still needs its CSRF token and an exact `Origin` match, and no GET request changes state.
+- **Parent-domain cookies:** an app can set cookies for a parent domain. Those reach the console, which ignores them, and other sites under that domain, which should use `__Host-` cookies and check `Origin` too. Oversized cookies can make the console reject that browser's requests until they expire or are cleared.
+
+A separate registrable domain avoids the last point.
 
 - **Separate listener:** the app listener has no console routes.
 - **Runner tunnels:** reaching a runner uses its signed IPC socket. A timestamped request opens a byte stream, and a replayed or stale request is refused. Redirecting one account's socket to another runner fails that runner's HMAC check.

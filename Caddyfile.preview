@@ -1,6 +1,6 @@
 # Use with CADDYFILE_PATH=./Caddyfile.preview and PREVIEW_DOMAIN set in .env.
-# PREVIEW_DOMAIN must be a different registrable domain from MCP_DOMAIN, with
-# a wildcard DNS record (*.PREVIEW_DOMAIN) pointing at this host.
+# PREVIEW_DOMAIN is MCP_DOMAIN itself or a separate domain, with a wildcard DNS
+# record (*.PREVIEW_DOMAIN) pointing at this host.
 {
 	email {$ACME_EMAIL}
 	acme_ca {$ACME_CA}

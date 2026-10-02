@@ -370,17 +370,26 @@ describe("published app preview", () => {
     expect(refusal).toContain("401");
   });
 
-  it("rejects preview domains that share a host with the console", () => {
-    for (const [preview, consoleHost] of [
-      ["dev.example.test", "dev.example.test"],
-      ["apps.dev.example.test", "dev.example.test"],
-      ["example.test", "dev.example.test"],
-      ["not a host", "dev.example.test"],
-    ]) {
-      expect(() => validatePreviewDomain(preview!, consoleHost!)).toThrow();
+  it("keeps app hosts on origins of their own", () => {
+    for (const [preview, secure] of [
+      ["example.test", true],
+      ["not a host", true],
+      // Under the console host only when its cookies are __Host- (HTTPS).
+      ["dev.example.test", false],
+      ["apps.dev.example.test", false],
+    ] as const) {
+      expect(() =>
+        validatePreviewDomain(preview, "dev.example.test", secure),
+      ).toThrow();
     }
-    expect(() =>
-      validatePreviewDomain("crasnec.duckdns.org", "dev.crasnec.com"),
-    ).not.toThrow();
+    for (const preview of [
+      "dev.example.test",
+      "apps.dev.example.test",
+      "apps.example.net",
+    ]) {
+      expect(() =>
+        validatePreviewDomain(preview, "dev.example.test", true),
+      ).not.toThrow();
+    }
   });
 });

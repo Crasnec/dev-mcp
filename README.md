@@ -267,7 +267,11 @@ An app is a server started from a project, published at `https://<name>.<PREVIEW
 
 Each app is either **private** (default: only its owner and administrators, after signing in) or **public** (anyone with the link). Administrators can disable public links in **운영 설정**; public apps then behave as private.
 
-**Domain.** Apps run arbitrary user code. They are therefore served on a different registrable domain from the console, never under it: a page on the console's origin could act with a visiting administrator's session. Set `PREVIEW_DOMAIN` (the gateway rejects the console host and its parents or children) and point a wildcard DNS record `*.PREVIEW_DOMAIN` at the host. A DuckDNS subdomain such as `example.duckdns.org` already resolves wildcards. Then use `CADDYFILE_PATH=./Caddyfile.preview`. Its wildcard site uses on-demand TLS, and the `ask` endpoint (`/__dev-mcp/tls-allowed`) lets certificates be issued only for existing app names. Without `PREVIEW_DOMAIN`, apps can still be defined and run but have no URL.
+**Domain.** Apps run arbitrary user code, so each one gets its own host and never the console's origin: a page on the console's origin could act with a visiting administrator's session.
+
+- Set `PREVIEW_DOMAIN` to the console host to serve apps at `https://<name>.<MCP_DOMAIN>`, for example `myapp.dev.example.com`. A separate domain also works. The gateway refuses a parent of the console host, and accepts the console host or a subdomain of it only over HTTPS. The same-site trade-offs are in [SECURITY.md](SECURITY.md).
+- Point a wildcard DNS record `*.PREVIEW_DOMAIN` at the host. With Cloudflare, make it DNS-only, so this host answers the certificate challenges.
+- Use `CADDYFILE_PATH=./Caddyfile.preview`. Its wildcard site uses on-demand TLS, and the `ask` endpoint (`/__dev-mcp/tls-allowed`) lets certificates be issued only for existing app names. Without `PREVIEW_DOMAIN`, apps can still be defined and run but have no URL.
 
 **How requests reach the app.**
 

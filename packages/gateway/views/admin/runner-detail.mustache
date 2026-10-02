@@ -1,4 +1,5 @@
 <div class="detail-heading" data-live-feed="runner" data-live-url="{{consoleBase}}/runners/{{owner.id}}/live"><div>{{^selfScope}}<a class="back-link" href="{{consoleBase}}/runners">← 실행 환경 목록</a>{{/selfScope}}<h2>{{#selfScope}}내 실행 환경{{/selfScope}}{{^selfScope}}{{owner.username}}님의 실행 환경{{/selfScope}}</h2><span data-live-region="runner-connection"><span data-live-field="connection" class="badge {{#ready}}active{{/ready}}{{^ready}}pending{{/ready}}">{{#ready}}연결됨{{/ready}}{{^ready}}연결 대기{{/ready}}</span></span></div><a class="button" href="{{consoleBase}}/runners/{{owner.id}}">상태 새로고침 ↻</a></div>
+{{#selfScope}}<div class="actions"><a class="button" href="/account/workspace">개발 workspace · VS Code 연결 관리</a></div>{{/selfScope}}
 <div data-live-region="runner-operation">
 <p data-live-field="operationPending" class="context-message" role="status"{{^operationPending}} hidden{{/operationPending}}>운영 요청을 처리 중입니다.</p>
 <p data-live-field="operationMessage" class="context-message" role="status"{{^operationMessage}} hidden{{/operationMessage}}>{{operationMessage}}</p>

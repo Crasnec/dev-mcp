@@ -10,6 +10,7 @@ interface NavItem {
   label: string;
   mark: string;
   description: string;
+  selfOnly?: boolean;
   self?: { href: string; label: string; description: string };
 }
 export type AdminSession = { user: User; csrf: string };
@@ -29,6 +30,7 @@ export function managementShell(
   const selfScope = options.selfScope ?? user.role !== "admin";
   const selfOrder = [
     "runners",
+    "workspace",
     "projects",
     "processes",
     "apps",
@@ -53,7 +55,7 @@ export function managementShell(
             ]
           : [];
       })
-    : allNavigation;
+    : allNavigation.filter((item) => !item.selfOnly);
   const current = allowedNavigation.find((item) => item.key === section);
   if (!current) {
     throw new Error("사용할 수 없는 관리 화면입니다.");

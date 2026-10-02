@@ -12,12 +12,22 @@ import {
   validUser,
   validControl,
 } from "./runner-operations.mjs";
+import { SshRegistry } from "./ssh-registry.mjs";
+import {
+  WorkspaceOperations,
+  validWorkspaceControl,
+} from "./workspace-operations.mjs";
 
 const execute = promisify(execFile);
 const project = process.env.COMPOSE_PROJECT_NAME ?? "dev-mcp";
 const usersFile =
   process.env.PROVISIONER_USERS_FILE ?? "/gateway-data/users.json";
 const controlsFile = path.join(path.dirname(usersFile), "runner-controls.json");
+const workspaceControlsFile = path.join(
+  path.dirname(usersFile),
+  "workspace-controls.json",
+);
+const sshFile = path.join(path.dirname(usersFile), "ssh-access.json");
 const installationFile = path.join(
   path.dirname(usersFile),
   "installation.json",
@@ -87,9 +97,102 @@ const operations = new RunnerOperations(
   installationFile,
 );
 
+const sshEnabled = process.env.WORKSPACE_SSH_ENABLED === "true";
+const registry = sshEnabled
+  ? new SshRegistry(
+      process.env.SSH_ENTRY_DATA_DIR ?? "/ssh-entry-data",
+      process.env.WORKSPACE_AUTH_DIR ?? "/workspace-auth",
+    )
+  : undefined;
+const workspaces = registry
+  ? new WorkspaceOperations(docker, operations, registry, project)
+  : undefined;
+async function renewSsh() {
+  const db = await readJson(usersFile, { users: [] });
+  const access = await readJson(sshFile, { entries: {} });
+  await registry.sync(db.users, access);
+}
+if (registry) {
+  try {
+    await registry.init();
+  } catch {
+    log("ssh_registry_initialization_failed");
+    process.exit(1);
+  }
+  // Lease/key updates continue during slow image/storage Docker operations.
+  if (!once) {
+    void (async () => {
+      while (true) {
+        try {
+          await renewSsh();
+        } catch {
+          log("ssh_authorization_refresh_failed");
+        }
+        await delay(5000);
+      }
+    })();
+  }
+}
+
+async function reconcileWorkspace(user, request, status) {
+  let previous = status.workspaces[user.id] ?? {};
+  try {
+    if (request && !validWorkspaceControl(request)) {
+      throw new Error("Invalid workspace request");
+    }
+    if (request && previous.revision !== request.revision) {
+      previous = {
+        ...previous,
+        revision: request.revision,
+        phase: "applying",
+        message: "Workspace 운영 요청을 적용하고 있습니다.",
+      };
+      status.workspaces[user.id] = previous;
+      await writeJson(statusFile, status);
+      try {
+        await workspaces.apply(user, request);
+        previous.phase = "applied";
+        previous.message = "Workspace 운영 요청을 적용했습니다.";
+      } catch (error) {
+        previous.phase = "failed";
+        previous.message =
+          error instanceof OperationError
+            ? error.message
+            : "Workspace 작업에 실패했습니다. 상태를 확인하고 다시 요청해 주세요.";
+      }
+    } else if (previous.phase === "applying") {
+      previous.phase = "failed";
+      previous.message =
+        "관리 서비스가 작업 도중 재시작되었습니다. 상태를 확인하고 다시 요청해 주세요.";
+    }
+    await workspaces.sync(user, { autoStart: request?.action !== "stop" });
+    status.workspaces[user.id] = {
+      ...previous,
+      ...(await workspaces.observe(user)),
+    };
+    return previous.phase !== "failed";
+  } catch (error) {
+    status.workspaces[user.id] = {
+      ...previous,
+      state: "unknown",
+      sshReady: false,
+      observedAt: Date.now(),
+      message:
+        error instanceof OperationError
+          ? error.message
+          : "Workspace 상태를 확인하지 못했습니다.",
+    };
+    log("user_workspace_reconciliation_failed", user.id);
+    return false;
+  }
+}
+
 async function reconcile() {
   const accounts = await users();
   const status = await readJson(statusFile, { entries: {} });
+  if (workspaces) {
+    status.workspaces ??= {};
+  }
   let ok = true;
   // Installation-level observations for the local onboarding and settings,
   // also before the first account exists.
@@ -110,6 +213,9 @@ async function reconcile() {
   }
   gatewayId = await serviceId("gateway");
   const desired = await readJson(controlsFile, { entries: {} });
+  const workspaceDesired = workspaces
+    ? await readJson(workspaceControlsFile, { entries: {} })
+    : undefined;
   for (const user of accounts) {
     let previous = status.entries[user.id] ?? {};
     const request = desired.entries[user.id];
@@ -131,7 +237,16 @@ async function reconcile() {
         status.entries[user.id] = previous;
         await writeJson(statusFile, status);
         try {
-          await operations.apply(current, request);
+          const resume = workspaces
+            ? await workspaces.beforeRunnerOperation(current, request)
+            : false;
+          try {
+            await operations.apply(current, request);
+          } finally {
+            if (resume) {
+              await workspaces.sync(current, { resume: true });
+            }
+          }
           previous.phase = "applied";
           previous.message = "운영 요청을 적용했습니다.";
           log("runner_operation_applied", user.id);
@@ -205,6 +320,19 @@ async function reconcile() {
       };
       log("user_runner_provision_failed", user.id);
     }
+    if (workspaces) {
+      const latest = (await users()).find((entry) => entry.id === user.id);
+      if (
+        latest &&
+        !(await reconcileWorkspace(
+          latest,
+          workspaceDesired.entries?.[user.id],
+          status,
+        ))
+      ) {
+        ok = false;
+      }
+    }
     await writeJson(statusFile, status);
   }
   return ok;
@@ -213,7 +341,13 @@ async function reconcile() {
 do {
   let ok = false;
   try {
+    if (registry && once) {
+      await renewSsh();
+    }
     ok = await reconcile();
+    if (registry && once) {
+      await renewSsh();
+    }
   } catch {
     log("runner_reconciliation_failed");
   }

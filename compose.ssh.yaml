@@ -1,0 +1,62 @@
+services:
+  # Build runner first, then workspace. Only workspace runs an SSH server.
+  workspace:
+    build:
+      context: .
+      dockerfile: docker/workspace.Dockerfile
+      args:
+        RUNNER_IMAGE: ${RUNNER_IMAGE:-dev-mcp-runner:latest}
+    image: ${WORKSPACE_IMAGE:-dev-mcp-workspace:latest}
+    profiles: [image]
+
+  gateway:
+    environment:
+      WORKSPACE_SSH_ENABLED: "true"
+      WORKSPACE_SSH_HOST: ${WORKSPACE_SSH_HOST:-${MCP_DOMAIN}}
+      WORKSPACE_SSH_PORT: ${WORKSPACE_SSH_PORT:-2222}
+
+  ssh-entry:
+    build:
+      context: .
+      dockerfile: docker/ssh-entry.Dockerfile
+    ports:
+      - "${WORKSPACE_SSH_PORT:-2222}:2222"
+    volumes:
+      - ssh-entry-data:/registry:ro
+    read_only: true
+    init: true
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, SYS_CHROOT, KILL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,mode=1777
+      - /run:rw,nosuid,nodev,noexec,mode=0755
+    restart: unless-stopped
+    networks: [ssh-entry]
+    healthcheck:
+      test: [CMD, nc, -z, -w, "2", 127.0.0.1, "2222"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+
+  provisioner:
+    environment:
+      WORKSPACE_SSH_ENABLED: "true"
+      WORKSPACE_IMAGE: ${WORKSPACE_IMAGE:-dev-mcp-workspace:latest}
+      SSH_ENTRY_DATA_DIR: /ssh-entry-data
+      WORKSPACE_AUTH_DIR: /workspace-auth
+      WORKSPACE_AUTH_VOLUME: ${COMPOSE_PROJECT_NAME:-dev-mcp}-workspace-auth
+    volumes:
+      - ssh-entry-data:/ssh-entry-data
+      - workspace-auth:/workspace-auth
+    cap_add: [DAC_READ_SEARCH, CHOWN]
+
+volumes:
+  ssh-entry-data:
+    name: ${COMPOSE_PROJECT_NAME:-dev-mcp}-ssh-entry-data
+  workspace-auth:
+    name: ${COMPOSE_PROJECT_NAME:-dev-mcp}-workspace-auth
+
+networks:
+  ssh-entry:

@@ -369,6 +369,32 @@ The gateway writes requests into `gateway-data/runner-controls.json`. The provis
 
 Network blocking disconnects the runner from Docker networks; authenticated Unix-socket management remains available. Nonzero memory limits disable swap. CPU and PID limits are enforced by Docker/cgroups. Reducing memory can terminate processes. File size limits use `RLIMIT_FSIZE`. Changing these or resetting an existing memory/CPU limit to unlimited requires container replacement; volumes and host workspace directories are preserved. Storage limit changes can stop running jobs. These operations work the same for administrators' runners.
 
+#### VS Code workspace containers (Remote - SSH)
+
+Each approved account has two containers: its existing MCP runner and a separate development workspace. They mount the same user work volume or verified host directory at `/workspace`. MCP commands run in the runner; VS Code terminals, debugging and extensions run in the workspace. Installed global packages and processes belong to their respective container. The workspace inherits the runner image's development toolchain, runs as the same unprivileged UID/GID, and keeps its home at `/workspace/.dev-mcp-home`, so VS Code Server, extensions and user configuration persist in the work volume.
+
+Enable the SSH overlay with your normal deployment overlays. Build the base runner before the derived workspace image:
+
+```bash
+docker compose -f compose.yaml -f compose.google.yaml -f compose.ssh.yaml build runner
+docker compose -f compose.yaml -f compose.google.yaml -f compose.ssh.yaml build workspace ssh-entry gateway provisioner
+docker compose -f compose.yaml -f compose.google.yaml -f compose.ssh.yaml up -d gateway provisioner ssh-entry
+```
+
+Keep including `compose.ssh.yaml` for later Compose operations. The provisioner adds workspaces to existing approved accounts without modifying or restarting their runners. It does not automatically upgrade existing workspace images: stop and remove only the workspace container, retain all volumes, then start it again from the personal page. Workspace and runner stops are independent. Before storage migration or workspace relocation, the controller stops a running workspace to prevent concurrent writes, remounts the runner's resulting work storage, and restores its running state. Resource limits apply separately to both containers; storage quotas cover their shared work files and the runner's runtime data.
+
+The shared **ssh-entry** service publishes only TCP **2222**. Host SSH on **22** remains untouched. Set `WORKSPACE_SSH_HOST` (default `MCP_DOMAIN`) to a DNS name resolving directly to the Docker host and allow TCP 2222 through the firewall. An HTTP/CDN proxy does not carry this SSH connection. `WORKSPACE_SSH_PORT` can select a different unprivileged external port if needed; workspace SSH always uses internal 2222. No per-account external ports are allocated.
+
+In **내 계정 → 개발 workspace** (`/account/workspace`), users can view both container states, create/start/stop/restart only their own workspace, register or delete named public keys, download an SSH configuration, and open `/workspace` in VS Code. At most ten Ed25519, RSA (2048 bits or larger), or ECDSA keys can be registered. Only `.pub` files are uploaded; private keys remain on the user's computer. The page shows both SSH host key fingerprints and enables its VS Code link after fresh controller and SSH health observations agree with the registered keys.
+
+The generated configuration uses standard OpenSSH `ProxyJump`: one account/key-authenticated jump connection to the entry and another SSH connection to the user's workspace. Entry accounts permit forwarding only to that account's exact workspace name on 2222 and have no shell, SFTP, agent or remote-forwarding access. Multiple clients using an account reach the same workspace. The user-specific domain shown in the configuration is a local SSH alias; wildcard DNS is unnecessary and is not used to route SSH. VS Code requires its normal Remote - SSH extension; no TLS transport utility, npm SSH library or external relay service is added.
+
+Each workspace has its own internal Docker SSH network. It retains this network when external networking is disabled; Internet access follows the runner's network setting. VS Code TCP and Unix-socket forwarding are supported, with TCP destinations restricted to the workspace's loopback addresses. For workspaces without Internet access, VS Code may need `remote.SSH.localServerDownload: "always"` to transfer its server from the client.
+
+Public-key changes are normally applied within five seconds and close existing SSH sessions for that workspace. Account disablement, authentication revocation or role changes invalidate its keys; active accounts must register keys again after an authentication-version change. Authorization is refreshed independently of slow Docker operations. If the controller cannot read account/key state or stops, both OpenSSH supervisors close access after a 30-second lease expires (plus at most one polling second). Arbitrary-shell users still control their own running workspace programs; deliberate sharing of their own account environment is outside this boundary.
+
+Back up `gateway-data` (public-key registrations), the `ssh-entry-data` volume (entry host key) and `workspace-auth` volume (per-account host keys), alongside work storage. These authentication volumes are read-only inside SSH containers; workspaces mount only their own metadata subdirectory. The workspace never receives the runner's runtime-data volume, IPC key/socket, account database, status volume or Docker socket. Restoring host keys preserves client trust across recreation.
+
 #### Host-directory workspaces (VS Code)
 
 With a verified workspace root, the provisioner creates each new dedicated runner's workspace as `<root>/<name>` and bind-mounts it at `/workspace`; `/var/lib/dev-mcp` stays a named volume. The name comes from the account's email (`mina@example.com` → `mina`, then `mina-2`, …). Directories are created exclusively by an unprivileged helper from the runner image running as `DEV_UID`, so an existing directory, such as another project, is never handed to an account, and new files have the same owner as the host user who opens them in VS Code. Assignments are recorded in `runner-status/workspace-dirs.json`. Before every start, restart or recreation, the helper checks that the directory is still a real directory owned by `DEV_UID`, not a symlink.
@@ -425,3 +451,26 @@ docker run --rm -i --privileged --network none --entrypoint sh dev-mcp-provision
 `npm test` covers authorization, form validation, stale requests, ownership checks, migration failure and recreation recovery. `scripts/test-runner-controls.mjs` is an optional Docker integration test: run it inside the test image with the scripts directory read-only and the Docker socket mounted. It creates random test containers/networks and removes them in `finally`; it never selects an existing user's runner.
 
 `scripts/test-runner-storage.mjs` additionally checks the full Docker migration path, volume subpaths, quota resizing and retained original data with uniquely named temporary volumes; its cleanup removes those test volumes and detaches only the test image's loop device.
+
+
+For repeatable verification with the runner's actual tools and unmodified child-process output, build and run `docker/verification.Dockerfile`. SSH integration uses disposable accounts and resources; it needs Docker access, but never attaches to existing accounts or binds host port 22 or 2222:
+
+```bash
+docker build -f docker/runner.Dockerfile -t dev-mcp-runner:workspace-test .
+docker build -f docker/verification.Dockerfile -t dev-mcp-verification:workspace-test .
+docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges:true dev-mcp-verification:workspace-test
+
+docker build -f docker/workspace.Dockerfile --build-arg RUNNER_IMAGE=dev-mcp-runner:workspace-test -t dev-mcp-workspace:workspace-test .
+docker build -f docker/ssh-entry.Dockerfile -t dev-mcp-ssh-entry:workspace-test .
+docker build -f docker/provisioner.Dockerfile -t dev-mcp-provisioner:workspace-test .
+docker build -f docker/workspace-test.Dockerfile -t dev-mcp-workspace-integration:workspace-test .
+SSH_TEST_RUN="dev-mcp-ws-test-$(date +%s)"
+docker run --rm --name "$SSH_TEST_RUN-check" -e SSH_TEST_PROJECT="$SSH_TEST_RUN" \
+  --mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock \
+  --mount type=volume,source="$SSH_TEST_RUN-entry",target=/ssh-entry-data \
+  --mount type=volume,source="$SSH_TEST_RUN-auth",target=/workspace-auth \
+  dev-mcp-workspace-integration:workspace-test
+docker volume rm "$SSH_TEST_RUN-entry" "$SSH_TEST_RUN-auth"
+```
+
+The SSH test verifies concurrent native ProxyJump clients, public-key and destination isolation, shared work files, persistent home/host keys, PTY, SFTP, loopback forwarding, independent lifecycle, Internet blocking with SSH retained, key removal, account revocation and both authorization leases. It removes its temporary containers, networks and work volumes in `finally`; remove the two registry volumes after its disposable test container exits, as shown above.

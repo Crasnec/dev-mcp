@@ -52,6 +52,19 @@
     }
   },
   {
+    "key": "workspace",
+    "href": "/account/workspace",
+    "label": "개발 workspace",
+    "mark": "◇",
+    "description": "VS Code 개발 환경과 SSH 접속을 관리합니다.",
+    "selfOnly": true,
+    "self": {
+      "href": "/account/workspace",
+      "label": "개발 workspace",
+      "description": "내 workspace의 상태, SSH 공개키와 VS Code 연결을 관리합니다."
+    }
+  },
+  {
     "key": "processes",
     "href": "/admin/processes",
     "label": "프로세스",

@@ -20,6 +20,7 @@ export interface GatewayConfig {
   // Apps are served at https://<name>.<previewDomain> by a separate listener.
   previewDomain?: string;
   previewPort?: number;
+  ssh?: { host: string; port: number };
   google?: { clientId: string; clientSecret: string };
 }
 
@@ -77,6 +78,23 @@ export function loadConfig(
   if (!!clientId !== !!clientSecret) {
     throw new Error("Google client ID and secret must both be configured");
   }
+  const sshEnabled = env.WORKSPACE_SSH_ENABLED ?? "false";
+  let ssh: GatewayConfig["ssh"];
+  if (!["true", "false"].includes(sshEnabled))
+    throw new Error("WORKSPACE_SSH_ENABLED is invalid");
+  if (sshEnabled === "true") {
+    const sshPort = Number(env.WORKSPACE_SSH_PORT ?? "2222");
+    const host = env.WORKSPACE_SSH_HOST || url.hostname;
+    if (
+      !Number.isSafeInteger(sshPort) ||
+      sshPort < 1024 ||
+      sshPort > 65535 ||
+      !/^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$/.test(host)
+    ) {
+      throw new Error("WORKSPACE_SSH_PORT or WORKSPACE_SSH_HOST is invalid");
+    }
+    ssh = { host, port: sshPort };
+  }
   return {
     port,
     publicBaseUrl,
@@ -89,6 +107,7 @@ export function loadConfig(
     previewPort,
     ...(previewDomain ? { previewDomain } : {}),
     ...(clientId && clientSecret ? { google: { clientId, clientSecret } } : {}),
+    ...(ssh ? { ssh } : {}),
   };
 }
 

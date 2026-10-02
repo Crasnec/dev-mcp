@@ -1,0 +1,31 @@
+Port 2222
+ListenAddress 0.0.0.0
+HostKey /run/dev-mcp-ssh/ssh_host_ed25519_key
+PidFile /tmp/dev-mcp-sshd.pid
+AuthorizedKeysFile /run/dev-mcp-ssh/authorized_keys
+AllowUsers workspace
+PermitRootLogin no
+PubkeyAuthentication yes
+AuthenticationMethods publickey
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+UsePAM no
+StrictModes yes
+AllowTcpForwarding local
+PermitOpen localhost:* 127.0.0.1:* [::1]:*
+AllowStreamLocalForwarding local
+AllowAgentForwarding no
+GatewayPorts no
+X11Forwarding no
+PermitTunnel no
+PrintMotd no
+PrintLastLog no
+UseDNS no
+LoginGraceTime 30
+MaxStartups 10:30:30
+MaxSessions 20
+ClientAliveInterval 60
+ClientAliveCountMax 3
+SetEnv HOME=/workspace/.dev-mcp-home WORKSPACE_ROOT=/workspace
+Subsystem sftp internal-sftp

@@ -38,14 +38,19 @@ const fs = require("node:fs");
 const args = process.argv.slice(2);
 const state = JSON.parse(fs.readFileSync(process.env.FAKE_DOCKER_STATE, "utf8"));
 state.calls.push(args);
+state.metadata ??= {};
+state.networks ??= {};
+state.entryNetworks ??= {};
 let output = "", code = 0;
 const name = args.at(-1);
+const values = option => args.flatMap((value, index) => value === option ? [args[index + 1]] : []);
+const labels = () => Object.fromEntries(values("--label").map(value => [value.slice(0, value.indexOf("=")), value.slice(value.indexOf("=") + 1)]));
 if (args[0] === "ps") {
   const filter = args.find(arg => arg.startsWith("name=^/"));
   if (filter) {
     output = state.containers[filter.slice(7, -1)] ? "cccccccccccc" : "";
   } else {
-    output = args.some(arg => arg.endsWith("service=gateway")) ? "aaaaaaaaaaaa" : "bbbbbbbbbbbb";
+    output = args.some(arg => arg.endsWith("service=gateway")) ? "aaaaaaaaaaaa" : args.some(arg => arg.endsWith("service=ssh-entry")) ? "dddddddddddd" : "bbbbbbbbbbbb";
   }
 } else if (args[0] === "container") {
   code = state.containers[name] ? 0 : 1;
@@ -53,19 +58,39 @@ if (args[0] === "ps") {
   if (args.includes("--format")) {
     output = args[2].includes("Mounts") ? "/host/user-ipc" : args[2].includes("Image") ? "sha256:" + "f".repeat(64) : state.containers[name];
   } else {
+    const entry = name === "dddddddddddd";
     const primary = name === "bbbbbbbbbbbb";
+    const metadata = state.metadata[name] ?? {};
     output = JSON.stringify([{
-      Config: { Labels: primary ? {"com.docker.compose.project":"dev-mcp", "com.docker.compose.service":"runner"} : {"dev-mcp.user":name.replace("dev-mcp-user-", "")} },
+      Config: { Labels: entry ? {"com.docker.compose.project":"dev-mcp", "com.docker.compose.service":"ssh-entry"} : primary ? {"com.docker.compose.project":"dev-mcp", "com.docker.compose.service":"runner"} : metadata.labels ?? {"dev-mcp.user":name.replace("dev-mcp-user-", "")} },
       HostConfig: {},
-      NetworkSettings: {Networks: {}},
-      State: {Status:primary ? "running" : state.containers[name], Running:primary || state.containers[name] === "running"},
+      Mounts: metadata.mounts ?? [],
+      NetworkSettings: {Networks: entry ? state.entryNetworks : metadata.networks ?? {}},
+      State: {Status:entry || primary ? "running" : state.containers[name], Running:entry || primary || state.containers[name] === "running", Health: {Status: "healthy"}},
     }]);
   }
 } else if (args[0] === "image" && args[1] === "inspect") {
-  // The runner image is built by Compose and pinned by ID.
   output = "sha256:" + "f".repeat(64);
 } else if (args[0] === "network" && args[1] === "inspect") {
-  code = 1;
+  if (state.networks[name]) {
+    output = JSON.stringify([state.networks[name]]);
+  } else {
+    code = 1;
+  }
+} else if (args[0] === "network" && args[1] === "create") {
+  state.networks[name] = {Labels: labels(), Internal: args.includes("--internal")};
+} else if (args[0] === "network" && args[1] === "ls") {
+  const filter = args.find(arg => arg.startsWith("name=^"));
+  output = filter && state.networks[filter.slice(6, -1)] ? "eeeeeeeeeeee" : "";
+} else if (args[0] === "network" && ["connect", "disconnect"].includes(args[1])) {
+  const networks = name === "dddddddddddd" ? state.entryNetworks : state.metadata[name]?.networks;
+  if (networks) {
+    if (args[1] === "connect") {
+      networks[args[2]] = {};
+    } else {
+      delete networks[args[2]];
+    }
+  }
 } else if ((args[0] === "run" && args.includes("--detach")) || args[0] === "create") {
   const container = args[args.indexOf("--name") + 1];
   if (state.failNext) {
@@ -73,13 +98,23 @@ if (args[0] === "ps") {
     code = 1;
   } else {
     state.containers[container] = args[0] === "create" ? "created" : "running";
+    state.metadata[container] = {
+      labels: labels(), networks: {[values("--network")[0] ?? "none"]: {}},
+      mounts: values("--mount").map(value => {
+        const fields = Object.fromEntries(value.split(",").map(field => field.includes("=") ? [field.slice(0, field.indexOf("=")), field.slice(field.indexOf("=") + 1)] : [field, true]));
+        return { Type: fields.type, Source: fields.source, Name: fields.type === "volume" ? fields.source : undefined, Destination: fields.target, RW: !fields.readonly };
+      }),
+    };
   }
+} else if (args[0] === "run" && args.includes("-p")) {
+  output = JSON.stringify({uid: process.getuid(), gid: process.getgid()});
 } else if (args[0] === "run" && args.includes("-e")) {
-  // Unprivileged workspace-directory helper.
   const operation = args[args.indexOf("-e") + 2];
   output = { probe: "ok", mkdir: "created", verify: "ok", remove: "removed" }[operation] ?? "";
 } else if (args[0] === "start" || args[0] === "restart") {
   state.containers[name] = "running";
+} else if (args[0] === "stop") {
+  state.containers[name] = "exited";
 }
 fs.writeFileSync(process.env.FAKE_DOCKER_STATE, JSON.stringify(state));
 console.log(output);
@@ -91,7 +126,7 @@ process.exit(code);
     usersFile,
     stateFile,
     state: async () => JSON.parse(await readFile(stateFile, "utf8")),
-    run: () =>
+    run: (extraEnv: NodeJS.ProcessEnv = {}) =>
       execute(
         process.execPath,
         ["scripts/reconcile-user-runners.mjs", "--once"],
@@ -106,6 +141,9 @@ process.exit(code);
             PROVISIONER_USERS_FILE: usersFile,
             FAKE_DOCKER_STATE: stateFile,
             RUNNER_STATUS_DIR: path.join(directory, "status"),
+            WORKSPACE_SSH_ENABLED: "false",
+            COMPOSE_PROJECT_NAME: "dev-mcp",
+            ...extraEnv,
           },
         },
       ),
@@ -275,3 +313,103 @@ it("mounts approved users' workspaces from the onboarding root", async () => {
     state: "ready",
   });
 });
+
+it("adds a separate workspace to approved users without adding SSH or public ports to their runners", async () => {
+  const f = await fixture([
+    { ...account(alice), authVersion: 1 },
+    account(bob, "pending"),
+  ]);
+  const dir = path.dirname(f.usersFile);
+  const env = {
+    WORKSPACE_SSH_ENABLED: "true",
+    SSH_ENTRY_DATA_DIR: path.join(dir, "entry"),
+    WORKSPACE_AUTH_DIR: path.join(dir, "auth"),
+  };
+  await f.run(env);
+  const state = await f.state();
+  expect(state.containers).toEqual({
+    ["dev-mcp-user-" + alice]: "running",
+    ["dev-mcp-workspace-" + alice]: "running",
+  });
+  const workspace = state.calls.find(
+    (args: string[]) =>
+      args.includes("dev-mcp.role=workspace") && args[0] === "create",
+  );
+  expect(workspace).toEqual(
+    expect.arrayContaining([
+      "type=volume,source=dev-mcp-user-" +
+        alice +
+        "-workspace,target=/workspace",
+      "type=volume,source=dev-mcp-workspace-auth,target=/run/dev-mcp-ssh,volume-subpath=" +
+        alice +
+        ",readonly",
+      "--cap-drop",
+      "ALL",
+    ]),
+  );
+  expect(workspace.join(" ")).not.toMatch(
+    /docker.sock|\/ipc|\/var\/lib\/dev-mcp/,
+  );
+  expect(workspace).not.toContain("--publish");
+  const runner = state.calls.find(
+    (args: string[]) =>
+      args[0] === "create" && args.includes("dev-mcp-user-" + alice),
+  );
+  expect(runner.join(" ")).not.toMatch(/SSH|sshd|dev-mcp-ssh/);
+  const status = JSON.parse(
+    await readFile(path.join(dir, "status/status.json"), "utf8"),
+  );
+  expect(status.workspaces[alice].state).toBe("running");
+});
+
+it("applies personal workspace requests once, preserves stop across reconciliations and never replays an ambiguous restart", async () => {
+  const f = await fixture([{ ...account(alice), authVersion: 1 }]);
+  const dir = path.dirname(f.usersFile);
+  const env = {
+    WORKSPACE_SSH_ENABLED: "true",
+    SSH_ENTRY_DATA_DIR: path.join(dir, "entry"),
+    WORKSPACE_AUTH_DIR: path.join(dir, "auth"),
+  };
+  await f.run(env);
+  const controlsFile = path.join(dir, "workspace-controls.json");
+  const statusFile = path.join(dir, "status/status.json");
+  const request = {
+    revision: bob,
+    action: "restart",
+    actorId: alice,
+    requestedAt: Date.now(),
+  };
+  await writeFile(
+    controlsFile,
+    JSON.stringify({ entries: { [alice]: request } }),
+  );
+  await f.run(env);
+  await f.run(env);
+  expect(
+    (await f.state()).calls.filter(
+      (args: string[]) =>
+        args[0] === "restart" && args.at(-1) === "dev-mcp-workspace-" + alice,
+    ),
+  ).toHaveLength(1);
+  const status = JSON.parse(await readFile(statusFile, "utf8"));
+  status.workspaces[alice].phase = "applying";
+  await writeFile(statusFile, JSON.stringify(status));
+  await expect(f.run(env)).rejects.toMatchObject({ code: 1 });
+  expect(
+    JSON.parse(await readFile(statusFile, "utf8")).workspaces[alice].phase,
+  ).toBe("failed");
+  expect(
+    (await f.state()).calls.filter((args: string[]) => args[0] === "restart"),
+  ).toHaveLength(1);
+  await writeFile(
+    controlsFile,
+    JSON.stringify({
+      entries: { [alice]: { ...request, revision: charlie, action: "stop" } },
+    }),
+  );
+  await f.run(env);
+  await f.run(env);
+  const state = await f.state();
+  expect(state.containers["dev-mcp-workspace-" + alice]).toBe("exited");
+  expect(state.containers["dev-mcp-user-" + alice]).toBe("running");
+}, 30000);

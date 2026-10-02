@@ -1,0 +1,58 @@
+{{> partials/notice}}
+{{#error}}<p class="notice error" role="alert">{{error}}</p>{{/error}}
+<section class="panel padded">
+  <h2>내 개발 환경</h2>
+  <p><strong>Workspace: {{workspaceState}}</strong> · Runner: {{runnerState}}</p>
+  <p>MCP 작업은 runner에서, VS Code 터미널은 workspace에서 실행됩니다. 두 환경은 <code>/workspace</code> 파일을 공유합니다.</p>
+  {{#enabled}}
+  <div class="actions">
+    {{#operations}}
+    <form method="post" action="/account/workspace/operations">
+      {{> partials/csrf}}
+      <input type="hidden" name="revision" value="{{revision}}">
+      <input type="hidden" name="action" value="{{action}}">
+      <button {{#danger}}class="danger"{{/danger}} {{#busy}}disabled{{/busy}} type="submit">{{label}}</button>
+    </form>
+    {{/operations}}
+  </div>
+  <p class="help">Workspace를 중지해도 작업 파일과 VS Code 설정은 보존됩니다. 재시작하면 현재 SSH 연결과 workspace 프로세스가 종료됩니다.</p>
+  {{#operationMessage}}<p class="notice {{#operationFailed}}error{{/operationFailed}}">{{operationMessage}}</p>{{/operationMessage}}
+  {{/enabled}}
+</section>
+<section class="panel padded">
+  <h2>VS Code 연결</h2>
+  <p>{{message}}</p>
+  {{#connection}}
+  <p>아래 설정을 내 PC의 <code>~/.ssh/config</code>에 추가하세요. <code>IdentityFile</code>은 등록한 공개키에 대응하는 개인키 파일 경로로 바꾸세요.</p>
+  <pre><code>{{sshConfig}}</code></pre>
+  <div class="actions"><a class="button" href="/account/workspace/config" download>SSH 설정 내려받기</a>{{#available}}<a class="button primary" href="{{vscodeUrl}}">VS Code에서 workspace 열기</a>{{/available}}</div>
+  <p>터미널에서 <code>{{command}}</code>로 접속을 확인한 뒤 VS Code의 <strong>Remote - SSH</strong> 확장으로 같은 연결을 선택하세요.</p>
+  {{#entryFingerprint}}<p class="help">SSH 입구 호스트 키: <code>{{entryFingerprint}}</code></p>{{/entryFingerprint}}
+  {{#fingerprint}}<p class="help">Workspace 호스트 키: <code>{{fingerprint}}</code></p>{{/fingerprint}}
+  <p class="help">작업 폴더는 <code>/workspace</code>입니다. VS Code 서버, 확장과 개인 설정은 작업 볼륨의 홈 디렉터리에 저장됩니다.</p>
+  {{/connection}}
+</section>
+{{#enabled}}
+<section class="panel padded">
+  <h2>SSH 공개키 등록</h2>
+  <p class="help">내 PC에서 <code>ssh-keygen -t ed25519</code>로 키를 만들고 <code>~/.ssh/id_ed25519.pub</code> 내용을 등록하세요. 개인키는 내 PC에 보관하세요.</p>
+  <form method="post" action="/account/workspace/keys">
+    {{> partials/csrf}}
+    <label>이름<input name="name" required maxlength="80" autocomplete="off" placeholder="예: 개인 노트북"></label>
+    <label>공개키<textarea name="publicKey" required maxlength="8192" rows="3" autocomplete="off" spellcheck="false" placeholder="ssh-ed25519 AAAA..."></textarea></label>
+    <button type="submit">공개키 등록</button>
+  </form>
+  <p class="help">공개키는 최대 10개까지 등록할 수 있습니다. 키 변경이 적용되면 기존 SSH 연결이 종료됩니다. 계정 권한 변경이나 모든 인증 취소 후에는 키를 다시 등록하세요.</p>
+</section>
+<section class="panel padded">
+  <h2>등록된 공개키</h2>
+  {{#keys}}
+  <div class="padded">
+    <strong>{{name}}</strong><p><code>{{fingerprint}}</code></p>
+    <p class="help">등록: <time datetime="{{createdAtIso}}" data-local-time>{{createdAtIso}}</time></p>
+    <form method="post" action="/account/workspace/keys/{{id}}/delete">{{> partials/csrf}}<button class="danger" type="submit">공개키 삭제</button></form>
+  </div>
+  {{/keys}}
+  {{^keys}}<p class="help">등록된 공개키가 없습니다.</p>{{/keys}}
+</section>
+{{/enabled}}

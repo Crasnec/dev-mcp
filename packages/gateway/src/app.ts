@@ -25,6 +25,8 @@ import { AppStore } from "./app-store.ts";
 import { AppService } from "./apps.ts";
 import { PreviewAuth } from "./preview-proxy.ts";
 import { installPreviewRoutes } from "./preview-routes.ts";
+import { installSshRoutes } from "./ssh-routes.ts";
+import { SshAccessStore } from "./ssh-access-store.ts";
 
 const SESSION_IDLE_TIMEOUT_MS = 24 * 60 * 60_000;
 
@@ -51,6 +53,7 @@ export interface AppDependencies {
   // Shared with the preview listener (one-time codes are held in memory).
   apps?: AppStore;
   previewAuth?: PreviewAuth;
+  sshAccess?: SshAccessStore;
 }
 
 export function createApp(
@@ -131,6 +134,13 @@ export function createApp(
     google,
   );
   installAccountRoutes(app, config, users, runners, settings, !!google);
+  installSshRoutes(
+    app,
+    config,
+    users,
+    dependencies.sshAccess ?? new SshAccessStore(config.dataDir),
+    audit,
+  );
   installTelemetryRoutes(
     app,
     config,

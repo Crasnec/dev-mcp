@@ -90,7 +90,9 @@ interface AuditRow {
   processId?: string;
   projectId?: string;
   command?: string;
+  commandPreview?: string;
   tool?: string;
+  toolParams?: string;
   reason?: string;
   at: string;
   atDateTime?: string;
@@ -1595,6 +1597,7 @@ function installConsoleRoutes(
           event: row.event,
           actor: row.actor,
           tool: row.tool,
+          toolParams: row.toolParams,
           reason: row.reason,
           details: row.details,
           command: row.command,
@@ -1674,7 +1677,7 @@ function installConsoleRoutes(
           value: (entry) => entry.sortAt,
           initialDirection: "desc",
         },
-        { key: "event", label: "이벤트", value: (entry) => entry.event },
+        { key: "event", label: "실행·이벤트", value: (entry) => entry.event },
         { key: "actor", label: "실행자", value: (entry) => entry.actor },
       ],
       { defaultKey: "at", defaultDirection: "desc" },
@@ -1708,6 +1711,7 @@ function installConsoleRoutes(
                 "actor",
                 "tool",
                 "reason",
+                "commandPreview",
                 "detailHref",
                 "detailLabel",
                 "expandedText",
@@ -1857,10 +1861,15 @@ function auditRow(entry: Record<string, unknown>, users: User[]): AuditRow {
         local_installer: "시스템 · 초기 설치",
         bootstrap_admin: "시스템 · 관리자 초기 설정",
         system: "시스템",
+        unauthenticated: "미인증 요청",
       } as Record<string, string>
     )[actorId] ??
     actorId;
   const params = recordValue(entry.params);
+  const command = stringValue(params.command);
+  const toolParams = Object.fromEntries(
+    Object.entries(params).filter(([key]) => key !== "command"),
+  );
   const details: Record<string, unknown> = {};
   for (const key of [
     "at",
@@ -1893,6 +1902,15 @@ function auditRow(entry: Record<string, unknown>, users: User[]): AuditRow {
     "reason",
     "ok",
     "errorCode",
+    "stage",
+    "issues",
+    "requestMethod",
+    "httpMethod",
+    "httpStatus",
+    "rpcErrorCode",
+    "protocolVersion",
+    "grantType",
+    "oauthError",
     "registrationOpen",
     "requiredScopes",
     "message",
@@ -1912,8 +1930,13 @@ function auditRow(entry: Record<string, unknown>, users: User[]): AuditRow {
       typeof entry.userId === "string" ? entry.userId : owner?.id || undefined,
     processId: stringValue(entry.processId) ?? stringValue(params.process_id),
     projectId: stringValue(entry.projectId) ?? stringValue(params.project_id),
-    command: stringValue(params.command),
+    command,
+    commandPreview:
+      command && command.length > 320 ? command.slice(0, 320) + "…" : command,
     tool: stringValue(entry.tool),
+    toolParams: Object.keys(toolParams).length
+      ? JSON.stringify(toolParams, null, 2)
+      : undefined,
     reason: stringValue(entry.reason)?.trim() || undefined,
     at: dateLabel(typeof entry.at === "string" ? entry.at : undefined),
     atDateTime: dateIso(typeof entry.at === "string" ? entry.at : undefined),

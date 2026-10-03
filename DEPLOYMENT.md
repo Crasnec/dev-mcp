@@ -1,6 +1,30 @@
 # Current server deployment
 
-Updated on 2026-10-02 at `https://dev.crasnec.com`.
+Updated on 2026-10-03 at `https://dev.crasnec.com`.
+
+## MCP tool visibility in audit (deployed 2026-10-03)
+
+The gateway was rebuilt and recreated at 22:10 UTC. The previous command layout emphasized only `params.command`, which none of the nine stored MCP tool-call records contained. MCP tool names now appear first in the row heading in larger, darker text, before the secondary event label. Inline details show the invoked tool and recorded arguments before the reason and process output; shell commands still appear expanded first when present.
+
+Gateway image: `0c18f77243fe`. The preceding command-layout image is tagged `dev-mcp-gateway:rollback-20261003-before-audit-tool-layout`. Only the gateway was recreated; per-user runners and account/workspace state were retained.
+
+Validation: all 31 related audit/live-update tests passed, including MCP calls without `params.command`, argument escaping and automatic updates. TypeScript build, style and diff checks passed. All nine actual stored tool-call records were rendered with the deployed templates and confirmed to put the tool ahead of the event label and process output. Public assets include the updated layout, and public HTTPS verification passed.
+
+## Audit command visibility (deployed 2026-10-03)
+
+The gateway was rebuilt and recreated at 21:59 UTC. Audit lists now put the requested command in the first column, ahead of event metadata, time and actor. Commands wrap within the column, with previews bounded to 320 characters to keep incremental polling small. The full requested command is expanded at the top of inline details before the reason and process output, including records with related processes. Server-rendered and automatically refreshed rows use the same layout.
+
+Only the gateway was recreated; per-user runners and stored account/workspace state were retained. Gateway image: `7acc56274695`. The preceding failure-audit image is tagged `dev-mcp-gateway:rollback-20261003-before-audit-command-layout`.
+
+Validation: all 29 related audit/live-update tests passed, including command escaping, preview payload bounds and detail order after live updates. TypeScript build, style checks and diff checks passed. Public HTTPS verification passed after deployment.
+
+## MCP failure audit (deployed 2026-10-03)
+
+The gateway was rebuilt and recreated at 21:44 UTC to record errors previously absent from the audit log: bearer authentication, session validation, JSON/HTTP/protocol rejection and SDK tool-input validation before a tool handler runs. OAuth token exchange and refresh rejections now produce `oauth_token_failed` records. Administrator audit details display failure stages, error codes, HTTP/RPC status and sanitized schema issues. Raw bearer/refresh tokens, authorization headers, cookies, argument values and SDK error text are excluded from these new failure records. Known token principals are retained for attribution on rejection; unknown or already-pruned credentials remain unattributed.
+
+Only the gateway was recreated. Accounts, OAuth state, workspace storage and both running user containers were retained. As with previous gateway restarts, existing MCP sessions must be initialized again. Gateway image: `548521b9ba79`. The prior image is tagged `dev-mcp-gateway:rollback-20261003-before-failure-audit`.
+
+Validation: TypeScript build, repository style/format checks and all 269 tests across 43 test files passed. Full tests ran in the isolated verification image with no network or production volumes; the bare host lacks runner search tooling. Public HTTPS verification passed after deployment, including Google authorization start/provider reachability and MCP authentication rejection. Diagnostic requests to the live public MCP and OAuth token endpoints returned 401 and created the expected sanitized failure records in the production audit file.
 
 ## Deployment command
 

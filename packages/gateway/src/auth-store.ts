@@ -57,6 +57,12 @@ export interface TokenInfo extends Principal {
   expiresAt: number;
 }
 
+export interface AccessInspection {
+  token?: TokenInfo;
+  errorCode?:
+    "INVALID_ACCESS_TOKEN" | "ACCESS_TOKEN_EXPIRED" | "OAUTH_CLIENT_REMOVED";
+}
+
 const ACCESS_TOKEN_TTL_MS = 15 * 60_000;
 const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60_000;
 const REFRESH_RETRY_GRACE_MS = 5_000;
@@ -319,19 +325,20 @@ export class AuthStore {
   }
 
   async access(rawToken: string): Promise<TokenInfo | undefined> {
+    const checked = await this.inspectAccess(rawToken);
+    return checked.errorCode ? undefined : checked.token;
+  }
+
+  // Keep known principal metadata for rejected credentials, without exposing
+  // the bearer token. Expired records already pruned cannot be attributed.
+  async inspectAccess(rawToken: string): Promise<AccessInspection> {
     const hash = tokenHash(rawToken);
     const db = await this.store.read();
     const token = db.accessTokens[hash];
-    if (
-      !token ||
-      !db.clients.some((client) => client.clientId === token.clientId) ||
-      !token.userId ||
-      !Number.isSafeInteger(token.authVersion) ||
-      token.expiresAt <= Date.now()
-    ) {
-      return undefined;
+    if (!token || !token.userId || !Number.isSafeInteger(token.authVersion)) {
+      return { errorCode: "INVALID_ACCESS_TOKEN" };
     }
-    return {
+    const info: TokenInfo = {
       userId: token.userId,
       authVersion: token.authVersion,
       tokenHash: hash,
@@ -339,6 +346,13 @@ export class AuthStore {
       scopes: token.scopes,
       expiresAt: token.expiresAt,
     };
+    if (!db.clients.some((client) => client.clientId === token.clientId)) {
+      return { token: info, errorCode: "OAUTH_CLIENT_REMOVED" };
+    }
+    if (token.expiresAt <= Date.now()) {
+      return { token: info, errorCode: "ACCESS_TOKEN_EXPIRED" };
+    }
+    return { token: info };
   }
 
   async revoke(rawToken: string): Promise<void> {

@@ -212,7 +212,7 @@ function auditRow(id: string, expanded = false, detailFragment?: Element) {
     detailUrl: `/admin/audit/${id}/live`,
   });
   toggle.setAttribute("aria-expanded", String(expanded));
-  for (const name of ["time", "event", "actor"]) {
+  for (const name of ["event", "time", "actor"]) {
     const cell = new Element("td");
     cell.className = "audit-" + name;
     summary.append(cell);
@@ -433,6 +433,42 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
 describe("inline audit details", () => {
+  it("keeps MCP tool calls first in refreshed rows and displays their arguments at the top of inline details", async () => {
+    const row = auditRow("a");
+    const h = harness([row]);
+    const params = '{"name":"<script>project</script>","ref":"main"}';
+    const call = { ...record("a"), tool: "project_clone" };
+    h.fetch.mockImplementation((url: URL) => {
+      if (url.pathname === "/admin/audit/a/live") {
+        return Promise.resolve(
+          deltaResponse("audit-detail", "detail-one", {
+            record: { ...call, toolParams: params, details: "{}" },
+            meta: {},
+            order: [],
+          }),
+        );
+      }
+      return Promise.resolve(h.listResponse("list-one", [call]));
+    });
+    h.start();
+    await vi.advanceTimersByTimeAsync(2000);
+    const heading = row.summary.querySelector(".audit-event-heading")!;
+    expect(heading.firstElementChild?.textContent).toBe("project_clone");
+    h.click(row);
+    await vi.advanceTimersByTimeAsync(1);
+    const detail = row.content.querySelector("[data-audit-fragment]")!;
+    expect(detail.firstElementChild?.className).toBe(
+      "audit-invocation-section",
+    );
+    expect(detail.querySelector(".audit-tool")?.textContent).toBe(
+      "project_clone",
+    );
+    expect(detail.querySelector(".audit-tool-params")?.textContent).toBe(
+      params,
+    );
+    expect(detail.querySelector("script")).toBeNull();
+  });
+
   it("opens new self-service audit rows and their logs through account-only URLs", async () => {
     const h = harness([]);
     h.page.dataset.consoleBase = "/account";
@@ -520,6 +556,9 @@ describe("inline audit details", () => {
     h.selection.anchorNode = h.selection.focusNode = originalFragment.raw;
     h.scroller.scrollLeft = 70;
     const incoming = record("new", "실패한 검증의 원인을 <그대로> 확인합니다.");
+    Object.assign(incoming, {
+      commandPreview: "npm run build\nprintf '<literal>'",
+    });
     h.fetch.mockResolvedValueOnce(h.listResponse("new page", [incoming]));
     h.start();
     const before = old.summary.getBoundingClientRect().top;
@@ -532,6 +571,13 @@ describe("inline audit details", () => {
     expect(old.summary.getBoundingClientRect().top).toBe(before);
     expect(h.body.querySelector(".audit-reason")?.textContent).toBe(
       "실패한 검증의 원인을 <그대로> 확인합니다.",
+    );
+    const incomingEvent = h.body.querySelector(".audit-event")!;
+    expect(incomingEvent.firstElementChild?.className).toBe(
+      "audit-command-preview",
+    );
+    expect(incomingEvent.firstElementChild?.textContent).toBe(
+      "npm run build\nprintf '<literal>'",
     );
     expect(h.window.scrollTo).toHaveBeenCalledWith({
       left: 0,
@@ -839,6 +885,11 @@ describe("inline audit details", () => {
     expect(row.content.querySelector(".audit-command")?.textContent).toBe(
       "echo <literal>",
     );
+    const command = row.content.querySelector(".audit-request-command")!;
+    expect(command.attributes.has("open")).toBe(true);
+    expect(
+      row.content.querySelector("[data-audit-fragment]")?.firstElementChild,
+    ).toBe(command);
     expect(row.content.querySelector("script")).toBeNull();
     await vi.advanceTimersByTimeAsync(5000);
     expect(row.content.querySelector(".audit-raw")).toBe(raw);

@@ -1,4 +1,4 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type {
   CallToolResult,
   ToolAnnotations,
@@ -13,6 +13,7 @@ import type { Principal, User } from "./user-store.ts";
 import type { AppService } from "./apps.ts";
 import type { AppRecord } from "./app-store.ts";
 import { appNamePattern } from "./app-store.ts";
+import { AuditedMcpServer } from "./mcp-audit.ts";
 
 const resultShape = {
   ok: z.boolean(),
@@ -77,6 +78,7 @@ export function createMcpServer(options: {
   scopes: Scope[];
   actor: string;
   principal: Principal;
+  clientId?: string;
   ipc: IpcClient;
   audit: AuditLogger;
   resourceMetadataUrl: string;
@@ -86,7 +88,48 @@ export function createMcpServer(options: {
     publicAllowed: () => Promise<boolean>;
   };
 }): McpServer {
-  const server = new McpServer({ name: "dev-mcp", version: "0.1.0" });
+  const schemas = new Map<string, z.ZodObject<z.ZodRawShape>>();
+  const server = new AuditedMcpServer({
+    audit: options.audit,
+    actor: options.actor,
+    userId: options.principal.userId,
+    clientId: options.clientId,
+    diagnoseTool: async (name, args) => {
+      const schema = typeof name === "string" ? schemas.get(name) : undefined;
+      if (!schema) {
+        return {
+          stage: "tool_lookup",
+          errorCode: "UNKNOWN_TOOL",
+          message: "Requested tool is not registered",
+        };
+      }
+      const parsed = await schema.safeParseAsync(args);
+      if (!parsed.success) {
+        return {
+          stage: "tool_input",
+          errorCode: "INVALID_TOOL_ARGUMENTS",
+          message: "Tool arguments failed validation",
+          tool: name as string,
+          // Only schema field names and issue codes, never input values or
+          // Zod messages (enum errors can echo secret-bearing input).
+          issues: parsed.error.issues.slice(0, 20).map((issue) => ({
+            field:
+              typeof issue.path[0] === "string" &&
+              Object.hasOwn(schema.shape, issue.path[0])
+                ? issue.path[0]
+                : "arguments",
+            code: issue.code,
+          })),
+        };
+      }
+      return {
+        stage: "tool_handler",
+        errorCode: "TOOL_HANDLER_ERROR",
+        message: "Tool handler or output validation failed",
+        tool: name as string,
+      };
+    },
+  });
   const add = <Shape extends z.ZodRawShape>(definition: {
     name: string;
     title: string;
@@ -166,6 +209,7 @@ export function createMcpServer(options: {
       );
     }
     const inputSchema = { ...definition.inputSchema, reason: callReason };
+    schemas.set(definition.name, z.object(inputSchema));
     server.registerTool<typeof resultShape, typeof inputSchema>(
       definition.name,
       {

@@ -1,4 +1,6 @@
 <div class="audit-detail-panel" data-audit-fragment role="region" aria-label="{{event}} 상세">
+  {{#detail.command}}<details class="audit-command-section audit-request-command" open><summary>요청한 명령</summary><pre class="command-block audit-command">{{detail.command}}</pre></details>{{/detail.command}}
+  {{#tool}}<section class="audit-invocation-section"><h3>실행한 도구</h3><code class="audit-tool">{{tool}}</code>{{#toolParams}}<h3 class="audit-params-label">호출 인수</h3><pre class="command-block audit-tool-params">{{toolParams}}</pre>{{/toolParams}}</section>{{/tool}}
   {{#reason}}<section class="audit-reason-section"><h3>작업 이유</h3><p>{{reason}}</p></section>{{/reason}}
   {{#detail}}
   <section class="audit-process-section">
@@ -22,6 +24,5 @@
     </div>
   </section>
   {{/detail}}
-  {{#detail.command}}<details class="audit-command-section audit-request-command"{{^detail.processes}} open{{/detail.processes}}><summary>요청한 명령</summary><pre class="command-block audit-command">{{detail.command}}</pre></details>{{/detail.command}}
   <details class="audit-raw"><summary>원본 기록</summary><pre class="audit-json">{{details}}</pre></details>
 </div>

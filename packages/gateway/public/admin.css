@@ -1335,13 +1335,13 @@ tbody tr:hover {
   text-align: right;
 }
 .audit-time-column {
-  width: 22%;
+  width: 18%;
 }
 .audit-actor-column {
-  width: 24%;
+  width: 22%;
 }
 .audit-action-column {
-  width: 124px;
+  width: 108px;
 }
 .audit-row td {
   padding-top: 11px;
@@ -1365,10 +1365,28 @@ tbody tr:hover {
   align-items: baseline;
   gap: 3px 8px;
 }
+.audit-command-preview {
+  margin: 0 0 8px;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
 .audit-tool {
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.audit-tool + strong {
   color: var(--muted);
   font-size: 12px;
-  overflow-wrap: anywhere;
+  font-weight: 400;
 }
 .audit-reason {
   display: -webkit-box;
@@ -1441,6 +1459,24 @@ tbody tr:hover {
   margin: 0 0 2px;
   font-size: 13px;
 }
+.audit-invocation-section {
+  padding: 10px 0 14px;
+}
+.audit-invocation-section .audit-tool {
+  display: block;
+  margin-top: 6px;
+}
+.audit-detail-panel .audit-params-label {
+  margin-top: 12px;
+}
+.audit-tool-params {
+  max-height: 240px;
+  margin: 8px 0 0;
+  padding: 12px 14px;
+  background: var(--surface);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .audit-reason-section {
   padding: 10px 0 14px;
 }
@@ -1453,7 +1489,7 @@ tbody tr:hover {
   overflow-wrap: anywhere;
 }
 .audit-command-section {
-  margin-top: 16px;
+  margin: 8px 0 16px;
 }
 .audit-command {
   max-height: 240px;

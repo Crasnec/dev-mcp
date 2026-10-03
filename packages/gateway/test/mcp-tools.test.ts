@@ -316,7 +316,20 @@ describe("MCP tool catalog", () => {
         expect(result.isError).toBe(true);
       }
       expect(call).not.toHaveBeenCalled();
-      expect((await audit.recent()).records).toHaveLength(0);
+      const rejected = (await audit.recent()).records;
+      expect(rejected).toHaveLength(6);
+      for (const entry of rejected) {
+        expect(entry).toMatchObject({
+          event: "mcp_error",
+          userId: "test-user",
+          stage: "tool_input",
+          tool: "project_list",
+          errorCode: "INVALID_TOOL_ARGUMENTS",
+          issues: [{ field: "reason", code: expect.any(String) }],
+        });
+        expect(entry).not.toHaveProperty("params");
+        expect(entry).not.toHaveProperty("reason");
+      }
       const result = await client.callTool({
         name: "project_list",
         arguments: { reason: "  현재 작업할 프로젝트를 확인합니다.  " },

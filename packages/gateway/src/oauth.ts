@@ -393,8 +393,40 @@ export function installOAuthRoutes(
         typeof req.body.grant_type === "string" ? req.body.grant_type : "";
       const clientId =
         typeof req.body.client_id === "string" ? req.body.client_id : "";
-      if (!(await store.client(clientId))) {
-        return oauthJsonError(res, 401, "invalid_client", "Unknown client_id");
+      const client = await store.client(clientId);
+      const reject = async (
+        status: number,
+        error: string,
+        description: string,
+        errorCode: string,
+        principal?: { userId: string },
+      ) => {
+        await audit.write({
+          event: "oauth_token_failed",
+          stage: "oauth_token",
+          userId: principal?.userId,
+          clientId: client?.clientId,
+          grantType: ["authorization_code", "refresh_token"].includes(grantType)
+            ? grantType
+            : "unknown",
+          oauthError: error,
+          errorCode,
+          message:
+            error === "invalid_scope"
+              ? "Requested OAuth scope is invalid"
+              : description,
+          httpStatus: status,
+          ok: false,
+        });
+        return oauthJsonError(res, status, error, description);
+      };
+      if (!client) {
+        return reject(
+          401,
+          "invalid_client",
+          "Unknown client_id",
+          "OAUTH_INVALID_CLIENT",
+        );
       }
       if (grantType === "authorization_code") {
         const code = typeof req.body.code === "string" ? req.body.code : "";
@@ -407,11 +439,11 @@ export function installOAuthRoutes(
             ? req.body.code_verifier
             : "";
         if (verifier.length < 43 || verifier.length > 128) {
-          return oauthJsonError(
-            res,
+          return reject(
             400,
             "invalid_grant",
             "code_verifier is invalid",
+            "OAUTH_PKCE_VERIFIER_INVALID",
           );
         }
         const exchanged = await store.exchangeCode({
@@ -421,11 +453,12 @@ export function installOAuthRoutes(
           verifier,
         });
         if (!exchanged || !(await users.valid(exchanged))) {
-          return oauthJsonError(
-            res,
+          return reject(
             400,
             "invalid_grant",
             "Authorization code is invalid, expired, used, or PKCE verification failed",
+            exchanged ? "OAUTH_AUTHORIZATION_REVOKED" : "OAUTH_CODE_INVALID",
+            exchanged,
           );
         }
         const tokens = await store.issueTokens(
@@ -452,11 +485,11 @@ export function installOAuthRoutes(
             requestedScopes = parseScopes(req.body.scope);
           }
         } catch (error) {
-          return oauthJsonError(
-            res,
+          return reject(
             400,
             "invalid_scope",
             error instanceof Error ? error.message : String(error),
+            "OAUTH_INVALID_SCOPE",
           );
         }
         const refreshed = await store.refresh({
@@ -465,11 +498,12 @@ export function installOAuthRoutes(
           ...(requestedScopes ? { requestedScopes } : {}),
         });
         if (!refreshed || !(await users.valid(refreshed))) {
-          return oauthJsonError(
-            res,
+          return reject(
             400,
             "invalid_grant",
             "Refresh token is invalid, expired, or cannot grant the requested scope",
+            refreshed ? "OAUTH_AUTHORIZATION_REVOKED" : "OAUTH_REFRESH_INVALID",
+            refreshed,
           );
         }
         await audit.write({
@@ -480,11 +514,11 @@ export function installOAuthRoutes(
         });
         return tokenResponse(res, refreshed, refreshed.scopes);
       }
-      return oauthJsonError(
-        res,
+      return reject(
         400,
         "unsupported_grant_type",
         "Supported grants are authorization_code and refresh_token",
+        "OAUTH_UNSUPPORTED_GRANT",
       );
     },
   );

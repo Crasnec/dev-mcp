@@ -103,6 +103,60 @@ async function fixture() {
 }
 
 describe("inline audit details and live updates over HTTP", () => {
+  it("puts MCP tool calls without a shell command first and shows their escaped arguments before process output", async () => {
+    const { get, write, ipc } = await fixture();
+    const params = {
+      name: "example <script>project</script>",
+      repo_url: "https://github.com/example/project",
+      ref: "main",
+    };
+    const id = await write({
+      event: "tool_call",
+      tool: "project_clone",
+      processId: undefined,
+      params,
+      reason: "프로젝트를 복제합니다.",
+    });
+    const list = await get("/admin/audit");
+    const row = new RegExp(
+      `<tr\\b[^>]*id="audit-row-${id}"[^>]*>([\\s\\S]*?)<\\/tr>`,
+    ).exec(list.payload)?.[1];
+    expect(row).toBeDefined();
+    expect(row!.indexOf("project_clone")).toBeLessThan(
+      row!.indexOf("tool_call"),
+    );
+    expect(row!.indexOf("project_clone")).toBeLessThan(
+      row!.indexOf('class="audit-time"'),
+    );
+    for (const url of [
+      `/admin/audit/${id}/detail`,
+      `/admin/audit?detail=${id}`,
+    ]) {
+      const detail = await get(url);
+      const invocation =
+        /<section class="audit-invocation-section">([\s\S]*?)<\/section>/.exec(
+          detail.payload,
+        )?.[1];
+      expect(invocation).toContain("project_clone");
+      expect(invocation).toContain("호출 인수");
+      expect(invocation).toContain("&lt;script&gt;project&lt;/script&gt;");
+      expect(invocation).toContain("https://github.com/example/project");
+      expect(invocation).not.toContain("<script>");
+      expect(
+        detail.payload.indexOf('class="audit-invocation-section"'),
+      ).toBeLessThan(detail.payload.indexOf('class="audit-reason-section"'));
+      expect(
+        detail.payload.indexOf('class="audit-invocation-section"'),
+      ).toBeLessThan(detail.payload.indexOf('class="audit-process-section"'));
+    }
+    const live = await get(`/admin/audit/${id}/live`);
+    expect(live.json().changes.record).toMatchObject({
+      tool: "project_clone",
+      toolParams: JSON.stringify(params, null, 2),
+    });
+    expect(ipc).not.toHaveBeenCalled();
+  });
+
   it("shows escaped tool reasons in the list, makes them searchable, and preserves the full reason in inline and no-JavaScript details", async () => {
     const { get, write, ipc } = await fixture();
     const reason =
@@ -199,6 +253,29 @@ describe("inline audit details and live updates over HTTP", () => {
     );
     expect(detail.payload).toContain("&lt;img");
     expect(detail.payload).toContain("&lt;script&gt;command&lt;/script&gt;");
+    expect(detail.payload).toContain(
+      'class="audit-command-section audit-request-command" open',
+    );
+    expect(
+      detail.payload.indexOf(
+        'class="audit-command-section audit-request-command"',
+      ),
+    ).toBeLessThan(detail.payload.indexOf('class="audit-process-section"'));
+    const list = await get("/admin/audit?q=" + encodeURIComponent("audit()"));
+    expect(list.payload).toContain('class="audit-command-preview"');
+    expect(list.payload).toContain(
+      "&lt;img src=x onerror=&quot;audit()&quot;&gt;",
+    );
+    expect(list.payload).not.toContain("<img");
+    expect(list.payload.indexOf('class="audit-event"')).toBeLessThan(
+      list.payload.indexOf('class="audit-time"'),
+    );
+    const live = await get(
+      "/admin/audit/live?q=" + encodeURIComponent("audit()"),
+    );
+    expect(live.json().changes["row:" + id].commandPreview).toBe(
+      '<img src=x onerror="audit()">',
+    );
     expect(logBlocks(detail.payload)).toEqual([
       "&lt;script&gt;runner output&lt;/script&gt;\n",
     ]);

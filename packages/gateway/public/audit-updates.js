@@ -432,12 +432,42 @@
     return root;
   }
 
-  function detailFragment(record, meta, hasProcesses) {
+  function detailFragment(record, meta) {
     const root = element("div", "audit-detail-panel", undefined, {
       "data-audit-fragment": "",
       role: "region",
       "aria-label": record.event + " 상세",
     });
+    if (record.command || meta.command) {
+      const command = element(
+        "details",
+        "audit-command-section audit-request-command",
+      );
+      command.setAttribute("open", "");
+      command.append(
+        element("summary", "", "요청한 명령"),
+        element(
+          "pre",
+          "command-block audit-command",
+          record.command || meta.command,
+        ),
+      );
+      root.append(command);
+    }
+    if (record.tool) {
+      const invocation = element("section", "audit-invocation-section");
+      invocation.append(
+        element("h3", "", "실행한 도구"),
+        element("code", "audit-tool", record.tool),
+      );
+      if (record.toolParams) {
+        invocation.append(
+          element("h3", "audit-params-label", "호출 인수"),
+          element("pre", "command-block audit-tool-params", record.toolParams),
+        );
+      }
+      root.append(invocation);
+    }
     if (record.reason) {
       const reason = element("section", "audit-reason-section");
       reason.append(
@@ -454,24 +484,6 @@
       }),
     );
     root.append(section);
-    if (record.command || meta.command) {
-      const command = element(
-        "details",
-        "audit-command-section audit-request-command",
-      );
-      if (!hasProcesses) {
-        command.setAttribute("open", "");
-      }
-      command.append(
-        element("summary", "", "요청한 명령"),
-        element(
-          "pre",
-          "command-block audit-command",
-          record.command || meta.command,
-        ),
-      );
-      root.append(command);
-    }
     const raw = element("details", "audit-raw");
     raw.append(
       element("summary", "", "원본 기록"),
@@ -488,11 +500,7 @@
     preserveReading(() => {
       if (!row.loaded) {
         row.content.replaceChildren(
-          detailFragment(
-            snapshot.record,
-            snapshot.meta,
-            snapshot.order.length > 0,
-          ),
+          detailFragment(snapshot.record, snapshot.meta),
         );
         row.loaded = true;
         row.metaSignature = signature(snapshot.meta);
@@ -606,11 +614,19 @@
     }
     if (event) {
       const heading = element("div", "audit-event-heading");
-      heading.append(element("strong", "", record.event));
       if (record.tool) {
         heading.append(element("code", "audit-tool", record.tool));
       }
-      event.replaceChildren(heading);
+      heading.append(element("strong", "", record.event));
+      event.replaceChildren();
+      if (record.commandPreview) {
+        event.append(
+          element("pre", "audit-command-preview", record.commandPreview, {
+            "aria-label": "요청한 명령",
+          }),
+        );
+      }
+      event.append(heading);
       if (record.reason) {
         event.append(element("p", "audit-reason", record.reason));
       }
@@ -633,7 +649,7 @@
       "data-audit-id": id,
       role: "row",
     });
-    for (const name of ["time", "event", "actor"]) {
+    for (const name of ["event", "time", "actor"]) {
       summary.append(
         element("td", "audit-" + name, undefined, { role: "cell" }),
       );

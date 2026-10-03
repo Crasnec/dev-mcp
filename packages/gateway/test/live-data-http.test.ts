@@ -254,6 +254,9 @@ describe("data-only management polling", () => {
     const id = first.changes.order[0];
     expect(first.changes["row:" + id]).not.toHaveProperty("details");
     expect(first.changes["row:" + id]).not.toHaveProperty("source");
+    expect(first.changes["row:" + id].commandPreview).toBe(
+      "large-log-test".repeat(1000).slice(0, 320) + "…",
+    );
     expect(JSON.stringify(first).length).toBeLessThan(2000);
     const detailUrl = "/admin/audit/" + id + "/live";
     const detail = (await h.get(detailUrl)).json();

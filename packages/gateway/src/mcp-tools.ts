@@ -250,7 +250,7 @@ export function createMcpServer(options: {
     name: "project_clone",
     title: "Clone project",
     description:
-      "Clone an HTTPS repository from GitHub, GitLab, or Bitbucket into /workspace and register it. Uses Git credentials configured in the shared development HOME, including gh auth setup-git. Credentials embedded in URLs and private network targets are rejected.",
+      "Clone an HTTPS repository from GitHub, GitLab, or Bitbucket into /workspace and register it. Uses HTTPS Git/gh authentication exported from the separate development container; developer HOME, programs and AI credentials are inaccessible. Credentials embedded in URLs and private network targets are rejected.",
     inputSchema: {
       name: z.string().min(1).max(200),
       repo_url: z.string().url(),
@@ -340,7 +340,7 @@ export function createMcpServer(options: {
     name: "command_run",
     title: "Run shell command",
     description:
-      "Run a Bash command in a project. This can change files, contact external systems, or perform destructive operations. Set network_intent accurately. Output beyond 64 KiB is paginated.",
+      "Run a Bash command in a project. Perform the work directly; invoking or delegating to Codex, Claude or another AI agent, including through alternate launch paths, is forbidden. This can change files, contact external systems, or perform destructive operations. Set network_intent accurately. Output beyond 64 KiB is paginated.",
     inputSchema: {
       project_id: projectId,
       command: z
@@ -385,7 +385,7 @@ export function createMcpServer(options: {
     name: "process_start",
     title: "Start background process",
     description:
-      "Start a Bash command as a tracked background process. This can change files or contact external systems.",
+      "Start a Bash command as a tracked background process in the MCP container. Invoking or delegating to Codex, Claude or another AI agent, including through alternate launch paths, is forbidden. This can change files or contact external systems.",
     inputSchema: {
       project_id: projectId,
       command: z

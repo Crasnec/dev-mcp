@@ -154,22 +154,54 @@ if [[ "${RUNNER_QUOTA_STORAGE:-false}" != true ]]; then
     fi
   done
 fi
-ssh_args=()
-if [[ "${WORKSPACE_SSH_ENABLED:-false}" == true ]]; then
-  ssh_args+=(--mount "type=volume,source=${WORKSPACE_AUTH_VOLUME:-dev-mcp-workspace-auth},target=/run/dev-mcp-ssh,volume-subpath=$user_id,readonly")
-  ssh_args+=(--env SSH_WORKSPACE=true --env SSH_MANIFEST_FILE=/run/dev-mcp-ssh/access.json --env SSH_CONFIG_FILE=/etc/ssh/dev-mcp-sshd_config)
+git_auth_volume="dev-mcp-user-$user_id-git-auth"
+if ! docker volume inspect "$git_auth_volume" >/dev/null 2>&1; then
+  docker volume create --label "dev-mcp.user=$user_id" "$git_auth_volume" >/dev/null
+elif [[ "$(docker volume inspect --format '{{index .Labels "dev-mcp.user"}}' "$git_auth_volume")" != "$user_id" ]]; then
+  echo "Cannot verify Git authentication ownership." >&2
+  exit 1
 fi
+runner_identity="$(docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true --entrypoint node "$runner_image" -p 'process.getuid() + ":" + process.getgid()')"
+if [[ ! "$runner_identity" =~ ^[0-9]+:[0-9]+$ || "$runner_identity" == 0:* ]]; then
+  echo "Runner must use a non-root identity." >&2
+  exit 1
+fi
+runner_uid="${runner_identity%:*}"
+runner_gid="${runner_identity#*:}"
+# A runner without the optional SSH environment still has a default Git identity.
+# Existing exports are authoritative and must not be overwritten on recreation.
+docker run --rm --network none --read-only --user 0:0 --cap-drop ALL \
+  --cap-add CHOWN --cap-add FOWNER --cap-add DAC_OVERRIDE \
+  --security-opt no-new-privileges:true \
+  --mount "type=volume,source=$git_auth_volume,target=/git-auth" \
+  --entrypoint node "$runner_image" -e '
+    const fs = require("node:fs");
+    const uid = Number(process.argv[1]), gid = Number(process.argv[2]);
+    const root = "/git-auth", file = root + "/gitconfig";
+    if (!fs.existsSync(file)) {
+      const config = "[user]\n\tname = " + JSON.stringify(process.argv[3]) + "\n\temail = " + JSON.stringify(process.argv[4]) + "\n[credential]\n\thelper =\n\thelper = store --file=/run/dev-mcp-git-auth/git-credentials\n\thelper = !/usr/bin/gh auth git-credential\n";
+      fs.writeFileSync(file, config, { mode: 384, flag: "wx" });
+      fs.chownSync(file, uid, gid);
+    }
+    fs.chownSync(root, uid, gid);
+    fs.chmodSync(root, 448);
+  ' "$runner_uid" "$runner_gid" "${RUNNER_GIT_AUTHOR_NAME:-Dev MCP user $user_id}" "${RUNNER_GIT_AUTHOR_EMAIL:-$user_id@users.dev-mcp.invalid}"
 if [[ "${RUNNER_START:-true}" == false ]]; then
   create_command=(create)
 fi
 docker "${create_command[@]}" --name "$container" --label "dev-mcp.user=$user_id" \
   --label "dev-mcp.name=${container#dev-mcp-user-}" \
-  --label dev-mcp.runtime=unified \
+  --label dev-mcp.runtime=split \
+  --label dev-mcp.role=runner \
   --network "$network" "${resource_args[@]}" \
-  --init --restart unless-stopped "${ssh_args[@]}" \
+  --init --restart unless-stopped --read-only --cap-drop ALL \
+  --security-opt no-new-privileges:true \
   --tmpfs /tmp:rw,nosuid,nodev,exec,mode=1777 \
+  --tmpfs "/home/runner:rw,nosuid,nodev,exec,mode=0700,uid=$runner_uid,gid=$runner_gid" \
+  --tmpfs /workspace/.dev-mcp-home:ro,nosuid,nodev,noexec,mode=000 \
   --mount "$workspace_mount" \
   --mount "$data_mount" \
+  --mount "type=volume,source=$git_auth_volume,target=/run/dev-mcp-git-auth,readonly" \
   --mount "type=bind,source=$ipc_root/$user_id,target=/ipc" \
   --mount "type=bind,source=$ipc_root/$user_id.key,target=/run/dev-mcp-ipc-key,readonly" \
   --env WORKSPACE_ROOT=/workspace --env RUNNER_DATA_DIR=/var/lib/dev-mcp \

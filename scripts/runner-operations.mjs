@@ -522,10 +522,11 @@ export class RunnerOperations {
     if (quota) {
       await this.storage();
     }
-    const legacyWorkspace =
-      info.Config.Labels?.["dev-mcp.runtime"] !== "unified"
-        ? await this.inspect("dev-mcp-workspace-" + user.id)
-        : undefined;
+    const legacyWorkspace = !["unified", "split"].includes(
+      info.Config.Labels?.["dev-mcp.runtime"],
+    )
+      ? await this.inspect("dev-mcp-workspace-" + user.id)
+      : undefined;
     if (
       legacyWorkspace &&
       (legacyWorkspace.Config.Labels?.["dev-mcp.user"] !== user.id ||

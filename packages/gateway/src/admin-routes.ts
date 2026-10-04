@@ -50,6 +50,7 @@ interface ProcessSummary {
 }
 interface ProcessLogPage {
   output: string;
+  captureAvailable?: boolean;
   cursor?: string;
   nextOffset?: number;
 }
@@ -1312,6 +1313,10 @@ function installConsoleRoutes(
       },
       running: process.status === "running",
       output: logs.ok ? (logs.data as ProcessLogPage).output : "",
+      logNotice:
+        logs.ok && (logs.data as ProcessLogPage).captureAvailable === false
+          ? "터미널에서 시작한 프로세스입니다. 출력은 시작한 터미널에서 확인하세요."
+          : undefined,
       logError: logs.ok ? undefined : logs.error?.message,
       logCursor: logs.ok
         ? processLogCursor(

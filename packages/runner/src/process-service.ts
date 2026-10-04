@@ -109,6 +109,7 @@ export class ProcessService {
         cwd: workingDirectory,
         env: cleanEnvironment({
           home: this.config.userHome ?? this.config.dataDir,
+          gitAuthDir: this.config.gitAuthDir,
           ...(!this.config.userHome && this.config.gitAuthorName
             ? { gitAuthorName: this.config.gitAuthorName }
             : {}),
@@ -205,9 +206,10 @@ export class ProcessService {
         const record = await this.external(id);
         return record
           ? ok({
-              output:
-                "터미널에서 시작한 프로세스입니다. 출력은 시작한 터미널에서 확인하세요. MCP process_start로 실행하면 로그를 여기서 볼 수 있습니다.",
-              cursor: "",
+              output: "",
+              captureAvailable: false,
+              logSource: "terminal",
+              cursor: encodeLogCursor(id, 0, Buffer.alloc(0)),
               offset: 0,
               nextOffset: 0,
             })

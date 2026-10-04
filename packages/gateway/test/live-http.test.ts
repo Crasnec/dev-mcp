@@ -84,6 +84,41 @@ async function fixture() {
 }
 
 describe("automatic process and runner updates over HTTP", () => {
+  it("shows terminal log availability once and leaves repeated live polls idle", async () => {
+    const { get, state, process, detailUrl } = await fixture();
+    state.logs = success({
+      output: "",
+      cursor: "terminal-cursor",
+      captureAvailable: false,
+      logSource: "terminal",
+      nextOffset: 0,
+    });
+    const page = await get(detailUrl);
+    expect(page.statusCode).toBe(200);
+    expect(page.payload.match(/data-log-notice/g)).toHaveLength(1);
+    expect(page.payload).toContain("출력은 시작한 터미널에서 확인하세요.");
+    expect(page.payload).not.toContain("MCP process_start로 실행하면");
+    expect(page.payload).toMatch(/data-live-log[^>]*><\/pre>/);
+    for (let poll = 0; poll < 3; poll += 1) {
+      const idle = await get(
+        detailUrl + "/live?cursor=terminal-cursor&status=" + process.status,
+      );
+      expect(idle.statusCode).toBe(204);
+      expect(idle.payload).toBe("");
+    }
+    process.status = "stopped";
+    const stopped = await get(
+      detailUrl + "/live?cursor=terminal-cursor&status=running",
+    );
+    expect(stopped.statusCode).toBe(200);
+    expect(stopped.json()).toMatchObject({
+      output: "",
+      cursor: "terminal-cursor",
+      more: false,
+      process: { status: "stopped" },
+    });
+  });
+
   it("rejects unauthenticated and non-admin live requests before runner access", async () => {
     const { app, users, admin, dataDir, ipc, get, detailUrl } = await fixture();
     const anonymous = await get(detailUrl + "/live", "");

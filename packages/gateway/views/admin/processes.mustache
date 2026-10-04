@@ -1,4 +1,5 @@
 <section class="panel" data-live-feed="processes" data-live-url="{{consoleBase}}/processes/live"{{^selfScope}} data-live-owner="{{owner.id}}"{{/selfScope}}>
+  <p class="padded help">MCP에서 실행한 프로세스를 표시합니다. SSH·VS Code에서 시작한 프로세스는 별도 개발 환경에서 확인할 수 있습니다.</p>
   <form class="toolbar" method="get" action="{{consoleBase}}/processes">{{> partials/sort-fields}}{{> partials/owner-filter}}<label class="filter-field grow">명령 검색<input type="search" name="q" value="{{q}}" placeholder="실행 명령"></label><label class="filter-field">상태<select name="status"><option value="">전체 상태</option>{{#statuses}}<option value="{{value}}" {{#selected}}selected{{/selected}}>{{label}}</option>{{/statuses}}</select></label><button class="primary" type="submit">조회</button><a class="button quiet" href="{{consoleBase}}/processes{{^selfScope}}?owner={{owner.id}}{{/selfScope}}">초기화</a></form>
   <div data-live-region="processes">
   <div data-live-unavailable{{#ready}} hidden{{/ready}}><div class="context-message">실행 환경이 응답하지 않습니다. 중지되었거나 아직 준비되지 않았을 수 있습니다. <a data-live-runner-link href="{{consoleBase}}/runners/{{owner.id}}">실행 환경 확인 →</a></div></div>

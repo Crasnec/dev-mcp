@@ -27,5 +27,5 @@ MaxStartups 10:30:30
 MaxSessions 20
 ClientAliveInterval 60
 ClientAliveCountMax 3
-SetEnv HOME=/workspace/.dev-mcp-home WORKSPACE_ROOT=/workspace
+SetEnv HOME=/workspace/.dev-mcp-home WORKSPACE_ROOT=/workspace GH_CONFIG_DIR=/workspace/.dev-mcp-home/.config/gh
 Subsystem sftp internal-sftp

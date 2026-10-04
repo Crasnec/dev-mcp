@@ -33,7 +33,13 @@ interface AuditOptions {
 // before a tool handler (and its normal tool_call audit) can run.
 export class AuditedMcpServer extends McpServer {
   constructor(private readonly auditOptions: AuditOptions) {
-    super({ name: "dev-mcp", version: "0.1.0" });
+    super(
+      { name: "dev-mcp", version: "0.1.0" },
+      {
+        instructions:
+          "Perform development work yourself using this server's tools. Never invoke, install, authenticate, or delegate work to Codex, Claude Code, or another AI agent through command_run, process_start, app_deploy, scripts, aliases, wrappers, copied binaries, remote execution, or any other workaround. A denied or unavailable agent must not be retried by another route. MCP runs in a separate container with Git/GitHub credentials only; the interactive development container and its AI credentials are unavailable.",
+      },
+    );
   }
 
   override connect(transport: Transport): Promise<void> {

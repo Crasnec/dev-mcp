@@ -4,6 +4,7 @@ export interface RunnerConfig {
   workspaceRoot: string;
   dataDir: string;
   userHome?: string;
+  gitAuthDir?: string;
   discoverWorkspaceProcesses?: boolean;
   socketPath: string;
   ipcSecretFile?: string;
@@ -32,6 +33,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RunnerConfig {
     dataDir: path.resolve(env.RUNNER_DATA_DIR ?? "/var/lib/dev-mcp"),
     ...(env.RUNNER_USER_HOME
       ? { userHome: path.resolve(env.RUNNER_USER_HOME) }
+      : {}),
+    ...(env.RUNNER_GIT_AUTH_DIR
+      ? { gitAuthDir: path.resolve(env.RUNNER_GIT_AUTH_DIR) }
       : {}),
     discoverWorkspaceProcesses:
       env.RUNNER_DISCOVER_WORKSPACE_PROCESSES === "true",

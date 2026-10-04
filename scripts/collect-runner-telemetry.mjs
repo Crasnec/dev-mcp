@@ -16,7 +16,7 @@ import {
   number,
 } from "./telemetry-metrics.mjs";
 import { TelemetryStore, readBoundedJson } from "./telemetry-store.mjs";
-import { ownsRuntime } from "./runtime-names.mjs";
+import { ownsRuntime, ownsDevelopment } from "./runtime-names.mjs";
 
 const ID = /^[a-f0-9]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -528,7 +528,37 @@ export class Collector {
           )
             return { user, warming: true };
         }
-        return { user, info, stats };
+        const developmentMatches = (containers.dedicated ?? []).filter(
+          (entry) =>
+            ownsDevelopment(user, {
+              Name: entry.Names?.[0],
+              Config: { Labels: entry.Labels },
+            }),
+        );
+        if (developmentMatches.length > 1) {
+          throw new Error("Ambiguous development identity");
+        }
+        let development;
+        if (developmentMatches.length) {
+          const devInfo = await this.docker.inspect(developmentMatches[0].Id);
+          if (!ownsDevelopment(user, devInfo)) {
+            throw new Error("Development identity mismatch");
+          }
+          const devStats = devInfo.State.Running
+            ? await optional(() => this.docker.stats(devInfo.Id))
+            : null;
+          const after = await this.docker.inspect(devInfo.Id);
+          if (
+            !ownsDevelopment(user, after) ||
+            after.State.StartedAt !== devInfo.State.StartedAt ||
+            after.State.Running !== devInfo.State.Running ||
+            (devStats?.id && devStats.id !== devInfo.Id)
+          ) {
+            return { user, warming: true };
+          }
+          development = { info: devInfo, stats: devStats };
+        }
+        return { user, info, stats, development };
       } catch {
         return { user, error: true };
       }
@@ -613,6 +643,43 @@ export class Collector {
         this.storageErrors.get(user.id) ?? null;
       scopes[user.id] = result.sample;
       this.previous.set(user.id, result.counters);
+      if (observation.development) {
+        const key = "development:" + user.id;
+        const devResult = runnerSample(
+          {
+            ts,
+            ...observation.development,
+            hostCores: host.cpu?.cores,
+            hostMemory: host.memory?.capacity,
+          },
+          this.previous.get(key),
+        );
+        this.previous.set(key, devResult.counters);
+        const combined = aggregateSamples(
+          ts,
+          [result.sample, devResult.sample],
+          scopes.host,
+          2,
+        );
+        combined.epoch = result.sample.epoch + ":" + devResult.sample.epoch;
+        for (const metric of [
+          "diskUsedBytes",
+          "diskCapacityBytes",
+          "workspaceBytes",
+          "runtimeBytes",
+        ]) {
+          combined.values[metric] = result.sample.values[metric];
+          combined.metricObservedAt[metric] =
+            result.sample.metricObservedAt[metric];
+        }
+        combined.details = {
+          ...result.sample.details,
+          developmentContainerId: observation.development.info.Id,
+          developmentState: observation.development.info.State.Status,
+          executionContainers: 2,
+        };
+        scopes[user.id] = combined;
+      }
     }
     scopes["all-runners"] = aggregateSamples(
       ts,
@@ -630,7 +697,12 @@ export class Collector {
       scopes["all-runners"].details.omittedRunners =
         included.length - selected.length;
     for (const key of this.previous.keys())
-      if (key !== "host" && !unique.some((user) => user.id === key))
+      if (
+        key !== "host" &&
+        !unique.some(
+          (user) => user.id === key || "development:" + user.id === key,
+        )
+      )
         this.previous.delete(key);
     for (const map of [
       this.storage,

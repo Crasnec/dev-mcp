@@ -9,5 +9,5 @@
 </section>
 <section class="panel process-log-panel">
   <div class="panel-heading"><h2>실행 로그</h2><a class="button" href="{{consoleBase}}/processes/{{owner.id}}/{{process.id}}">새로고침 ↻</a></div>
-  <div class="padded log-panel-body">{{#logError}}<p class="error-banner" data-log-error role="alert">{{logError}}</p>{{/logError}}<pre class="log-output" data-live-log data-cursor="{{logCursor}}" tabindex="0" aria-label="프로세스 {{process.id}} 실행 로그">{{output}}</pre>{{#nextLog}}<a class="button" data-live-next href="{{nextLog}}">다음 로그 →</a>{{/nextLog}}</div>
+  <div class="padded log-panel-body">{{#logNotice}}<p class="context-message" data-log-notice>{{logNotice}}</p>{{/logNotice}}{{#logError}}<p class="error-banner" data-log-error role="alert">{{logError}}</p>{{/logError}}<pre class="log-output" data-live-log data-cursor="{{logCursor}}" tabindex="0" aria-label="프로세스 {{process.id}} 실행 로그">{{output}}</pre>{{#nextLog}}<a class="button" data-live-next href="{{nextLog}}">다음 로그 →</a>{{/nextLog}}</div>
 </section>

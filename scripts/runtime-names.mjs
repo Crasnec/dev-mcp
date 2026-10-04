@@ -18,6 +18,24 @@ export function runtimeName(user) {
 }
 
 export const runtimeContainer = (user) => "dev-mcp-user-" + runtimeName(user);
+export const developmentContainer = (user) =>
+  "dev-mcp-workspace-" + runtimeName(user);
+// Private credentials and HOME follow the immutable account ID across renames.
+export const developmentHome = (user) => "dev-mcp-user-" + user.id + "-home";
+export const gitAuthVolume = (user) => "dev-mcp-user-" + user.id + "-git-auth";
+
+export function ownsDevelopment(user, info) {
+  const labels = info?.Config?.Labels ?? {};
+  const name = info?.Name?.replace(/^\//, "");
+  return (
+    uuid.test(user?.id) &&
+    labels["dev-mcp.user"] === user.id &&
+    labels["dev-mcp.role"] === "workspace" &&
+    (name === "dev-mcp-workspace-" + user.id ||
+      (validRuntimeName(labels["dev-mcp.name"]) &&
+        name === "dev-mcp-workspace-" + labels["dev-mcp.name"]))
+  );
+}
 
 export function ownsRuntime(user, info) {
   if (!uuid.test(user?.id)) {

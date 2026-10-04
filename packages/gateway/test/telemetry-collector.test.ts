@@ -109,6 +109,49 @@ const entry = (ts: number, cpu = 2, intervalMs = 5000) =>
   });
 
 describe("telemetry observations", () => {
+  it("includes the separate development container in the owner's CPU and memory without duplicating shared workspace storage", async () => {
+    const dir = await directory();
+    await writeFile(
+      path.join(dir, "users.json"),
+      JSON.stringify({ users: [user()] }),
+    );
+    const devId = "d".repeat(64);
+    const development = {
+      ...info(),
+      Id: devId,
+      Name: "/dev-mcp-workspace-" + OWNER,
+      Config: {
+        Labels: { "dev-mcp.user": OWNER, "dev-mcp.role": "workspace" },
+      },
+    };
+    const docker = {
+      list: vi.fn(async () => [
+        { Id: ID, Names: [info().Name], Labels: info().Config.Labels },
+        {
+          Id: devId,
+          Names: [development.Name],
+          Labels: development.Config.Labels,
+        },
+      ]),
+      inspect: vi.fn(async (id) => (id === devId ? development : info())),
+      stats: vi.fn(async (id) => ({ ...stats(), id })),
+    };
+    const collector = new Collector({
+      docker,
+      store: { record: async () => {} },
+      usersFile: path.join(dir, "users.json"),
+      statusDirectory: dir,
+      readHost: async () => hostInput(),
+    });
+    collector.storageInFlight = true;
+    const scopes = await collector.collect();
+    expect(scopes[OWNER].values.memoryUsedBytes).toBe(1000);
+    expect(scopes[OWNER].details.executionContainers).toBe(2);
+    expect(scopes[OWNER].details.developmentContainerId).toBe(devId);
+    expect(scopes["all-runners"].values.memoryUsedBytes).toBe(1000);
+    expect(collector.previous.has("development:" + OWNER)).toBe(true);
+  });
+
   it("recognizes email-named runners by immutable ownership and ignores migration backups", () => {
     const named = {
       ...info(),

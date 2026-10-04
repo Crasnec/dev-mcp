@@ -56,6 +56,7 @@ export class CommandService {
           cwd: workingDirectory,
           env: cleanEnvironment({
             home: this.config.userHome ?? this.config.dataDir,
+            gitAuthDir: this.config.gitAuthDir,
             ...(!this.config.userHome && this.config.gitAuthorName
               ? { gitAuthorName: this.config.gitAuthorName }
               : {}),

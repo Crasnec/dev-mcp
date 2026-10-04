@@ -4,6 +4,7 @@ import type { RunnerConfig } from "./config.ts";
 import { CommandService } from "./command-service.ts";
 import { FileService } from "./file-service.ts";
 import { GitService } from "./git-service.ts";
+import { GitAuthSync } from "./git-auth.ts";
 import { OutputStore } from "./output-store.ts";
 import { ProcessService } from "./process-service.ts";
 import { ProjectService } from "./project-service.ts";
@@ -16,6 +17,7 @@ export class RunnerRuntime {
   readonly processes: ProcessService;
   readonly git: GitService;
   readonly outputs: OutputStore;
+  private readonly gitAuth: GitAuthSync;
 
   constructor(private readonly config: RunnerConfig) {
     this.projects = new ProjectService(config);
@@ -24,20 +26,24 @@ export class RunnerRuntime {
     this.commands = new CommandService(config, this.projects, this.outputs);
     this.processes = new ProcessService(config, this.projects);
     this.git = new GitService(config, this.projects, this.outputs);
+    this.gitAuth = new GitAuthSync(config);
   }
 
   async initialize(): Promise<void> {
     await this.projects.initialize();
     await this.processes.initialize();
+    await this.gitAuth.refresh();
   }
 
   async dispatch(request: RpcRequest): Promise<ToolResult> {
     const p = request.params;
     try {
+      await this.gitAuth.refresh();
       switch (request.method) {
         case "development_status": {
           const env = cleanEnvironment({
             home: this.config.userHome ?? this.config.dataDir,
+            gitAuthDir: this.config.gitAuthDir,
           });
           const gh = await execFile("gh", ["auth", "status"], {
             cwd: this.config.workspaceRoot,
@@ -49,7 +55,8 @@ export class RunnerRuntime {
             githubInstalled: !!gh,
             githubConnected: gh?.exitCode === 0,
             home: env.HOME,
-            sharedEnvironment: !!this.config.userHome,
+            sharedEnvironment: false,
+            sharedGitAuth: !!this.config.gitAuthDir,
           });
         }
         case "project_list":

@@ -81,7 +81,21 @@ it("discovers and stops terminal processes in registered projects while rejectin
     const stale = external.id.replace(/:[0-9]+$/, ":0");
     expect((await f.runtime.processes.stop(stale)).ok).toBe(false);
     expect(child.exitCode).toBeNull();
-    expect((await f.runtime.processes.logs(external.id)).ok).toBe(true);
+    const logs = await f.runtime.processes.logs(external.id);
+    expect(logs.ok).toBe(true);
+    expect(logs.data).toMatchObject({
+      output: "",
+      captureAvailable: false,
+      logSource: "terminal",
+      offset: 0,
+      nextOffset: 0,
+      cursor: expect.any(String),
+    });
+    const cursor = (logs.data as { cursor: string }).cursor;
+    expect(cursor).not.toBe("");
+    for (let poll = 0; poll < 3; poll += 1) {
+      expect(await f.runtime.processes.logs(external.id, cursor)).toEqual(logs);
+    }
     expect((await f.runtime.processes.stop(external.id)).ok).toBe(true);
     await new Promise<void>((resolve) =>
       child.exitCode !== null || child.signalCode !== null

@@ -1,9 +1,20 @@
 import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { OperationError, validUser } from "./runner-operations.mjs";
 import { workspaceContainer, parseSshPublicKey } from "./ssh-access.mjs";
+import {
+  developmentContainer,
+  developmentHome,
+  gitAuthVolume,
+  ownsDevelopment,
+  runtimeContainer,
+  runtimeName,
+} from "./runtime-names.mjs";
+import { splitRuntime } from "./split-runtime.mjs";
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const hash = (value) => createHash("sha256").update(value).digest("hex");
 export const validWorkspaceControl = (request) =>
   !!request &&
   uuid.test(request.revision) &&
@@ -30,10 +41,55 @@ export class WorkspaceOperations {
     }
   }
   async owned(user) {
-    return this.runners.owned(user);
+    if (!validUser(user)) {
+      throw new Error("Invalid workspace owner");
+    }
+    const name = developmentContainer(user);
+    let info = await this.runners.inspect(name);
+    if (
+      info &&
+      (info.Config.Labels?.["dev-mcp.user"] !== user.id ||
+        info.Config.Labels?.["dev-mcp.role"] !== "workspace")
+    ) {
+      throw new Error("Workspace 컨테이너 소유권을 확인할 수 없습니다.");
+    }
+    if (!info) {
+      const ids = await this.docker(
+        "ps",
+        "-a",
+        "--filter",
+        "label=dev-mcp.user=" + user.id,
+        "--filter",
+        "label=dev-mcp.role=workspace",
+        "--format",
+        "{{.Names}}",
+      );
+      for (const id of ids.split(/\s+/).filter(Boolean)) {
+        const candidate = await this.runners.inspect(id);
+        if (ownsDevelopment(user, candidate)) {
+          if (info) {
+            throw new Error("Multiple development containers for one account");
+          }
+          info = candidate;
+        }
+      }
+    }
+    return { name: info?.Name?.replace(/^\//, "") ?? name, info };
   }
   async image() {
-    return this.runners.runnerImage();
+    const id = await this.docker(
+      "image",
+      "inspect",
+      "--format",
+      "{{.Id}}",
+      this.imageName,
+    ).catch(() => "");
+    if (!/^sha256:[a-f0-9]{64}$/.test(id)) {
+      throw new OperationError(
+        "Workspace 이미지가 없습니다. runner 이미지를 빌드한 뒤 workspace 이미지를 빌드해 주세요.",
+      );
+    }
+    return id;
   }
   async identity(image) {
     this.identities ??= new Map();
@@ -133,168 +189,363 @@ export class WorkspaceOperations {
     }
     return network;
   }
-  async beforeRunnerOperation() {
-    // MCP and SSH now stop together with the same container.
-    return false;
+  async template(user) {
+    const { info } = await this.runners.owned(user);
+    if (!info) {
+      throw new OperationError("Runner를 먼저 생성해 주세요.");
+    }
+    const mount = info.Mounts?.find(
+      (entry) => entry.Destination === "/workspace",
+    );
+    let workspace;
+    if (mount?.Type === "bind") {
+      const entry = await this.runners.hostWorkspace(user, info);
+      await this.runners.verifyWorkspace(entry);
+      workspace = `type=bind,source=${entry.path},target=/workspace`;
+    } else if (
+      info.Config.Labels?.["dev-mcp.storage"] === "quota" &&
+      mount?.Name === this.runners.pool
+    ) {
+      await this.runners.storage();
+      workspace = `type=volume,source=${this.runners.pool},target=/workspace,volume-subpath=${user.id}/workspace`;
+    } else if (
+      mount?.Type === "volume" &&
+      [
+        runtimeContainer(user) + "-workspace",
+        `dev-mcp-user-${user.id}-workspace`,
+      ].includes(mount.Name)
+    ) {
+      workspace = `type=volume,source=${mount.Name},target=/workspace`;
+    } else throw new Error("사용자 전용 작업 볼륨을 확인할 수 없습니다.");
+    return {
+      workspace,
+      source: hash(workspace),
+      limits: this.runners.limits(info),
+      home: developmentHome(user),
+      gitAuth: gitAuthVolume(user),
+    };
   }
-  async attach(user) {
+  async create(user, template, start, imageOverride) {
+    const image = imageOverride ?? (await this.image());
+    const { uid, gid } = await this.identity(image);
+    await this.registry.prepare(user, uid, gid);
     const network = await this.network(user);
-    const { name, info } = await this.owned(user);
-    if (!info.NetworkSettings.Networks[network]) {
+    const name = developmentContainer(user);
+    const { limits } = template;
+    const args = [
+      "create",
+      "--name",
+      name,
+      "--hostname",
+      name,
+      "--label",
+      "dev-mcp.user=" + user.id,
+      "--label",
+      "dev-mcp.role=workspace",
+      "--label",
+      "dev-mcp.name=" + runtimeName(user),
+      "--label",
+      "dev-mcp.runtime=split",
+      "--label",
+      "dev-mcp.workspace-source=" + template.source,
+      "--network",
+      network,
+      "--network-alias",
+      workspaceContainer(user.id),
+      "--init",
+      "--restart",
+      "unless-stopped",
+      "--tmpfs",
+      "/tmp:rw,nosuid,nodev,exec,mode=1777",
+      "--mount",
+      template.workspace,
+      "--mount",
+      `type=volume,source=${template.home},target=/workspace/.dev-mcp-home`,
+      "--mount",
+      `type=volume,source=${template.gitAuth},target=/run/dev-mcp-git-auth`,
+      "--mount",
+      `type=volume,source=${this.authVolume},target=/run/dev-mcp-ssh,volume-subpath=${user.id},readonly`,
+      "--env",
+      "GIT_AUTHOR_NAME=" +
+        (user.email?.split("@")[0] ?? "Dev MCP user " + user.id),
+      "--env",
+      "GIT_AUTHOR_EMAIL=" + (user.email ?? user.id + "@users.dev-mcp.invalid"),
+      "--env",
+      "HOME=/workspace/.dev-mcp-home",
+      "--env",
+      "GH_CONFIG_DIR=/workspace/.dev-mcp-home/.config/gh",
+      "--env",
+      "SSH_WORKSPACE=true",
+      "--env",
+      "SSH_MANIFEST_FILE=/run/dev-mcp-ssh/access.json",
+      "--env",
+      "SSH_CONFIG_FILE=/etc/ssh/dev-mcp-sshd_config",
+      "--health-cmd",
+      'node -e \'const s=require("node:net").connect(2222,"127.0.0.1",()=>{s.destroy();process.exit(0)});s.on("error",()=>process.exit(1));s.setTimeout(2000,()=>process.exit(1))\'',
+      "--health-interval",
+      "5s",
+      "--health-timeout",
+      "3s",
+      "--health-start-period",
+      "5s",
+      "--health-retries",
+      "2",
+    ];
+    if (limits.memoryMiB) {
+      args.push(
+        "--memory",
+        limits.memoryMiB + "m",
+        "--memory-swap",
+        limits.memoryMiB + "m",
+      );
+    }
+    if (limits.cpus) {
+      args.push("--cpus", String(limits.cpus));
+    }
+    if (limits.pids) {
+      args.push("--pids-limit", String(limits.pids));
+    }
+    if (limits.fileSizeMiB) {
+      args.push(
+        "--ulimit",
+        `fsize=${limits.fileSizeMiB * 1048576}:${limits.fileSizeMiB * 1048576}`,
+      );
+    }
+    await this.prepareStorage(user, template);
+    await this.internet(user);
+    await this.docker(
+      ...args,
+      image,
+      "node",
+      "/opt/dev-mcp/scripts/development-workspace.mjs",
+    );
+    if (limits.network) {
+      await this.docker("network", "connect", name, name);
+    }
+    if (start) {
+      await this.docker("start", name);
+    }
+  }
+  async internet(user) {
+    const name = developmentContainer(user);
+    const found = await this.docker(
+      "network",
+      "ls",
+      "--filter",
+      "name=^" + name + "$",
+      "--format",
+      "{{.ID}}",
+    );
+    if (!found) {
       await this.docker(
         "network",
-        "connect",
-        "--alias",
-        workspaceContainer(user.id),
-        network,
+        "create",
+        "--label",
+        "dev-mcp.user=" + user.id,
+        "--label",
+        "dev-mcp.role=workspace",
         name,
       );
     }
+    const info = JSON.parse(await this.docker("network", "inspect", name))[0];
+    if (
+      info.Labels?.["dev-mcp.user"] !== user.id ||
+      info.Labels?.["dev-mcp.role"] !== "workspace"
+    ) {
+      throw new Error("Invalid development network ownership");
+    }
   }
-  async migrate(user) {
-    const { name, info } = await this.owned(user);
-    if (!info || info.Config.Labels?.["dev-mcp.runtime"] === "unified") {
-      return;
-    }
-    const legacy = workspaceContainer(user.id);
-    const workspace = await this.runners.inspect(legacy);
-    if (
-      workspace &&
-      (workspace.Config.Labels?.["dev-mcp.user"] !== user.id ||
-        workspace.Config.Labels?.["dev-mcp.role"] !== "workspace")
-    ) {
-      throw new Error("Legacy workspace ownership mismatch");
-    }
-    const previous = name + "-previous";
-    const oldWorkspace = legacy + "-previous";
-    if (
-      (await this.runners.inspect(previous)) ||
-      (await this.runners.inspect(oldWorkspace))
-    ) {
-      throw new OperationError(
-        "이전 개발 컨테이너가 남아 있습니다. 복구 후 다시 요청해 주세요.",
-      );
-    }
-    const running =
-      info.State.Running &&
-      (!workspace || workspace.State.Running) &&
-      user.status === "active";
-    const sshNetwork = "dev-mcp-ssh-" + user.id;
-    const workspaceNetwork = workspace?.NetworkSettings.Networks[sshNetwork];
-    if (workspace?.State.Running) {
-      await this.docker("stop", "--time", "10", legacy);
-    }
-    if (info.State.Running) {
-      await this.docker("stop", "--time", "10", name);
-    }
-    await this.docker("rename", name, previous);
-    try {
-      if (workspace) {
-        await this.docker("rename", legacy, oldWorkspace);
-        if (workspaceNetwork) {
-          await this.docker("network", "disconnect", sshNetwork, oldWorkspace);
+  async prepareStorage(user, template) {
+    for (const name of [template.home, template.gitAuth]) {
+      if (await this.runners.volumeExists(name)) {
+        const info = JSON.parse(
+          await this.docker("volume", "inspect", name),
+        )[0];
+        if (info.Labels?.["dev-mcp.user"] !== user.id) {
+          throw new Error("Development storage ownership mismatch");
         }
-      }
-      const limits = this.runners.limits(info);
-      const host = info.Mounts?.find(
-        (mount) => mount.Destination === "/workspace" && mount.Type === "bind",
-      );
-      if (host) {
-        const entry = await this.runners.hostWorkspace(user, info);
-        await this.runners.verifyWorkspace(entry);
-      }
-      if (info.Config.Labels?.["dev-mcp.storage"] === "quota") {
-        await this.runners.storage();
-      }
-      await this.runners.provision(
-        user,
-        limits,
-        info.Config.Labels?.["dev-mcp.storage"] === "quota",
-        false,
-        host?.Source ?? "",
-        !running,
-      );
-      await this.attach(user);
-      if (running) {
-        await this.docker("start", name);
-        // Retain both old containers until the MCP socket accepts connections.
+      } else {
         await this.docker(
-          "exec",
+          "volume",
+          "create",
+          "--label",
+          "dev-mcp.user=" + user.id,
           name,
-          "node",
-          "-e",
-          `
-          const net = require("node:net");
-          const fs = require("node:fs");
-          const sshEnabled = JSON.parse(fs.readFileSync("/run/dev-mcp-ssh/access.json", "utf8")).enabled === true;
-          const end = Date.now() + 40000;
-          function connect(target) {
-            return new Promise((resolve, reject) => {
-              const socket = net.connect(target, () => { socket.destroy(); resolve(); });
-              socket.on("error", reject);
-              socket.setTimeout(1000, () => socket.destroy(new Error("timeout")));
-            });
-          }
-          function probe() {
-            const targets = [{ path: "/ipc/runner.sock" }, ...(sshEnabled ? [{ port: 2222, host: "127.0.0.1" }] : [])];
-            Promise.all(targets.map(connect)).then(() => process.exit(0)).catch(() => {
-              if (Date.now() > end) {
-                process.exit(1);
-              }
-              setTimeout(probe, 500);
-            });
-          }
-          probe();
-        `,
         );
       }
-    } catch (error) {
-      if ((await this.owned(user)).info) {
-        await this.docker("rm", "--force", name);
-      }
-      await this.docker("rename", previous, name);
-      if (workspace && (await this.runners.inspect(oldWorkspace))) {
-        await this.docker("rename", oldWorkspace, legacy);
-        if (workspaceNetwork) {
-          await this.docker("network", "connect", sshNetwork, legacy);
-        }
-        if (workspace.State.Running) {
-          await this.docker("start", legacy);
-        }
-      }
-      if (info.State.Running) {
-        await this.docker("start", name);
-      }
-      throw error;
     }
-    await this.docker("rm", previous);
-    if (workspace) {
-      await this.docker("rm", oldWorkspace);
+    const image = await this.image();
+    const { uid, gid } = await this.identity(image);
+    await this.docker(
+      "run",
+      "--rm",
+      "--network",
+      "none",
+      "--read-only",
+      "--user",
+      "0:0",
+      "--cap-drop",
+      "ALL",
+      "--cap-add",
+      "CHOWN",
+      "--cap-add",
+      "FOWNER",
+      "--security-opt",
+      "no-new-privileges:true",
+      "--mount",
+      `type=volume,source=${template.home},target=/home-volume`,
+      "--mount",
+      `type=volume,source=${template.gitAuth},target=/git-auth`,
+      "--entrypoint",
+      "node",
+      image,
+      "-e",
+      'const fs=require("node:fs");for(const p of ["/home-volume","/git-auth"]){fs.chownSync(p,Number(process.argv[1]),Number(process.argv[2]));fs.chmodSync(p,448)}',
+      String(uid),
+      String(gid),
+    );
+  }
+  async migrate(user, options) {
+    return splitRuntime(this, user, options);
+  }
+  async beforeNamingMigration(user) {
+    const { name, info } = await this.runners.owned(user);
+    const target = runtimeContainer(user);
+    const copy =
+      info?.Config.Labels?.["dev-mcp.storage"] !== "quota" &&
+      info?.Mounts?.some(
+        (mount) =>
+          mount.Type === "volume" &&
+          ["/workspace", "/var/lib/dev-mcp"].includes(mount.Destination) &&
+          mount.Name !==
+            target +
+              (mount.Destination === "/workspace" ? "-workspace" : "-data"),
+      );
+    return info && (name !== target || copy)
+      ? this.beforeRunnerOperation(user, { action: "workspace" })
+      : false;
+  }
+  // Storage copying must never race with writes from VS Code.
+  async beforeRunnerOperation(user, request) {
+    if (!["create", "apply", "workspace"].includes(request.action)) {
+      return false;
     }
+    const { info: runner } = await this.runners.owned(user);
+    const current = runner && this.runners.limits(runner);
+    const changesStorage =
+      request.action === "workspace" ||
+      request.limits?.storageMiB > 0 ||
+      runner?.Config.Labels?.["dev-mcp.storage"] === "quota";
+    const changesFileSize =
+      request.limits &&
+      current &&
+      request.limits.fileSizeMiB !== current.fileSizeMiB;
+    if (!changesStorage && !changesFileSize) {
+      return false;
+    }
+    const { name, info } = await this.owned(user);
+    if (!info?.State.Running) {
+      return false;
+    }
+    await this.docker("stop", "--time", "10", name);
+    return true;
   }
   async sync(user, { autoStart = true, resume = false } = {}) {
     await this.migrate(user);
-    const { name, info } = await this.owned(user);
-    if (!info) {
-      if (user.status === "active" && (autoStart || resume)) {
-        await this.runners.create(user);
-        await this.attach(user);
-      }
-      return;
-    }
+    let { name, info } = await this.owned(user);
     if (user.status !== "active") {
-      if (info.State.Running) {
+      if (info?.State.Running) {
         await this.docker("stop", "--time", "10", name);
       }
       return;
     }
-    await this.attach(user);
+    const template = await this.template(user);
+    if (!info) {
+      const { info: runner } = await this.runners.owned(user);
+      await this.create(
+        user,
+        template,
+        resume || (autoStart && runner?.State.Running),
+      );
+      return;
+    }
+    const actual = this.runners.limits(info);
+    const desired = template.limits;
+    const recreate =
+      name !== developmentContainer(user) ||
+      info.Config.Labels["dev-mcp.workspace-source"] !== template.source ||
+      actual.fileSizeMiB !== desired.fileSizeMiB ||
+      (actual.memoryMiB > 0 && !desired.memoryMiB) ||
+      (actual.cpus > 0 && !desired.cpus);
+    if (recreate) {
+      const previous = name + "-previous";
+      if (await this.runners.inspect(previous)) {
+        throw new OperationError(
+          "이전 workspace가 남아 있습니다. 복구 후 다시 요청해 주세요.",
+        );
+      }
+      const running = info.State.Running || resume;
+      if (info.State.Running) {
+        await this.docker("stop", "--time", "10", name);
+      }
+      let image;
+      if (name !== developmentContainer(user)) {
+        image = await this.docker("commit", name);
+        if (!/^sha256:[a-f0-9]{64}$/.test(image)) {
+          throw new OperationError(
+            "개발 환경의 설치 파일을 보존하지 못했습니다.",
+          );
+        }
+      }
+      await this.docker("rename", name, previous);
+      try {
+        await this.create(user, template, running, image);
+      } catch (error) {
+        const target = developmentContainer(user);
+        if (
+          (await this.runners.inspect(target))?.Config.Labels?.[
+            "dev-mcp.user"
+          ] === user.id
+        ) {
+          await this.docker("rm", "--force", target);
+        }
+        await this.docker("rename", previous, name);
+        if (running) {
+          await this.docker("start", name);
+        }
+        throw error;
+      }
+      await this.docker("rm", previous);
+      return;
+    }
+    await this.network(user);
     if (
-      resume ||
-      (autoStart &&
-        info.State.Status === "created" &&
-        info.Config.Labels?.["dev-mcp.keep-stopped"] !== "true")
+      ["memoryMiB", "cpus", "pids"].some((key) => actual[key] !== desired[key])
     ) {
+      await this.docker(
+        "update",
+        "--memory",
+        String(desired.memoryMiB * 1048576),
+        "--memory-swap",
+        desired.memoryMiB ? String(desired.memoryMiB * 1048576) : "-1",
+        "--cpus",
+        String(desired.cpus),
+        "--pids-limit",
+        String(desired.pids || -1),
+        name,
+      );
+    }
+    const internet = developmentContainer(user);
+    const ssh = "dev-mcp-ssh-" + user.id;
+    for (const attached of Object.keys(info.NetworkSettings.Networks))
+      if (attached !== ssh && (!desired.network || attached !== internet)) {
+        await this.docker("network", "disconnect", attached, name);
+      }
+    if (desired.network && !info.NetworkSettings.Networks[internet]) {
+      await this.internet(user);
+      await this.docker("network", "connect", internet, name);
+    }
+    if (resume || (autoStart && info.State.Status === "created")) {
       await this.docker("start", name);
     }
   }
@@ -323,7 +574,7 @@ export class WorkspaceOperations {
       );
   }
   async observe(user) {
-    const { name, info } = await this.owned(user);
+    const { info } = await this.owned(user);
     const state = {
       state: info?.State.Status ?? "missing",
       observedAt: Date.now(),
@@ -348,16 +599,7 @@ export class WorkspaceOperations {
       const entry = await this.entry();
       state.sshReady =
         info.State.Running &&
-        (await this.docker(
-          "exec",
-          name,
-          "node",
-          "-e",
-          'const s=require("node:net").connect(2222,"127.0.0.1",()=>{s.destroy();process.exit(0)});s.on("error",()=>process.exit(1));s.setTimeout(2000,()=>process.exit(1))',
-        ).then(
-          () => true,
-          () => false,
-        )) &&
+        info.State.Health?.Status === "healthy" &&
         entry.info.State.Running &&
         entry.info.State.Health?.Status === "healthy" &&
         manifest.enabled &&

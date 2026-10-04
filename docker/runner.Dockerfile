@@ -23,6 +23,7 @@ RUN dnf -y --setopt=install_weak_deps=False install \
       gcc \
       gcc-c++ \
       git \
+      gh \
       gzip \
       jq \
       libffi-devel \
@@ -62,29 +63,18 @@ RUN dnf -y --setopt=install_weak_deps=False install \
     && useradd --non-unique --uid ${DEV_UID} --gid runner --home-dir /var/lib/dev-mcp --no-create-home --shell /bin/bash runner \
     && mkdir -p /opt/dev-mcp/packages/runner /ipc /var/lib/dev-mcp /workspace \
     && chmod 0777 /ipc \
-    && chown -R ${DEV_UID}:${DEV_GID} /opt/dev-mcp /var/lib/dev-mcp /workspace
-RUN dnf -y --setopt=install_weak_deps=False install sudo openssh-server gh \
-    && dnf clean all \
-    && usermod --home /workspace/.dev-mcp-home runner \
-    && useradd --non-unique --uid ${DEV_UID} --gid runner --home-dir /workspace/.dev-mcp-home --no-create-home --shell /bin/bash workspace \
-    && usermod --password '*' workspace \
-    && printf '%s\n' '%runner ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/dev-mcp \
-    && chmod 0440 /etc/sudoers.d/dev-mcp \
-    && visudo -cf /etc/sudoers.d/dev-mcp
-COPY docker/workspace-sshd_config /etc/ssh/dev-mcp-sshd_config
-COPY scripts/ssh-server.mjs scripts/development-container.mjs scripts/development-home.mjs /opt/dev-mcp/scripts/
-COPY scripts/dev-mcp-install.mjs /usr/local/bin/dev-mcp-install
-RUN chmod 0755 /usr/local/bin/dev-mcp-install
-COPY --from=build --chown=${DEV_UID}:${DEV_GID} /src/packages/runner/package.json /opt/dev-mcp/packages/runner/package.json
-COPY --from=build --chown=${DEV_UID}:${DEV_GID} /src/packages/runner/dist /opt/dev-mcp/packages/runner/dist
+    && mkdir -p /home/runner \
+    && usermod --home /home/runner runner \
+    && chown -R ${DEV_UID}:${DEV_GID} /home/runner /var/lib/dev-mcp /workspace
+COPY --from=build /src/packages/runner/package.json /opt/dev-mcp/packages/runner/package.json
+COPY --from=build /src/packages/runner/dist /opt/dev-mcp/packages/runner/dist
 WORKDIR /opt/dev-mcp
 USER runner:runner
 ENV NODE_ENV=production \
-    HOME=/workspace/.dev-mcp-home \
-    RUNNER_USER_HOME=/workspace/.dev-mcp-home \
-    PATH=/workspace/.dev-mcp-home/.local/bin:/workspace/.dev-mcp-home/bin:/workspace/.dev-mcp-home/.cargo/bin:${PATH} \
-    RUNNER_DISCOVER_WORKSPACE_PROCESSES=true \
+    HOME=/home/runner \
+    RUNNER_USER_HOME=/home/runner \
+    RUNNER_GIT_AUTH_DIR=/run/dev-mcp-git-auth \
     WORKSPACE_ROOT=/workspace \
     RUNNER_DATA_DIR=/var/lib/dev-mcp \
     RUNNER_SOCKET=/ipc/runner.sock
-CMD ["node", "scripts/development-container.mjs"]
+CMD ["node", "packages/runner/dist/index.js"]

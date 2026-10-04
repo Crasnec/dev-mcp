@@ -10,6 +10,7 @@ export interface ExecResult {
 
 export function cleanEnvironment(options: {
   home: string;
+  gitAuthDir?: string;
   gitAuthorName?: string;
   gitAuthorEmail?: string;
 }): NodeJS.ProcessEnv {
@@ -22,13 +23,19 @@ export function cleanEnvironment(options: {
     LC_ALL: "C.UTF-8",
     TERM: "dumb",
     GIT_CONFIG_NOSYSTEM: "1",
-    ...(options.gitAuthorName
+    ...(options.gitAuthDir
+      ? {
+          GH_CONFIG_DIR: `${options.home}/.config/gh`,
+          GIT_CONFIG_GLOBAL: `${options.gitAuthDir}/gitconfig`,
+        }
+      : {}),
+    ...(options.gitAuthorName && !options.gitAuthDir
       ? {
           GIT_AUTHOR_NAME: options.gitAuthorName,
           GIT_COMMITTER_NAME: options.gitAuthorName,
         }
       : {}),
-    ...(options.gitAuthorEmail
+    ...(options.gitAuthorEmail && !options.gitAuthDir
       ? {
           GIT_AUTHOR_EMAIL: options.gitAuthorEmail,
           GIT_COMMITTER_EMAIL: options.gitAuthorEmail,

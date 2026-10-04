@@ -127,6 +127,7 @@ export class ProjectService {
         cwd: workspace,
         env: cleanEnvironment({
           home: this.config.userHome ?? this.config.dataDir,
+          gitAuthDir: this.config.gitAuthDir,
         }),
         maxCaptureBytes: this.config.maxOutputBytes,
         timeoutMs: 300_000,

@@ -35,6 +35,10 @@ describe("MCP tool catalog", () => {
       InMemoryTransport.createLinkedPair();
     await server.connect(serverTransport);
     await client.connect(clientTransport);
+    expect(client.getInstructions()).toContain(
+      "Never invoke, install, authenticate, or delegate",
+    );
+    expect(client.getInstructions()).toContain("any other workaround");
     const catalog = await client.listTools();
     expect(catalog.tools).toHaveLength(21);
     for (const tool of catalog.tools) {

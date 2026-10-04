@@ -120,7 +120,7 @@ if (args[0] === "ps") {
     };
   }
 } else if (args[0] === "run" && args.includes("-p")) {
-  output = JSON.stringify({uid: process.getuid(), gid: process.getgid()});
+  output = args.at(-1).includes("process.getuid() +") ? process.getuid() + ":" + process.getgid() : JSON.stringify({uid: process.getuid(), gid: process.getgid()});
 } else if (args[0] === "run" && args.includes("-e")) {
   const operation = args[args.indexOf("-e") + 2];
   output = { probe: "ok", mkdir: "created", verify: "ok", remove: "removed" }[operation] ?? "";
@@ -190,7 +190,7 @@ it("creates only approved dedicated runners with isolated mounts and no publishe
   const creation = state.calls.find((args: string[]) => args[0] === "create");
   expect(creation).toEqual(
     expect.arrayContaining([
-      "dev-mcp.runtime=unified",
+      "dev-mcp.runtime=split",
       `type=volume,source=dev-mcp-user-${alice}-workspace,target=/workspace`,
       `type=volume,source=dev-mcp-user-${alice}-data,target=/var/lib/dev-mcp`,
       `type=bind,source=/host/user-ipc/${alice},target=/ipc`,
@@ -411,7 +411,7 @@ it("mounts approved users' workspaces from the onboarding root", async () => {
   });
 });
 
-it("runs MCP and SSH together with private auth mounts and no public ports", async () => {
+it("separates MCP and SSH with private authentication, homes and networks and no public ports", async () => {
   const f = await fixture([
     { ...account(alice), authVersion: 1 },
     account(bob, "pending"),
@@ -426,10 +426,11 @@ it("runs MCP and SSH together with private auth mounts and no public ports", asy
   const state = await f.state();
   expect(state.containers).toEqual({
     ["dev-mcp-user-" + alice]: "running",
+    ["dev-mcp-workspace-" + alice]: "running",
   });
   const workspace = state.calls.find(
     (args: string[]) =>
-      args.includes("dev-mcp.runtime=unified") && args[0] === "create",
+      args.includes("dev-mcp.role=workspace") && args[0] === "create",
   );
   expect(workspace).toEqual(
     expect.arrayContaining([
@@ -440,6 +441,9 @@ it("runs MCP and SSH together with private auth mounts and no public ports", asy
         alice +
         ",readonly",
       "SSH_WORKSPACE=true",
+      "type=volume,source=dev-mcp-user-" +
+        alice +
+        "-home,target=/workspace/.dev-mcp-home",
     ]),
   );
   expect(workspace.join(" ")).not.toMatch(/docker.sock|gateway-data/);
@@ -448,9 +452,14 @@ it("runs MCP and SSH together with private auth mounts and no public ports", asy
     (args: string[]) =>
       args[0] === "create" && args.includes("dev-mcp-user-" + alice),
   );
-  expect(runner).toContain("SSH_WORKSPACE=true");
-  expect(runner).not.toContain("--read-only");
-  expect(state.metadata["dev-mcp-user-" + alice].networks).toHaveProperty(
+  expect(runner).not.toContain("SSH_WORKSPACE=true");
+  expect(runner).toContain("--read-only");
+  expect(runner).toContain("--cap-drop");
+  expect(runner).toContain("no-new-privileges:true");
+  expect(runner).toContain(
+    "/workspace/.dev-mcp-home:ro,nosuid,nodev,noexec,mode=000",
+  );
+  expect(state.metadata["dev-mcp-user-" + alice].networks).not.toHaveProperty(
     "dev-mcp-ssh-" + alice,
   );
   const status = JSON.parse(
@@ -485,7 +494,7 @@ it("applies personal workspace requests once, preserves stop across reconciliati
   expect(
     (await f.state()).calls.filter(
       (args: string[]) =>
-        args[0] === "restart" && args.at(-1) === "dev-mcp-user-" + alice,
+        args[0] === "restart" && args.at(-1) === "dev-mcp-workspace-" + alice,
     ),
   ).toHaveLength(1);
   const status = JSON.parse(await readFile(statusFile, "utf8"));
@@ -507,6 +516,6 @@ it("applies personal workspace requests once, preserves stop across reconciliati
   await f.run(env);
   await f.run(env);
   const state = await f.state();
-  expect(state.containers["dev-mcp-user-" + alice]).toBe("exited");
-  expect(state.containers["dev-mcp-workspace-" + alice]).toBeUndefined();
+  expect(state.containers["dev-mcp-user-" + alice]).toBe("running");
+  expect(state.containers["dev-mcp-workspace-" + alice]).toBe("exited");
 }, 30000);

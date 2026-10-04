@@ -30,56 +30,80 @@ async function directory() {
   temporary.push(dir);
   return dir;
 }
-async function fixture(unified = true) {
+async function fixture() {
   const dir = await directory();
-  const name = "dev-mcp-user-" + id;
+  const name = workspaceContainer(id);
   const info = {
     Config: {
       Labels: {
         "dev-mcp.user": id,
-        ...(unified ? { "dev-mcp.runtime": "unified" } : {}),
+        "dev-mcp.role": "workspace",
+        "dev-mcp.runtime": "split",
+        "dev-mcp.workspace-source": "original",
       },
     },
     HostConfig: {},
-    Mounts: [
-      { Type: "volume", Name: name + "-workspace", Destination: "/workspace" },
-    ],
     State: { Running: true, Status: "running" },
     NetworkSettings: { Networks: { ["dev-mcp-ssh-" + id]: {} } },
   };
   const docker = vi.fn(async () => "");
-  const provision = vi.fn(async () => {});
-  const runners = new RunnerOperations(docker, provision, dir, "dev-mcp");
+  const runners = new RunnerOperations(docker, vi.fn(), dir, "dev-mcp");
   vi.spyOn(runners, "inspect").mockResolvedValue(undefined);
-  vi.spyOn(runners, "owned").mockResolvedValue({ name, info });
-  const operations = new WorkspaceOperations(docker, runners, {}, "dev-mcp");
-  vi.spyOn(operations, "network").mockResolvedValue("dev-mcp-ssh-" + id);
-  return { dir, name, info, docker, provision, runners, operations };
-}
-it("uses the account runner for SSH and preserves intentionally stopped containers", async () => {
-  const f = await fixture();
-  expect(await f.operations.owned(user)).toEqual({
-    name: f.name,
-    info: f.info,
+  vi.spyOn(runners, "owned").mockResolvedValue({
+    name: "dev-mcp-user-" + id,
+    info,
   });
+  const operations = new WorkspaceOperations(docker, runners, {}, "dev-mcp");
+  vi.spyOn(operations, "owned").mockResolvedValue({ name, info });
+  return { dir, name, info, docker, runners, operations };
+}
+const limits = {
+  memoryMiB: 0,
+  cpus: 0,
+  pids: 0,
+  fileSizeMiB: 0,
+  network: false,
+};
+it("stops VS Code writes before storage copying and preserves already stopped workspaces", async () => {
+  const f = await fixture();
   expect(
     await f.operations.beforeRunnerOperation(user, { action: "workspace" }),
-  ).toBe(false);
+  ).toBe(true);
+  expect(f.docker).toHaveBeenCalledWith("stop", "--time", "10", f.name);
+  f.docker.mockClear();
   f.info.State.Running = false;
-  f.info.State.Status = "exited";
-  await f.operations.sync(user);
+  expect(
+    await f.operations.beforeRunnerOperation(user, {
+      action: "apply",
+      limits: { ...limits, storageMiB: 1024 },
+    }),
+  ).toBe(false);
   expect(f.docker).not.toHaveBeenCalled();
+  f.info.State.Running = true;
+  expect(
+    await f.operations.beforeRunnerOperation(user, {
+      action: "apply",
+      limits: { ...limits, memoryMiB: 512, storageMiB: 0 },
+    }),
+  ).toBe(false);
 });
-it("rolls back failed migration and keeps data volumes", async () => {
-  const f = await fixture(false);
-  f.provision.mockRejectedValue(new Error("create failed"));
+it("rolls back failed workspace replacement without deleting data volumes", async () => {
+  const f = await fixture();
+  vi.spyOn(f.operations, "template").mockResolvedValue({
+    workspace: "mount",
+    source: "new-source",
+    limits,
+  });
+  vi.spyOn(f.operations, "create").mockRejectedValue(
+    new Error("create failed"),
+  );
   await expect(f.operations.sync(user)).rejects.toThrow("create failed");
   expect(f.docker).toHaveBeenCalledWith("rename", f.name, f.name + "-previous");
   expect(f.docker).toHaveBeenCalledWith("rename", f.name + "-previous", f.name);
   expect(f.docker).toHaveBeenCalledWith("start", f.name);
   expect(f.docker.mock.calls.flat()).not.toContain("--volumes");
 });
-it("never starts disabled accounts and rejects requests for another owner", async () => {
+it("never starts disabled accounts and rejects container and work-volume ownership mismatches", async () => {
   const f = await fixture();
   const request = {
     revision: randomUUID(),
@@ -90,48 +114,64 @@ it("never starts disabled accounts and rejects requests for another owner", asyn
   await expect(
     f.operations.apply({ ...user, status: "disabled" }, request),
   ).rejects.toThrow("승인");
+  expect(f.docker).not.toHaveBeenCalled();
   await expect(
     f.operations.apply(user, { ...request, actorId: randomUUID() }),
   ).rejects.toThrow("Invalid workspace request");
   expect(f.docker).not.toHaveBeenCalled();
+  vi.mocked(f.runners.owned).mockResolvedValue({
+    name: "runner",
+    info: {
+      ...f.info,
+      Mounts: [
+        {
+          Type: "volume",
+          Name: "another-user-workspace",
+          Destination: "/workspace",
+        },
+      ],
+    },
+  });
+  await expect(f.operations.template(user)).rejects.toThrow("전용 작업 볼륨");
+  vi.mocked(f.runners.inspect).mockResolvedValue({
+    ...f.info,
+    Config: {
+      Labels: { "dev-mcp.user": "another-user", "dev-mcp.role": "workspace" },
+    },
+  });
+  const operations = new WorkspaceOperations(
+    f.docker,
+    f.runners,
+    {},
+    "dev-mcp",
+  );
+  await expect(operations.owned(user)).rejects.toThrow("소유권");
   expect(validWorkspaceControl({ ...request, action: "exec" })).toBe(false);
+  expect(validWorkspaceControl({ ...request, actorId: "../bad" })).toBe(false);
 });
-it("attaches SSH using the existing destination alias without enabling Internet access", async () => {
+it("keeps the SSH management network when Internet access is blocked", async () => {
   const f = await fixture();
-  f.info.NetworkSettings.Networks = {};
+  f.info.Config.Labels["dev-mcp.workspace-source"] = "original";
+  f.info.NetworkSettings.Networks["dev-mcp-user-" + id] = {};
+  vi.spyOn(f.operations, "template").mockResolvedValue({
+    workspace: "mount",
+    source: "original",
+    limits,
+  });
+  vi.spyOn(f.operations, "network").mockResolvedValue("dev-mcp-ssh-" + id);
   await f.operations.sync(user);
   expect(f.docker).toHaveBeenCalledWith(
     "network",
-    "connect",
-    "--alias",
-    workspaceContainer(id),
+    "disconnect",
+    "dev-mcp-user-" + id,
+    f.name,
+  );
+  expect(f.docker).not.toHaveBeenCalledWith(
+    "network",
+    "disconnect",
     "dev-mcp-ssh-" + id,
     f.name,
   );
-  expect(f.docker.mock.calls.some((call) => call[0] === "start")).toBe(false);
-});
-it("rejects a legacy workspace belonging to another user before migration", async () => {
-  const f = await fixture(false);
-  vi.mocked(f.runners.inspect).mockResolvedValue({
-    Config: {
-      Labels: { "dev-mcp.user": randomUUID(), "dev-mcp.role": "workspace" },
-    },
-  });
-  await expect(f.operations.sync(user)).rejects.toThrow("ownership mismatch");
-  expect(f.provision).not.toHaveBeenCalled();
-});
-it("preserves an active owner's stopped state after migrating to a created replacement", async () => {
-  const f = await fixture(false);
-  f.info.State.Running = false;
-  f.info.State.Status = "exited";
-  f.provision.mockImplementationOnce(async () => {
-    f.info.Config.Labels["dev-mcp.runtime"] = "unified";
-    f.info.Config.Labels["dev-mcp.keep-stopped"] = "true";
-    f.info.State.Status = "created";
-  });
-  await f.operations.sync(user);
-  await f.operations.sync(user);
-  expect(f.provision.mock.calls[0]?.[5]).toBe(true);
   expect(f.docker.mock.calls.some((call) => call[0] === "start")).toBe(false);
 });
 it("publishes only an owner's exact destination and clears revoked or deleted accounts", async () => {

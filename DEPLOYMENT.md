@@ -2,7 +2,17 @@
 
 Updated on 2026-10-04 at `https://dev.crasnec.com`.
 
-## npm global installs and Bash startup (2026-10-04)
+## MCP/development split (deployed 2026-10-04)
+
+The per-account MCP and SSH development containers are separated again. MCP uses the clean runner image, a private temporary HOME, read-only root, dropped capabilities and no-new-privileges, with no sudo. Development HOME, existing AI credentials/programs and directly installed system packages remain in the developer-only environment. Shared project/runtime mounts, account identities, roles, authentication versions and all three SSH host keys were retained. The two active accounts have running MCP and healthy SSH containers; the disabled account's pair remains unstarted.
+
+Existing GitHub authentication on the crasnec account is available through MCP gh and the Git HTTPS credential helper. Only Git identity and HTTPS Git/gh credentials cross the boundary, without original Git aliases/helpers/includes, gh aliases/extensions or SSH/AI authentication. The dara0994 account had no existing gh login; its Git identity is available and it can authenticate through development SSH. Both account HOME file hashes match the pre-transition evidence. Native SSH, rollback, authentication change/logout, account rename and stopped-state preservation were also verified with disposable Docker accounts.
+
+Full regression verification passed: 289 tests across 46 files, followed by the 14 affected Git/provisioner tests after the final identity adjustment. TypeScript, style, shell syntax, public HTTPS/OAuth checks and production mount/network/Git-authentication checks passed. Process-terminal notices now render once outside the log stream. MCP initialization and command/process tool descriptions prohibit other-agent execution/delegation and alternate launch paths. Existing MCP clients must initialize a new session after the gateway update.
+
+Pre-transition metadata, SSH authorization/key backups and preservation evidence are in the private `/tmp/dev-mcp-pre-split-20261004` directory. Prior gateway/provisioner/telemetry/runner images have `rollback-20261004-before-split` tags. The provisioner retains each developer snapshot image in `runner-status/runtime-splits.json`; preserve these images and the private HOME/authentication volumes.
+
+## Earlier npm global installs and Bash startup (2026-10-04, before separation)
 
 The development image now initializes missing Fedora `.bashrc` and `.bash_profile` files in the shared HOME and gives npm a user-owned default prefix, `${HOME}/.local`. Interactive shells display `[user@hostname directory]$`, and global npm commands are available to SSH and MCP. Existing personal startup files, registry/authentication settings and explicit npm prefixes are retained. Installed npm packages persist in the workspace volume through recreation.
 
@@ -39,6 +49,7 @@ Validation: TypeScript build, repository style/format checks and all 269 tests a
 ```bash
 C="-f compose.yaml -f compose.google.yaml -f compose.server.yaml -f compose.telemetry.yaml -f compose.ssh.yaml"
 sudo docker compose $C build runner gateway provisioner telemetry ssh-entry
+sudo docker compose $C build workspace
 sudo docker compose $C up -d --no-deps --wait gateway provisioner telemetry ssh-entry
 node scripts/verify-public.mjs https://dev.crasnec.com
 ```
@@ -206,14 +217,18 @@ Deployed image IDs:
 
 The immediately preceding images are retained as `dev-mcp-gateway:rollback-20260922-before-controls` and `dev-mcp-provisioner:rollback-20260922-before-controls`. These are separate from the older single-user rollback assets above. Preserve any subsequently applied runner settings and quota storage when planning a rollback.
 
-## Unified development containers
+## Separated development and MCP containers
 
-Build `runner gateway provisioner ssh-entry` with the existing overlays (including `compose.ssh.yaml`), then recreate only `gateway provisioner telemetry ssh-entry`. The provisioner migrates legacy runner/workspace pairs while preserving account storage, keys, limits and stopped state. It removes old containers after the replacement is reachable through IPC. Each active account now has one `dev-mcp-user-<google-id>` development container; `dev-mcp-workspace-<id>` remains a private network alias for existing SSH configurations.
+Build `runner gateway provisioner telemetry ssh-entry` with the existing overlays (including `compose.ssh.yaml`), then build `workspace` against the updated runner. Recreate only the control-plane services with `--no-deps`; the provisioner handles per-account migration. Each account receives a hardened MCP container `dev-mcp-user-<google-id>` and a separate development container `dev-mcp-workspace-<google-id>`. The UUID-based private SSH alias and host keys remain unchanged.
+
+The split migration stops the original, preserves its writable image in a development-only snapshot, copies its existing embedded HOME into `dev-mcp-user-<UUID>-home`, and creates the MCP runner from the clean runner image. Project/runtime volumes and IPC keys remain intact. Only Git identity and HTTPS Git/gh authentication are exported into `dev-mcp-user-<UUID>-git-auth`, mounted read-only by MCP. Developer HOME, AI credentials/programs, Git/gh executable aliases/extensions, SSH authentication and networks are unavailable to MCP. Ordinary development commands remain available; see SECURITY.md for the arbitrary-shell boundary.
+
+Both replacement services must become ready before removing a running original. A failed split restores the original and waits for a fresh runner operation. Disabled and intentionally stopped accounts stay stopped. `runner-status/runtime-splits.json` records the phase and snapshot image. Retain that journal, private HOME/authentication volumes and development snapshots with account backups. The old embedded HOME remains under a read-only mode-000 mask in MCP as a recovery copy, not a live shared HOME. Never prune volumes or snapshot images during migration.
 
 For the email-naming update, build and recreate only `provisioner telemetry` with `--no-deps`; the runner, gateway and SSH-entry images do not need rebuilding. The provisioner migrates both per-account volumes to `dev-mcp-user-<google-id>-workspace` and `-data` using verified copies while the account is stopped. It preserves the development container's writable layer in a local snapshot image, retaining directly installed packages, and rolls back the container on copy/startup failure. UUID-named original volumes remain available for recovery. Do not prune volumes during this transition. The host volume paths follow these names; the account's UUID, IPC paths and SSH authorization remain stable. A pre-existing destination owned by another account is rejected rather than renamed or shared.
 
 `runner-status/naming-migrations.json` records copy progress and completion. After completion, the new volumes are authoritative: recreating a container reuses them rather than restoring the older UUID-named copies. A failed migration restores the original container and waits for a fresh runner operation before retrying. Keep the status volume with the account volumes in backups.
 
-MCP and SSH share `/workspace` and HOME `/workspace/.dev-mcp-home`. Sudo works inside the container. Use `dev-mcp-install <packages>` to persist a package list and automatically restore it after recreation; use `dev-mcp-install --restore` to retry. Direct changes to the container image filesystem last until recreation. GitHub authentication configured with `gh auth login --web --git-protocol https` and `gh auth setup-git` is usable from both MCP and SSH. Project pages offer HTTPS clone and registration.
+MCP and SSH share project files under `/workspace`. Development HOME is `/workspace/.dev-mcp-home` in a private persistent volume; MCP uses temporary `/home/runner`, no sudo, a read-only root, dropped capabilities and no-new-privileges. Sudo and `dev-mcp-install` remain available through development SSH. GitHub HTTPS authentication configured with `gh auth login --web --git-protocol https` and Git identity changes propagate within five seconds, including logout. MCP keeps its own writable gh configuration copy for CLI schema migrations. Project pages offer HTTPS clone and registration. MCP process lists/app proxies reach only MCP-started processes; development servers use SSH forwarding.
 
-SSH and MCP stop/restart together. Per-user telemetry includes both. Browser sessions, active MCP sessions and per-user OAuth grant revocation are in administrator user details; `/admin/connections` redirects to the searchable user list. Audit records resolve users to emails, identify installation events as system actions, preserve target metadata and support `owner` filtering.
+Personal SSH workspace operations and administrator MCP runner operations have independent lifecycles. Storage copies pause both writers. Disabled accounts stop both during reconciliation. Resource limits apply to each container; per-user CPU/memory/network/activity telemetry sums both, and shared project/runtime disk is counted once. The private development HOME and image layers are outside project/runtime storage quota. Browser sessions, active MCP sessions and per-user OAuth grant revocation are in administrator user details; `/admin/connections` redirects to the searchable user list. Audit records resolve users to emails, identify installation events as system actions, preserve target metadata and support `owner` filtering.

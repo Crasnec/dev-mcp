@@ -59,6 +59,7 @@ export class GitService {
         cwd: root,
         env: cleanEnvironment({
           home: this.config.userHome ?? this.config.dataDir,
+          gitAuthDir: this.config.gitAuthDir,
         }),
         maxCaptureBytes: 64 * 1024 * 1024,
       });
@@ -105,6 +106,7 @@ export class GitService {
         await resolveForWrite(root, selectedPath);
       const env = cleanEnvironment({
         home: this.config.userHome ?? this.config.dataDir,
+        gitAuthDir: this.config.gitAuthDir,
         gitAuthorName: this.config.userHome
           ? undefined
           : this.config.gitAuthorName,

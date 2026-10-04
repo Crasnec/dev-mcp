@@ -250,13 +250,37 @@ async function reconcile() {
       if (!current) {
         continue;
       }
-      await operations.migrateNames(current, {
-        retry:
-          !!request &&
-          request.action !== "stop" &&
-          previous.revision !== request.revision,
-        skipFailed: request?.action === "stop",
-      });
+      if (workspaces) {
+        await workspaces.migrate(current, {
+          retry:
+            !!request &&
+            request.action !== "stop" &&
+            previous.revision !== request.revision,
+        });
+      }
+      const namingResume = workspaces
+        ? await workspaces.beforeNamingMigration(current)
+        : false;
+      let namingComplete = false;
+      try {
+        await operations.migrateNames(current, {
+          retry:
+            !!request &&
+            request.action !== "stop" &&
+            previous.revision !== request.revision,
+          skipFailed: request?.action === "stop",
+        });
+        namingComplete = true;
+      } finally {
+        if (namingResume) {
+          if (namingComplete) {
+            await workspaces.sync(current, { resume: true });
+          } else if (current.status === "active") {
+            const { name } = await workspaces.owned(current);
+            await docker("start", name);
+          }
+        }
+      }
       if (request && previous.revision !== request.revision) {
         previous = {
           ...previous,
@@ -297,6 +321,9 @@ async function reconcile() {
           "관리 서비스가 작업 도중 재시작되었습니다. 실제 상태를 확인한 뒤 다시 요청해 주세요.";
       }
       const { info, name } = await operations.owned(current);
+      if (current.status !== "active" && info?.State.Running) {
+        await docker("stop", "--time", "10", name);
+      }
       if (
         request?.action !== "stop" &&
         current.status === "active" &&
@@ -318,6 +345,7 @@ async function reconcile() {
         await operations.storage();
         if (
           previous.state === "running" &&
+          current.status === "active" &&
           !info.State.Running &&
           /mount|loop/.test(info.State.Error ?? "") &&
           request?.action !== "stop" &&

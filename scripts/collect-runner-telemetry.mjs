@@ -16,6 +16,7 @@ import {
   number,
 } from "./telemetry-metrics.mjs";
 import { TelemetryStore, readBoundedJson } from "./telemetry-store.mjs";
+import { ownsRuntime } from "./runtime-names.mjs";
 
 const ID = /^[a-f0-9]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -283,11 +284,7 @@ export function ownsContainer(user, info) {
   if (!validAccount(user) || !info || !ID.test(info.Id ?? "")) {
     return false;
   }
-  const labels = info.Config?.Labels ?? {};
-  return (
-    info.Name === "/dev-mcp-user-" + user.id &&
-    labels["dev-mcp.user"] === user.id
-  );
+  return ownsRuntime(user, info);
 }
 
 export function aggregateMember(user, hasContainer) {
@@ -487,8 +484,12 @@ export class Collector {
       ...new Map(accounts.map((user) => [user.id, user])).values(),
     ];
     const candidates = (user) =>
-      (containers?.dedicated ?? []).filter((entry) =>
-        entry.Names?.includes("/dev-mcp-user-" + user.id),
+      (containers?.dedicated ?? []).filter(
+        (entry) =>
+          ownsRuntime(user, {
+            Name: entry.Names?.[0],
+            Config: { Labels: entry.Labels },
+          }) || entry.Names?.includes("/dev-mcp-user-" + user.id),
       );
     const included = unique.filter((user) =>
       aggregateMember(user, candidates(user).length > 0),

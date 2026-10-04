@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { createServer } from "node:net";
 import { RunnerOperations } from "./runner-operations.mjs";
+import { runtimeContainer, runtimeName } from "./runtime-names.mjs";
 import { WorkspaceOperations } from "./workspace-operations.mjs";
 import { SshRegistry, atomicFile } from "./ssh-registry.mjs";
 import {
@@ -22,10 +23,16 @@ if (!/^dev-mcp-ws-test-[a-z0-9-]+$/.test(project ?? "")) {
   throw new Error("Set a unique SSH_TEST_PROJECT");
 }
 const execute = promisify(execFile);
-const docker = async (...args) =>
-  (
+const snapshots = [];
+const docker = async (...args) => {
+  const output = (
     await execute("docker", args, { timeout: 60_000, maxBuffer: 1024 * 1024 })
   ).stdout.trim();
+  if (args[0] === "commit") {
+    snapshots.push(output);
+  }
+  return output;
+};
 const runnerImage =
   process.env.SSH_TEST_RUNNER_IMAGE ?? "dev-mcp-runner:workspace-test";
 process.env.RUNNER_IMAGE = runnerImage;
@@ -40,9 +47,17 @@ const users = [0, 1].map(() => {
 });
 const [alice, bob] = users;
 const registry = new SshRegistry("/ssh-entry-data", "/workspace-auth");
-const provision = async (user) => {
-  const runner = "dev-mcp-user-" + user.id;
-  const image = await runners.runnerImage();
+const provision = async (
+  user,
+  _limits,
+  _quota,
+  _start,
+  _workspace,
+  _keepStopped,
+  imageOverride,
+) => {
+  const runner = runtimeContainer(user);
+  const image = imageOverride ?? (await runners.runnerImage());
   const { uid, gid } = await workspaces.identity(image);
   await registry.prepare(user, uid, gid);
   if (
@@ -87,7 +102,10 @@ const provision = async (user) => {
     "--label",
     "dev-mcp.user=" + user.id,
     "--label",
+    "dev-mcp.name=" + runtimeName(user),
+    "--label",
     "dev-mcp.runtime=unified",
+    ...(_keepStopped ? ["--label", "dev-mcp.keep-stopped=true"] : []),
     "--network",
     runner,
     "--init",
@@ -251,6 +269,90 @@ try {
       (await workspaces.observe(bob)).sshReady,
     "SSH servers healthy",
   );
+  for (const user of users) {
+    const old = runtimeContainer(user);
+    await docker(
+      "exec",
+      "--user",
+      "0:0",
+      old,
+      "node",
+      "-e",
+      'const fs=require("node:fs");fs.writeFileSync("/workspace/naming-root-file","root-owned",{mode:256});fs.writeFileSync("/var/lib/dev-mcp/naming-data-file","runtime-data")',
+    );
+    await docker(
+      "exec",
+      "--user",
+      "0:0",
+      old,
+      "node",
+      "-e",
+      'require("node:fs").writeFileSync("/opt/naming-container-file","writable-layer")',
+    );
+    const before = (await workspaces.observe(user)).sshHostFingerprint;
+    user.email = "ssh-test-" + user.id + "@example.test";
+    const named = runtimeContainer(user);
+    containers.push(named, named + "-previous");
+    networks.push(named);
+    volumes.push(named + "-workspace", named + "-data", named + "-ipc");
+    await runners.migrateNames(user);
+    await workspaces.sync(user);
+    assert.equal((await workspaces.observe(user)).sshHostFingerprint, before);
+    const preserved = JSON.parse(
+      await docker(
+        "exec",
+        "--user",
+        "0:0",
+        named,
+        "node",
+        "-p",
+        'JSON.stringify({owner:require("node:fs").statSync("/workspace/naming-root-file").uid,contents:require("node:fs").readFileSync("/workspace/naming-root-file","utf8"),data:require("node:fs").readFileSync("/var/lib/dev-mcp/naming-data-file","utf8"),layer:require("node:fs").readFileSync("/opt/naming-container-file","utf8")})',
+      ),
+    );
+    assert.deepEqual(preserved, {
+      owner: 0,
+      contents: "root-owned",
+      data: "runtime-data",
+      layer: "writable-layer",
+    });
+    assert.equal(await runners.inspect(old), undefined);
+    assert.equal(await runners.volumeExists(old + "-workspace"), true);
+  }
+  console.log(
+    "PASS email naming preserves root-owned files, runtime data, original volumes and SSH host keys",
+  );
+  const disabledId = randomUUID();
+  const disabled = {
+    id: disabledId,
+    runner: disabledId,
+    status: "disabled",
+    authVersion: 1,
+  };
+  const disabledOld = runtimeContainer(disabled);
+  containers.push(disabledOld);
+  networks.push(disabledOld);
+  volumes.push(
+    disabledOld + "-workspace",
+    disabledOld + "-data",
+    disabledOld + "-ipc",
+  );
+  await provision(disabled);
+  disabled.email = "ssh-disabled-" + disabledId + "@example.test";
+  const disabledNamed = runtimeContainer(disabled);
+  containers.push(disabledNamed, disabledNamed + "-previous");
+  networks.push(disabledNamed);
+  volumes.push(
+    disabledNamed + "-workspace",
+    disabledNamed + "-data",
+    disabledNamed + "-ipc",
+  );
+  await runners.migrateNames(disabled);
+  const disabledInfo = (await runners.owned(disabled)).info;
+  assert.equal(disabledInfo.State.Status, "created");
+  assert.equal(disabledInfo.Config.Labels["dev-mcp.keep-stopped"], "true");
+  console.log(
+    "PASS email naming preserves an unstarted disabled account without starting it",
+  );
   const aliceConfig = await config(alice, laptop.file);
   const desktopConfig = await config(alice, desktop.file);
   const bobConfig = await config(bob, bobKey.file);
@@ -260,11 +362,11 @@ try {
   ]);
   assert.deepEqual(
     results.map((value) => value.trim()),
-    ["dev-mcp-user-" + alice.id, "dev-mcp-user-" + alice.id],
+    [runtimeContainer(alice), runtimeContainer(alice)],
   );
   assert.equal(
     (await ssh(bobConfig, "workspace", "cat /proc/sys/kernel/hostname")).trim(),
-    "dev-mcp-user-" + bob.id,
+    runtimeContainer(bob),
   );
   console.log(
     "PASS native ProxyJump and concurrent clients reach their own workspace",
@@ -303,7 +405,7 @@ try {
     "PASS entry denies shell, foreign destinations, wrong ports and keys",
   );
 
-  const ownRunner = "dev-mcp-user-" + alice.id;
+  const ownRunner = runtimeContainer(alice);
   await docker(
     "exec",
     ownRunner,
@@ -543,4 +645,6 @@ try {
     await docker("network", "rm", name).catch(() => {});
   for (const name of volumes)
     await docker("volume", "rm", name).catch(() => {});
+  for (const image of new Set(snapshots))
+    await docker("image", "rm", image).catch(() => {});
 }

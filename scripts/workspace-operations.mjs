@@ -323,7 +323,7 @@ export class WorkspaceOperations {
       );
   }
   async observe(user) {
-    const { info } = await this.owned(user);
+    const { name, info } = await this.owned(user);
     const state = {
       state: info?.State.Status ?? "missing",
       observedAt: Date.now(),
@@ -350,7 +350,7 @@ export class WorkspaceOperations {
         info.State.Running &&
         (await this.docker(
           "exec",
-          "dev-mcp-user-" + user.id,
+          name,
           "node",
           "-e",
           'const s=require("node:net").connect(2222,"127.0.0.1",()=>{s.destroy();process.exit(0)});s.on("error",()=>process.exit(1));s.setTimeout(2000,()=>process.exit(1))',

@@ -41,6 +41,7 @@ state.calls.push(args);
 state.metadata ??= {};
 state.networks ??= {};
 state.entryNetworks ??= {};
+state.volumes ??= {};
 let output = "", code = 0;
 const name = args.at(-1);
 const values = option => args.flatMap((value, index) => value === option ? [args[index + 1]] : []);
@@ -48,7 +49,10 @@ const labels = () => Object.fromEntries(values("--label").map(value => [value.sl
 if (args[0] === "ps") {
   const filter = args.find(arg => arg.startsWith("name=^/"));
   if (filter) {
-    output = state.containers[filter.slice(7, -1)] ? "cccccccccccc" : "";
+    output = Object.keys(state.containers).some(name => new RegExp(filter.slice(5)).test("/" + name)) ? "cccccccccccc" : "";
+  } else if (args.some(arg => arg.startsWith("label=dev-mcp.user="))) {
+    const owner = args.find(arg => arg.startsWith("label=dev-mcp.user=")).slice("label=dev-mcp.user=".length);
+    output = Object.keys(state.containers).filter(name => state.metadata[name]?.labels?.["dev-mcp.user"] === owner).join("\\n");
   } else {
     output = args.some(arg => arg.endsWith("service=gateway")) ? "aaaaaaaaaaaa" : args.some(arg => arg.endsWith("service=ssh-entry")) ? "dddddddddddd" : "bbbbbbbbbbbb";
   }
@@ -56,12 +60,14 @@ if (args[0] === "ps") {
   code = state.containers[name] ? 0 : 1;
 } else if (args[0] === "inspect") {
   if (args.includes("--format")) {
-    output = args[2].includes("Mounts") ? "/host/user-ipc" : args[2].includes("Image") ? "sha256:" + "f".repeat(64) : state.containers[name];
+    output = args[2].includes("Labels") ? state.metadata[name]?.labels?.["dev-mcp.user"] ?? name.replace("dev-mcp-user-", "") : args[2].includes("Mounts") ? "/host/user-ipc" : args[2].includes("Image") ? "sha256:" + "f".repeat(64) : state.containers[name];
   } else {
     const entry = name === "dddddddddddd";
     const primary = name === "bbbbbbbbbbbb";
     const metadata = state.metadata[name] ?? {};
     output = JSON.stringify([{
+      Name: "/" + name,
+      Image: "sha256:" + "f".repeat(64),
       Config: { Labels: entry ? {"com.docker.compose.project":"dev-mcp", "com.docker.compose.service":"ssh-entry"} : primary ? {"com.docker.compose.project":"dev-mcp", "com.docker.compose.service":"runner"} : metadata.labels ?? {"dev-mcp.user":name.replace("dev-mcp-user-", "")} },
       HostConfig: {},
       Mounts: metadata.mounts ?? [],
@@ -71,9 +77,16 @@ if (args[0] === "ps") {
   }
 } else if (args[0] === "image" && args[1] === "inspect") {
   output = "sha256:" + "f".repeat(64);
+} else if (args[0] === "volume" && args[1] === "create") {
+  state.volumes[name] = {Labels: labels()};
+} else if (args[0] === "volume" && args[1] === "inspect") {
+  code = state.volumes[name] ? 0 : 1;
+  output = args.includes("--format") ? state.volumes[name]?.Labels?.["dev-mcp.user"] ?? "" : JSON.stringify([state.volumes[name]]);
+} else if (args[0] === "volume" && args[1] === "ls") {
+  output = Object.keys(state.volumes).join("\\n");
 } else if (args[0] === "network" && args[1] === "inspect") {
   if (state.networks[name]) {
-    output = JSON.stringify([state.networks[name]]);
+    output = args.includes("--format") ? state.networks[name].Labels?.["dev-mcp.user"] : JSON.stringify([state.networks[name]]);
   } else {
     code = 1;
   }
@@ -115,6 +128,17 @@ if (args[0] === "ps") {
   state.containers[name] = "running";
 } else if (args[0] === "stop") {
   state.containers[name] = "exited";
+} else if (args[0] === "commit") {
+  output = "sha256:" + "f".repeat(64);
+} else if (args[0] === "rename") {
+  const source = args[1];
+  state.containers[name] = state.containers[source];
+  state.metadata[name] = state.metadata[source];
+  delete state.containers[source];
+  delete state.metadata[source];
+} else if (args[0] === "rm") {
+  delete state.containers[name];
+  delete state.metadata[name];
 }
 fs.writeFileSync(process.env.FAKE_DOCKER_STATE, JSON.stringify(state));
 console.log(output);
@@ -207,6 +231,30 @@ it("retries failed creation on the next pass and continues with other users", as
   expect(Object.keys((await f.state()).containers)).toHaveLength(2);
 });
 
+it("creates email-named containers and volumes while retaining UUID IPC and authorization", async () => {
+  const f = await fixture([{ ...account(alice), email: "mina.kim@gmail.com" }]);
+  await f.run();
+  const state = await f.state();
+  const named = "dev-mcp-user-mina.kim";
+  expect(state.containers).toEqual({ [named]: "running" });
+  expect(state.metadata[named].labels).toMatchObject({
+    "dev-mcp.user": alice,
+    "dev-mcp.name": "mina.kim",
+  });
+  const creation = state.calls.find((args: string[]) => args[0] === "create");
+  expect(creation).toEqual(
+    expect.arrayContaining([
+      `type=volume,source=${named}-workspace,target=/workspace`,
+      `type=volume,source=${named}-data,target=/var/lib/dev-mcp`,
+      `type=bind,source=/host/user-ipc/${alice},target=/ipc`,
+    ]),
+  );
+  await f.run();
+  expect(
+    (await f.state()).calls.filter((args: string[]) => args[0] === "create"),
+  ).toHaveLength(1);
+});
+
 it("preserves running and intentionally stopped containers, but recovers an incomplete start", async () => {
   const f = await fixture([account(alice), account(bob), account(charlie)]);
   await writeFile(
@@ -227,6 +275,56 @@ it("preserves running and intentionally stopped containers, but recovers an inco
   expect(
     state.calls.filter((args: string[]) => args[0] === "create"),
   ).toHaveLength(0);
+});
+
+it("migrates a disabled email account with an existing stop request without starting it", async () => {
+  const f = await fixture([
+    { ...account(alice, "disabled"), email: "adjustedmin@gmail.com" },
+  ]);
+  const legacy = "dev-mcp-user-" + alice;
+  await writeFile(
+    f.stateFile,
+    JSON.stringify({
+      calls: [],
+      containers: { [legacy]: "created" },
+      metadata: {
+        [legacy]: {
+          labels: { "dev-mcp.user": alice, "dev-mcp.runtime": "unified" },
+          networks: { [legacy]: {} },
+          mounts: [
+            {
+              Type: "volume",
+              Name: legacy + "-workspace",
+              Destination: "/workspace",
+            },
+            {
+              Type: "volume",
+              Name: legacy + "-data",
+              Destination: "/var/lib/dev-mcp",
+            },
+          ],
+        },
+      },
+      volumes: {
+        [legacy + "-workspace"]: { Labels: {} },
+        [legacy + "-data"]: { Labels: {} },
+      },
+    }),
+  );
+  await writeFile(
+    path.join(path.dirname(f.usersFile), "runner-controls.json"),
+    JSON.stringify({ entries: { [alice]: { revision: bob, action: "stop" } } }),
+  );
+  await f.run();
+  const state = await f.state();
+  expect(Object.keys(state.containers)).toEqual(["dev-mcp-user-adjustedmin"]);
+  expect(["created", "exited"]).toContain(
+    state.containers["dev-mcp-user-adjustedmin"],
+  );
+  expect(
+    state.metadata["dev-mcp-user-adjustedmin"].labels["dev-mcp.keep-stopped"],
+  ).toBe("true");
+  expect(state.calls.some((args: string[]) => args[0] === "start")).toBe(false);
 });
 
 it("fails closed on unreadable account state without logging its contents", async () => {
@@ -292,11 +390,11 @@ it("mounts approved users' workspaces from the onboarding root", async () => {
     expect.arrayContaining([
       "type=bind,source=/srv/workspaces/alice,target=/workspace",
       "dev-mcp.workspace=host",
-      `type=volume,source=dev-mcp-user-${alice}-data,target=/var/lib/dev-mcp`,
+      "type=volume,source=dev-mcp-user-alice-data,target=/var/lib/dev-mcp",
     ]),
   );
   expect(creation).not.toContain(
-    `type=volume,source=dev-mcp-user-${alice}-workspace,target=/workspace`,
+    "type=volume,source=dev-mcp-user-alice-workspace,target=/workspace",
   );
   const statusDir = path.join(directory, "status");
   expect(

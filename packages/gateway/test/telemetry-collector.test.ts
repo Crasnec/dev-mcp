@@ -109,6 +109,18 @@ const entry = (ts: number, cpu = 2, intervalMs = 5000) =>
   });
 
 describe("telemetry observations", () => {
+  it("recognizes email-named runners by immutable ownership and ignores migration backups", () => {
+    const named = {
+      ...info(),
+      Name: "/dev-mcp-user-crasnec",
+      Config: { Labels: { "dev-mcp.user": OWNER, "dev-mcp.name": "crasnec" } },
+    };
+    expect(ownsContainer(user(), named)).toBe(true);
+    expect(ownsContainer(user(SECOND), named)).toBe(false);
+    expect(
+      ownsContainer(user(), { ...named, Name: named.Name + "-previous" }),
+    ).toBe(false);
+  });
   it("parses host counters without guest, bridge, partition, or available-memory double counting", () => {
     expect(
       parseCpu("cpu 100 0 50 200 30 10 10 0 99 99\ncpu0 1\ncpu1 1\n"),
@@ -374,10 +386,22 @@ describe("collector ownership and storage isolation", () => {
     const docker = {
       list: vi.fn(async (filters) =>
         filters.label[0] === "dev-mcp.user"
-          ? [{ Id: ID, Names: [info().Name] }]
+          ? [
+              {
+                Id: ID,
+                Names: ["/dev-mcp-user-crasnec"],
+                Labels: { "dev-mcp.user": OWNER, "dev-mcp.name": "crasnec" },
+              },
+            ]
           : [],
       ),
-      inspect: vi.fn(async () => info()),
+      inspect: vi.fn(async () => ({
+        ...info(),
+        Name: "/dev-mcp-user-crasnec",
+        Config: {
+          Labels: { "dev-mcp.user": OWNER, "dev-mcp.name": "crasnec" },
+        },
+      })),
       stats: vi.fn(async () => stats()),
     };
     const collector = new Collector({

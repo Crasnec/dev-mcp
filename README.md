@@ -6,10 +6,10 @@
 Internet / ChatGPT
         │ HTTPS :443
         ▼
-      Caddy ── internal HTTP ──▶ gateway ── signed IPC ──▶ dev-mcp-user-<id>   (one per account,
+      Caddy ── internal HTTP ──▶ gateway ── signed IPC ──▶ dev-mcp-user-<google-id>   (one per account,
                                    │      (per-account          │                 administrators
                               gateway-data  socket + key)  /workspace:rw          included)
-                           (users + OAuth)                 dev-mcp-user-<id>-data
+                           (users + OAuth)                 dev-mcp-user-<google-id>-data
 ```
 
 There is no shared or "primary" runner: an administrator's environment is created and managed exactly like any other account's. The gateway cannot see any `/workspace`. Runners cannot see OAuth state, other accounts' files or keys. Every request is HMAC-signed with the account's own key, and runners refuse unsigned requests. The gateway and runners use separate Docker networks. Trusted control-plane services publish status and telemetry through `runner-status`, mounted read-only in the gateway.
@@ -131,14 +131,14 @@ Include your usual Compose overlays. On a host sharing an existing reverse proxy
 
 Run it with Docker access (`sudo` if required), after building the runner image (`docker compose build runner`) and starting the updated gateway. It uses `RUNNER_IMAGE` (default `dev-mcp-runner:latest`). No request falls back to another runner when an account's runner is missing. For accounts with a host-directory workspace, use the web controller instead: the manual helper creates volume workspaces only.
 
-The helper creates `dev-mcp-user-<uuid>`, two persistent volumes (`-workspace`, `-data`), a dedicated bridge network, and a per-user authenticated Unix socket. It does not publish ports or mount Docker credentials, any other workspace, or other users' sockets. Git commits use the shared Git configuration; newly provisioned accounts get an email-based default identity. Each user's projects can be cloned via MCP or copied into their workspace volume by the operator.
+The helper creates `dev-mcp-user-<google-id>`, two persistent volumes (`-workspace`, `-data`), a dedicated bridge network, and a per-user authenticated Unix socket. `<google-id>` is the Google email's local part before `@`, normalized for Docker names, with no numbered suffix. For example, `crasnec@gmail.com` owns `dev-mcp-user-crasnec`, `dev-mcp-user-crasnec-workspace` and `dev-mcp-user-crasnec-data`. Account UUIDs remain the ownership, IPC and SSH authorization identities. A name belonging to another account is rejected. It does not publish ports or mount Docker credentials, any other workspace, or other users' sockets. Git commits use the shared Git configuration; newly provisioned accounts get an email-based default identity. Each user's projects can be cloned via MCP or copied into their workspace volume by the operator.
 
 Set `USER_RUNNER_IPC_DIR` to a dedicated absolute path on the Docker host if the daemon uses a different filesystem namespace. Otherwise it defaults to `./data/user-ipc`. Back up this directory (including the `.key` files), `gateway-data`, and each user's workspace/data volumes.
 
 The provisioner and optional telemetry collector have Docker access; the gateway and runners do not. It has no network or HTTP endpoint and reads `gateway-data` read-only. Its logs contain provisioning success/failure events with account UUIDs (`docker compose logs provisioner`); a failed creation is retried on the next pass. Treat this service as a trusted host administrator. To stop existing jobs after disabling a user:
 
 ```bash
-docker stop dev-mcp-user-<uuid>
+docker stop dev-mcp-user-<google-id>
 ```
 
 After rebuilding the runner image, existing runners keep their old image until recreated: stop and remove a user's container and the provisioner recreates it, keeping its workspace and data. Preserve the named volumes and host workspace directories. Do not remove volumes as part of an upgrade. Running and intentionally stopped containers are left untouched; use `docker start` to resume a stopped environment. A container left in the `created` state by a failed start is retried. Stop the provisioner during maintenance if you need to keep an active user's container absent. Runners are separate from the main Compose stack and must be stopped/backed up explicitly.
@@ -206,7 +206,7 @@ Host-specific configuration stays in the ignored `.env` file. OAuth clients/toke
 To migrate state instead of starting clean, stop the stack and runners, then back up and restore these using your normal Docker volume procedure:
 
 - `dev-mcp_gateway-data`, `dev-mcp_runner-status` and the `USER_RUNNER_IPC_DIR` directory (including the `.key` files)
-- each account's `dev-mcp-user-<id>-data` volume, and its `-workspace` volume or host workspace directory
+- each account's `dev-mcp-user-<google-id>-data` volume, and its `-workspace` volume or host workspace directory
 - `dev-mcp_caddy-data`, `dev-mcp_caddy-config`
 
 ## Manual configuration
@@ -372,7 +372,9 @@ Network blocking disconnects the development container from Internet networks wh
 
 #### VS Code workspace containers (Remote - SSH)
 
-Each approved account has one development container, `dev-mcp-user-<id>`, running both MCP and SSH. Commands, terminals, servers and VS Code share `/workspace`, the PID/network namespace and HOME `/workspace/.dev-mcp-home`. Git credentials configured through SSH (including `gh auth login --web --git-protocol https` and `gh auth setup-git`) are also available to MCP. Set `git config --global user.name` and `user.email` to override the initial identity. The project page can clone an HTTPS repository and register it automatically. App proxies can reach servers started through SSH on the same container's loopback; process lists discover terminal processes in registered projects. Terminal output stays in its terminal; use MCP `process_start` for captured logs. User telemetry measures the whole container, including SSH and VS Code.
+Each approved account has one development container, `dev-mcp-user-<google-id>`, running both MCP and SSH. Commands, terminals, servers and VS Code share `/workspace`, the PID/network namespace and HOME `/workspace/.dev-mcp-home`. Git credentials configured through SSH (including `gh auth login --web --git-protocol https` and `gh auth setup-git`) are also available to MCP. Set `git config --global user.name` and `user.email` to override the initial identity. The project page can clone an HTTPS repository and register it automatically. App proxies can reach servers started through SSH on the same container's loopback; process lists discover terminal processes in registered projects. Terminal output stays in its terminal; use MCP `process_start` for captured logs. User telemetry measures the whole container, including SSH and VS Code.
+
+When the provisioner encounters an older UUID-named container, it briefly stops that account, copies the work and runtime volumes to the email-named volumes, verifies the copy including ownership and metadata, and preserves the writable container layer. Original volumes remain as recovery copies. It removes the old container after the replacement's MCP and configured SSH listeners are ready. Disabled and deliberately stopped accounts stay stopped. Internal paths, project IDs, HOME, SSH keys and existing SSH destination aliases remain unchanged. Docker's host paths now include the readable volume names, for example `/var/lib/docker/volumes/dev-mcp-user-crasnec-workspace/_data`; volume storage remains volume storage.
 
 The container starts as an ordinary user and permits passwordless sudo and system package installation. Work files and HOME persist across recreation; the writable image filesystem does not. Install reproducible extra Fedora packages with `dev-mcp-install <packages>`; its package list is saved under `~/.dev-mcp/packages.txt` and restored in the background after recreation. A failed restore is recorded in `~/.dev-mcp/packages-status.json`; retry with `dev-mcp-install --restore`. Tools installed into HOME also persist.
 

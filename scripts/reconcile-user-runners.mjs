@@ -13,6 +13,7 @@ import {
   validControl,
 } from "./runner-operations.mjs";
 import { SshRegistry } from "./ssh-registry.mjs";
+import { runtimeContainer } from "./runtime-names.mjs";
 import {
   WorkspaceOperations,
   validWorkspaceControl,
@@ -78,10 +79,11 @@ const operations = new RunnerOperations(
     start = true,
     workspaceDir = "",
     keepStopped = false,
+    imageOverride,
   ) => {
     if (registry) {
       const { uid, gid } = await workspaces.identity(
-        await operations.runnerImage(),
+        imageOverride ?? (await operations.runnerImage()),
       );
       await registry.prepare(user, uid, gid);
     }
@@ -89,7 +91,8 @@ const operations = new RunnerOperations(
       env: {
         ...process.env,
         GATEWAY_CONTAINER_ID: gatewayId,
-        RUNNER_IMAGE_ID: await operations.runnerImage(),
+        RUNNER_IMAGE_ID: imageOverride ?? (await operations.runnerImage()),
+        RUNNER_CONTAINER_NAME: runtimeContainer(user),
         RUNNER_GIT_AUTHOR_NAME:
           user.email?.split("@")[0] ??
           user.username ??
@@ -247,6 +250,13 @@ async function reconcile() {
       if (!current) {
         continue;
       }
+      await operations.migrateNames(current, {
+        retry:
+          !!request &&
+          request.action !== "stop" &&
+          previous.revision !== request.revision,
+        skipFailed: request?.action === "stop",
+      });
       if (request && previous.revision !== request.revision) {
         previous = {
           ...previous,

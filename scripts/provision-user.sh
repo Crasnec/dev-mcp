@@ -25,8 +25,34 @@ if [[ -z "$ipc_root" || "$ipc_root" == "/" || "$ipc_root" == *","* ]]; then
   echo "Gateway must mount a dedicated /user-ipc directory (path cannot contain commas)." >&2
   exit 1
 fi
-container="dev-mcp-user-$user_id"
+container="${RUNNER_CONTAINER_NAME:-}"
+if [[ -z "$container" ]]; then
+  # Manual provisioning uses the same email-derived name as the controller.
+  container="$(docker exec "$gateway_id" node -e '
+    const fs = require("node:fs");
+    const id = process.argv[1];
+    const db = JSON.parse(fs.readFileSync((process.env.GATEWAY_DATA_DIR || "/var/lib/dev-mcp") + "/users.json", "utf8"));
+    const user = db.users.find(user => user.id === id && user.runner === id);
+    if (!user) { throw new Error("Account not found"); }
+    const local = String(user.email || "").split("@")[0].toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, "-").replace(/^[^a-z0-9]+/, "")
+      .slice(0, 64).replace(/[-._]+$/, "");
+    console.log("dev-mcp-user-" + (local || id));
+  ' "$user_id")"
+  if [[ "$container" != "dev-mcp-user-$user_id" ]] && docker container inspect "dev-mcp-user-$user_id" >/dev/null 2>&1; then
+    echo "Let the updated provisioner migrate the existing UUID-named container first." >&2
+    exit 1
+  fi
+fi
+if [[ ! "$container" =~ ^dev-mcp-user-[a-z0-9][a-z0-9._-]{0,63}$ ]]; then
+  echo "Invalid development container name." >&2
+  exit 2
+fi
 if docker container inspect "$container" >/dev/null 2>&1; then
+  if [[ "$(docker inspect --format '{{index .Config.Labels "dev-mcp.user"}}' "$container")" != "$user_id" ]]; then
+    echo "Cannot verify ownership of $container." >&2
+    exit 1
+  fi
   # A failed docker run may have created the container without starting it.
   # Never restart an exited container: an operator may have stopped its jobs.
   if [[ "${RUNNER_START:-true}" != false && "$(docker inspect --format '{{.State.Status}}' "$container")" == created ]]; then
@@ -62,6 +88,9 @@ docker run --rm --network none --read-only --user 0:0 --cap-drop ALL \
 # Separate bridge networks also keep users' development servers apart.
 if ! docker network inspect "$container" >/dev/null 2>&1; then
   docker network create --label "dev-mcp.user=$user_id" "$container" >/dev/null
+elif [[ "$(docker network inspect --format '{{index .Labels "dev-mcp.user"}}' "$container")" != "$user_id" ]]; then
+  echo "Cannot verify ownership of network $container." >&2
+  exit 1
 fi
 resource_args=()
 if [[ "${RUNNER_KEEP_STOPPED:-false}" == true ]]; then
@@ -110,6 +139,21 @@ if [[ -n "$workspace_host_dir" ]]; then
   resource_args+=(--label dev-mcp.workspace=host)
 fi
 create_command=(run --detach)
+if [[ "${RUNNER_QUOTA_STORAGE:-false}" != true ]]; then
+  volume_names=("$container-data")
+  if [[ -z "$workspace_host_dir" ]]; then
+    volume_names+=("$container-workspace")
+  fi
+  for volume in "${volume_names[@]}"; do
+    if ! docker volume inspect "$volume" >/dev/null 2>&1; then
+      docker volume create --label "dev-mcp.user=$user_id" "$volume" >/dev/null
+    elif [[ "$container" != "dev-mcp-user-$user_id" \
+      && "$(docker volume inspect --format '{{index .Labels "dev-mcp.user"}}' "$volume")" != "$user_id" ]]; then
+      echo "Cannot verify ownership of $volume." >&2
+      exit 1
+    fi
+  done
+fi
 ssh_args=()
 if [[ "${WORKSPACE_SSH_ENABLED:-false}" == true ]]; then
   ssh_args+=(--mount "type=volume,source=${WORKSPACE_AUTH_VOLUME:-dev-mcp-workspace-auth},target=/run/dev-mcp-ssh,volume-subpath=$user_id,readonly")
@@ -119,6 +163,7 @@ if [[ "${RUNNER_START:-true}" == false ]]; then
   create_command=(create)
 fi
 docker "${create_command[@]}" --name "$container" --label "dev-mcp.user=$user_id" \
+  --label "dev-mcp.name=${container#dev-mcp-user-}" \
   --label dev-mcp.runtime=unified \
   --network "$network" "${resource_args[@]}" \
   --init --restart unless-stopped "${ssh_args[@]}" \

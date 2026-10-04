@@ -1,5 +1,6 @@
 import { readFile, writeFile, rename, mkdir } from "node:fs/promises";
 import path from "node:path";
+import { runtimeContainer, ownsRuntime } from "./runtime-names.mjs";
 
 const MiB = 1048576;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -203,7 +204,7 @@ export class RunnerOperations {
       "ps",
       "-a",
       "--filter",
-      "name=^/" + name + "$",
+      "name=^/" + name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$",
       "--format",
       "{{.ID}}",
     );
@@ -214,12 +215,393 @@ export class RunnerOperations {
   }
 
   async owned(user) {
-    const name = "dev-mcp-user-" + user.id;
-    const info = await this.inspect(name);
+    const name = runtimeContainer(user);
+    let info = await this.inspect(name);
     if (info && info.Config.Labels?.["dev-mcp.user"] !== user.id) {
       throw new Error("컨테이너 소유권을 확인할 수 없습니다.");
     }
+    if (!info && name !== "dev-mcp-user-" + user.id) {
+      const legacy = "dev-mcp-user-" + user.id;
+      info = await this.inspect(legacy);
+      if (info) {
+        if (info.Config.Labels?.["dev-mcp.user"] !== user.id) {
+          throw new Error("컨테이너 소유권을 확인할 수 없습니다.");
+        }
+        return { name: legacy, info };
+      }
+      // A Google Workspace account can change its email. Find its old readable
+      // name by the immutable ownership label, never by an email alone.
+      const names = await this.docker(
+        "ps",
+        "-a",
+        "--filter",
+        "label=dev-mcp.user=" + user.id,
+        "--format",
+        "{{.Names}}",
+      );
+      const candidates = [];
+      for (const candidate of names.split("\n").filter(Boolean)) {
+        const observed = await this.inspect(candidate);
+        if (ownsRuntime(user, observed)) {
+          candidates.push({ name: candidate, info: observed });
+        }
+      }
+      if (candidates.length > 1) {
+        throw new Error("계정의 개발 컨테이너가 중복되어 있습니다.");
+      }
+      if (candidates.length) {
+        return candidates[0];
+      }
+    }
     return { name, info };
+  }
+
+  async waitReady(name) {
+    await this.docker(
+      "exec",
+      name,
+      "node",
+      "-e",
+      String.raw`
+      const fs = require("node:fs"), net = require("node:net");
+      let ssh = false;
+      if (process.env.SSH_WORKSPACE === "true") {
+        ssh = JSON.parse(fs.readFileSync(process.env.SSH_MANIFEST_FILE, "utf8")).enabled === true;
+      }
+      const end = Date.now() + 40000;
+      function connect(target) {
+        return new Promise((resolve, reject) => {
+          const socket = net.connect(target, () => { socket.destroy(); resolve(); });
+          socket.on("error", reject);
+          socket.setTimeout(1000, () => socket.destroy(new Error("timeout")));
+        });
+      }
+      function probe() {
+        Promise.all([{path:"/ipc/runner.sock"}, ...(ssh ? [{port:2222,host:"127.0.0.1"}] : [])].map(connect))
+          .then(() => process.exit(0)).catch(() => {
+            if (Date.now() > end) {
+              process.exit(1);
+            }
+            setTimeout(probe, 500);
+          });
+      }
+      probe();
+    `,
+    );
+  }
+
+  async namingVolumes(user, name, info) {
+    const target = runtimeContainer(user);
+    const copies = [];
+    const journal = await this.namingState(user);
+    for (const [suffix, destination] of [
+      ["workspace", "/workspace"],
+      ["data", "/var/lib/dev-mcp"],
+    ]) {
+      const mount = info?.Mounts?.find(
+        (entry) => entry.Destination === destination,
+      );
+      if (mount && mount.Type !== "volume") {
+        continue;
+      }
+      const source = mount?.Name ?? `dev-mcp-user-${user.id}-${suffix}`;
+      const volume = target + "-" + suffix;
+      if (source === volume) {
+        continue;
+      }
+      const exists = await this.volumeExists(volume);
+      let existing;
+      if (exists) {
+        existing = JSON.parse(
+          await this.docker("volume", "inspect", volume),
+        )[0];
+        if (existing.Labels?.["dev-mcp.user"] !== user.id) {
+          throw new OperationError(
+            "이전 대상 볼륨이 이미 존재하거나 다른 계정 소유입니다.",
+          );
+        }
+        // The destination is authoritative after a completed migration. A
+        // later container recreation must never restore its stale backup.
+        if (
+          !info &&
+          (!existing.Labels?.["dev-mcp.migrated-from"] ||
+            (journal?.target === target &&
+              journal.phase === "ready" &&
+              journal.copies.some((copy) => copy.volume === volume)))
+        ) {
+          continue;
+        }
+        if (
+          !info &&
+          !(
+            journal?.target === target &&
+            journal.phase === "copying" &&
+            journal.copies.some(
+              (copy) => copy.volume === volume && copy.source === source,
+            )
+          )
+        ) {
+          throw new OperationError(
+            "볼륨 이전 완료 기록이 없습니다. 원본과 새 볼륨을 확인한 뒤 복구해 주세요.",
+          );
+        }
+      }
+      if (!mount && !(await this.volumeExists(source))) {
+        continue;
+      }
+      if (
+        ![name + "-" + suffix, `dev-mcp-user-${user.id}-${suffix}`].includes(
+          source,
+        )
+      ) {
+        throw new OperationError(
+          "계정 전용 볼륨의 소유권을 확인할 수 없습니다.",
+        );
+      }
+      if (!info) {
+        const attached = await this.docker(
+          "ps",
+          "-a",
+          "--filter",
+          "volume=" + source,
+          "--format",
+          "{{.Names}}",
+        );
+        if (attached) {
+          throw new OperationError(
+            "기존 볼륨을 사용하는 컨테이너가 남아 있습니다. 복구 후 다시 요청해 주세요.",
+          );
+        }
+      }
+      if (exists) {
+        if (
+          existing.Labels?.["dev-mcp.user"] !== user.id ||
+          existing.Labels?.["dev-mcp.migrated-from"] !== source
+        ) {
+          throw new OperationError(
+            "이전 대상 볼륨이 이미 존재하거나 다른 계정 소유입니다.",
+          );
+        }
+      } else {
+        await this.namingState(user, {
+          target,
+          phase: "copying",
+          copies: [...copies, { source, volume }],
+        });
+        await this.docker(
+          "volume",
+          "create",
+          "--label",
+          "dev-mcp.user=" + user.id,
+          "--label",
+          "dev-mcp.migrated-from=" + source,
+          volume,
+        );
+      }
+      copies.push({ source, volume });
+    }
+    return copies;
+  }
+
+  async namingState(user, entry) {
+    const file = path.join(this.statusDir, "naming-migrations.json");
+    const data = await readJson(file, { users: {} });
+    if (entry) {
+      data.users[user.id] = entry;
+      await writeJson(file, data);
+    }
+    return data.users[user.id];
+  }
+
+  async migrateNamingVolumes(user, copies) {
+    if (!copies.length) {
+      return;
+    }
+    const target = runtimeContainer(user);
+    await this.namingState(user, { target, phase: "copying", copies });
+    await this.copyNamingVolumes(copies);
+    await this.namingState(user, { target, phase: "ready", copies });
+  }
+
+  async copyNamingVolumes(copies) {
+    for (const { source, volume } of copies) {
+      // Development workspaces may contain root-owned files created with sudo.
+      // Only the account's two verified volumes are available to this helper.
+      const args = [
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--read-only",
+        "--user",
+        "0:0",
+        "--cap-drop",
+        "ALL",
+        "--cap-add",
+        "DAC_OVERRIDE",
+        "--cap-add",
+        "CHOWN",
+        "--cap-add",
+        "FOWNER",
+        "--cap-add",
+        "SETFCAP",
+        "--security-opt",
+        "no-new-privileges:true",
+        "--mount",
+        `type=volume,source=${source},target=/source,readonly`,
+        "--mount",
+        `type=volume,source=${volume},target=/target`,
+        "--entrypoint",
+        "rsync",
+        await this.helperImage(),
+        "-aHAX",
+        "--numeric-ids",
+        "--delete",
+      ];
+      await this.docker(...args, "/source/", "/target/");
+      const difference = await this.docker(
+        ...args,
+        "--checksum",
+        "--dry-run",
+        "--itemize-changes",
+        "/source/",
+        "/target/",
+      );
+      if (difference) {
+        throw new OperationError(
+          "볼륨 복사 검증에 실패했습니다. 원본 볼륨은 보존됩니다.",
+        );
+      }
+    }
+  }
+
+  async migrateNames(user, { retry = false, skipFailed = false } = {}) {
+    const { name, info } = await this.owned(user);
+    const target = runtimeContainer(user);
+    const quota = info?.Config.Labels?.["dev-mcp.storage"] === "quota";
+    const needsVolumes =
+      !quota &&
+      info?.Mounts?.some(
+        (mount) =>
+          mount.Type === "volume" &&
+          ["/workspace", "/var/lib/dev-mcp"].includes(mount.Destination) &&
+          mount.Name !==
+            target +
+              (mount.Destination === "/workspace" ? "-workspace" : "-data"),
+      );
+    if (info && name === target && !needsVolumes) {
+      return;
+    }
+    const journal = await this.namingState(user);
+    if (journal?.target === target && journal.phase === "failed") {
+      if (!retry) {
+        if (skipFailed) {
+          return;
+        }
+        throw new OperationError(
+          "이름 이전에 실패해 기존 환경을 보존했습니다. 상태를 확인하고 새 운영 요청으로 다시 시도해 주세요.",
+        );
+      }
+      await this.namingState(user, { ...journal, phase: "copying" });
+    }
+    const previous = target + "-previous";
+    if (await this.inspect(previous)) {
+      throw new OperationError(
+        "이전 이름 변경 작업의 컨테이너가 남아 있습니다. 복구 후 다시 요청해 주세요.",
+      );
+    }
+    const copies = quota ? [] : await this.namingVolumes(user, name, info);
+    if (!info) {
+      await this.migrateNamingVolumes(user, copies);
+      return;
+    }
+    const workspace = await this.hostWorkspace(user, info);
+    if (workspace) {
+      await this.verifyWorkspace(workspace);
+    }
+    if (quota) {
+      await this.storage();
+    }
+    const legacyWorkspace =
+      info.Config.Labels?.["dev-mcp.runtime"] !== "unified"
+        ? await this.inspect("dev-mcp-workspace-" + user.id)
+        : undefined;
+    if (
+      legacyWorkspace &&
+      (legacyWorkspace.Config.Labels?.["dev-mcp.user"] !== user.id ||
+        legacyWorkspace.Config.Labels?.["dev-mcp.role"] !== "workspace")
+    ) {
+      throw new OperationError(
+        "기존 SSH workspace의 소유권을 확인할 수 없습니다.",
+      );
+    }
+    const wasRunning = info.State.Running;
+    let renamed = false;
+    try {
+      if (legacyWorkspace?.State.Running) {
+        await this.docker(
+          "stop",
+          "--time",
+          "10",
+          "dev-mcp-workspace-" + user.id,
+        );
+      }
+      if (wasRunning) {
+        await this.docker("stop", "--time", "10", name);
+      }
+      await this.migrateNamingVolumes(user, copies);
+      // Naming changes preserve the writable container layer as well as its
+      // volumes, including packages installed directly through sudo.
+      const image =
+        info.Config.Labels?.["dev-mcp.runtime"] === "unified"
+          ? await this.docker("commit", name)
+          : undefined;
+      if (image !== undefined && !/^sha256:[0-9a-f]{64}$/.test(image)) {
+        throw new OperationError(
+          "기존 개발 컨테이너 파일시스템을 보존하지 못했습니다.",
+        );
+      }
+      await this.docker("rename", name, previous);
+      renamed = true;
+      const running =
+        wasRunning &&
+        (!legacyWorkspace || legacyWorkspace.State.Running) &&
+        user.status === "active";
+      await this.provision(
+        user,
+        this.limits(info),
+        quota,
+        false,
+        workspace?.path,
+        !running,
+        image,
+      );
+      if (running) {
+        await this.docker("start", target);
+        await this.waitReady(target);
+      }
+    } catch (error) {
+      if (renamed) {
+        const replacement = await this.inspect(target);
+        if (replacement?.Config.Labels?.["dev-mcp.user"] === user.id) {
+          await this.docker("rm", "--force", target);
+        }
+        await this.docker("rename", previous, name);
+      }
+      if (wasRunning) {
+        await this.docker("start", name);
+      }
+      if (legacyWorkspace?.State.Running) {
+        await this.docker("start", "dev-mcp-workspace-" + user.id);
+      }
+      await this.namingState(user, { target, phase: "failed", copies });
+      throw error;
+    }
+    // Original volumes stay available for recovery. Never pass --volumes.
+    await this.docker("rm", previous);
+    if (legacyWorkspace) {
+      await this.docker("rm", "dev-mcp-workspace-" + user.id);
+    }
   }
 
   async helperImage() {
@@ -515,6 +897,7 @@ export class RunnerOperations {
   }
 
   async create(user, limits) {
+    await this.migrateNames(user);
     const quotaStorage = await this.migrated(user);
     if (quotaStorage) {
       await this.storage();
@@ -526,7 +909,7 @@ export class RunnerOperations {
       !quotaStorage &&
       !workspace &&
       (await this.workspaceRoot()) &&
-      !(await this.volumeExists(`dev-mcp-user-${user.id}-workspace`))
+      !(await this.volumeExists(runtimeContainer(user) + "-workspace"))
     ) {
       workspace = await this.assignWorkspace(user);
       await this.recordWorkspace(user, workspace);
@@ -541,7 +924,7 @@ export class RunnerOperations {
     if (limits) {
       await this.apply(user, { action: "apply", limits });
     }
-    await this.docker("start", "dev-mcp-user-" + user.id);
+    await this.docker("start", runtimeContainer(user));
   }
 
   async moveWorkspace(user, request, name, info) {
@@ -557,7 +940,7 @@ export class RunnerOperations {
         "저장공간 상한 저장소를 쓰는 환경은 아직 호스트 디렉터리로 이전할 수 없습니다.",
       );
     }
-    const volume = `dev-mcp-user-${user.id}-workspace`;
+    const volume = name + "-workspace";
     if (mount?.Type !== "volume" || mount.Name !== volume) {
       throw new OperationError(
         "전용 작업 공간 볼륨만 호스트 디렉터리로 이전할 수 있습니다.",
@@ -644,7 +1027,10 @@ export class RunnerOperations {
         );
         if (
           mount?.Type !== "volume" ||
-          mount.Name !== `dev-mcp-user-${user.id}-${suffix}`
+          ![
+            runtimeContainer(user) + "-" + suffix,
+            `dev-mcp-user-${user.id}-${suffix}`,
+          ].includes(mount.Name)
         ) {
           throw new Error("전용 볼륨만 quota 저장소로 이전할 수 있습니다.");
         }

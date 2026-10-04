@@ -16,7 +16,7 @@ const user = {
   status: "active",
   email: "Mina.Kim@example.test",
 };
-const name = "dev-mcp-user-" + id;
+const name = "dev-mcp-user-mina.kim";
 const root = "/srv/dev-mcp/workspaces";
 const temporary: string[] = [];
 afterEach(async () => {

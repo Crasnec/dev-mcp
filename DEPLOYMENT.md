@@ -1,6 +1,14 @@
 # Current server deployment
 
-Updated on 2026-10-03 at `https://dev.crasnec.com`.
+Updated on 2026-10-04 at `https://dev.crasnec.com`.
+
+## npm global installs and Bash startup (2026-10-04)
+
+The development image now initializes missing Fedora `.bashrc` and `.bash_profile` files in the shared HOME and gives npm a user-owned default prefix, `${HOME}/.local`. Interactive shells display `[user@hostname directory]$`, and global npm commands are available to SSH and MCP. Existing personal startup files, registry/authentication settings and explicit npm prefixes are retained. Installed npm packages persist in the workspace volume through recreation.
+
+Runner image: `a6e74d68240f`. The previous base image is tagged `dev-mcp-runner:rollback-20261004-before-npm-shell`. Existing account containers received the updated development startup scripts in place; the two running accounts' homes were initialized without restarting their containers or SSH entry. The disabled account remains unstarted and has the corrected startup scripts ready for its next authorized start. Original startup script copies are retained in `/tmp/dev-mcp-development-shell-backup-20261004`.
+
+Ordinary-user offline global package installation and command execution through login-shell and MCP environments passed in both running account containers. All eleven isolated native SSH integration checks passed, including the Bash prompt and global npm CLI surviving recreation. Repeated initialization preserves existing shell/npm settings. Reload existing terminals with `source ~/.bashrc` to pick up the prompt and user PATH.
 
 ## MCP tool visibility in audit (deployed 2026-10-03)
 

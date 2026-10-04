@@ -462,8 +462,38 @@ try {
     "yes",
   );
   assert.equal(await docker("exec", ownRunner, "sudo", "-n", "id", "-u"), "0");
+  const npmFixture = await docker(
+    "exec",
+    ownRunner,
+    "node",
+    "-e",
+    String.raw`const fs=require("node:fs");
+      const dir=fs.mkdtempSync("/tmp/npm-cli-");
+      fs.writeFileSync(dir+"/package.json",JSON.stringify({name:"dev-mcp-test-global-cli",version:"1.0.0",bin:{"dev-mcp-test-global-cli":"cli.js"}}));
+      fs.writeFileSync(dir+"/cli.js",'#!/usr/bin/env node\nconsole.log("global-cli-ok")\n');
+      console.log(dir);`,
+  );
+  await ssh(
+    aliceConfig,
+    "workspace",
+    "npm install -g --offline --no-audit --no-fund --ignore-scripts --install-links " +
+      npmFixture,
+  );
+  assert.equal(
+    (await ssh(aliceConfig, "workspace", "dev-mcp-test-global-cli")).trim(),
+    "global-cli-ok",
+  );
+  assert.match(
+    await ssh(
+      aliceConfig,
+      "-tt",
+      "workspace",
+      'bash -ic \'printf "%s" "${PS1@P}"\'',
+    ),
+    /\[runner@[^ ]+ /,
+  );
   console.log(
-    "PASS shared HOME and Git credentials, sudo, package manifest, PTY and SFTP",
+    "PASS shared HOME and Git credentials, sudo, global npm CLI, Bash prompt, package manifest, PTY and SFTP",
   );
 
   const http = client(
@@ -548,8 +578,12 @@ try {
     await ssh(aliceConfig, "workspace", "cat ~/.dev-mcp/packages.txt"),
     /jq/,
   );
+  assert.equal(
+    (await ssh(aliceConfig, "workspace", "dev-mcp-test-global-cli")).trim(),
+    "global-cli-ok",
+  );
   console.log(
-    "PASS recreation preserves work files, HOME, package manifest and host key",
+    "PASS recreation preserves work files, HOME, global npm CLI, package manifest and host key",
   );
 
   const existing = client(aliceConfig, "workspace", "sleep 60");

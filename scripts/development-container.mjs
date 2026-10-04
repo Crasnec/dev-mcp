@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { cp, mkdir, lstat, chmod, access } from "node:fs/promises";
 import path from "node:path";
+import { initializeDevelopmentHome } from "./development-home.mjs";
 
 const home = process.env.RUNNER_USER_HOME ?? "/workspace/.dev-mcp-home";
 await mkdir(home, { recursive: true, mode: 0o700 });
@@ -34,6 +35,7 @@ for (const name of [".gitconfig", ".ssh", ".config/gh", ".npmrc"]) {
     }
   }
 }
+await initializeDevelopmentHome(home);
 for (const [key, value] of [
   ["user.name", process.env.GIT_AUTHOR_NAME],
   ["user.email", process.env.GIT_AUTHOR_EMAIL],

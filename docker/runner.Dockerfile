@@ -72,7 +72,7 @@ RUN dnf -y --setopt=install_weak_deps=False install sudo openssh-server gh \
     && chmod 0440 /etc/sudoers.d/dev-mcp \
     && visudo -cf /etc/sudoers.d/dev-mcp
 COPY docker/workspace-sshd_config /etc/ssh/dev-mcp-sshd_config
-COPY scripts/ssh-server.mjs scripts/development-container.mjs /opt/dev-mcp/scripts/
+COPY scripts/ssh-server.mjs scripts/development-container.mjs scripts/development-home.mjs /opt/dev-mcp/scripts/
 COPY scripts/dev-mcp-install.mjs /usr/local/bin/dev-mcp-install
 RUN chmod 0755 /usr/local/bin/dev-mcp-install
 COPY --from=build --chown=${DEV_UID}:${DEV_GID} /src/packages/runner/package.json /opt/dev-mcp/packages/runner/package.json
@@ -82,6 +82,7 @@ USER runner:runner
 ENV NODE_ENV=production \
     HOME=/workspace/.dev-mcp-home \
     RUNNER_USER_HOME=/workspace/.dev-mcp-home \
+    PATH=/workspace/.dev-mcp-home/.local/bin:/workspace/.dev-mcp-home/bin:/workspace/.dev-mcp-home/.cargo/bin:${PATH} \
     RUNNER_DISCOVER_WORKSPACE_PROCESSES=true \
     WORKSPACE_ROOT=/workspace \
     RUNNER_DATA_DIR=/var/lib/dev-mcp \

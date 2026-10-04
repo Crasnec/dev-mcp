@@ -378,6 +378,8 @@ When the provisioner encounters an older UUID-named container, it briefly stops 
 
 The container starts as an ordinary user and permits passwordless sudo and system package installation. Work files and HOME persist across recreation; the writable image filesystem does not. Install reproducible extra Fedora packages with `dev-mcp-install <packages>`; its package list is saved under `~/.dev-mcp/packages.txt` and restored in the background after recreation. A failed restore is recorded in `~/.dev-mcp/packages-status.json`; retry with `dev-mcp-install --restore`. Tools installed into HOME also persist.
 
+The shared HOME is initialized with Fedora's Bash startup files, giving interactive terminals the standard `[user@hostname directory]$` prompt and adding user tool directories to PATH. Existing personal startup files are retained. By default, `npm install -g <package>` installs into `~/.local` without sudo, so its commands work in SSH terminals and MCP and its packages survive container recreation. Existing npm registry/authentication settings and an explicitly configured prefix are retained.
+
 Enable SSH with your normal deployment overlays:
 
 ```bash

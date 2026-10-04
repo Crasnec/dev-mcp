@@ -6,6 +6,7 @@ COPY packages/runner/package.json packages/runner/tsconfig.json packages/runner/
 RUN npm ci
 COPY scripts/telemetry-distribution.mjs scripts/telemetry-distribution.d.mts scripts/bootstrap-google-admin.mjs scripts/bootstrap-google-admin.d.mts scripts/
 COPY scripts/ssh-access.mjs scripts/ssh-access.d.mts scripts/
+COPY scripts/runtime-names.mjs scripts/runtime-names.d.mts scripts/
 COPY packages/gateway/src packages/gateway/src
 COPY packages/gateway/views packages/gateway/views
 COPY packages/gateway/public packages/gateway/public
@@ -21,6 +22,7 @@ COPY --from=build --chown=mcp:mcp /src/node_modules ./node_modules
 COPY --from=build --chown=mcp:mcp /src/packages/gateway ./packages/gateway
 COPY --chown=mcp:mcp scripts/telemetry-distribution.mjs scripts/bootstrap-google-admin.mjs scripts/migrate-primary-account.mjs ./scripts/
 COPY --chown=mcp:mcp scripts/ssh-access.mjs ./scripts/
+COPY --chown=mcp:mcp scripts/runtime-names.mjs ./scripts/
 USER 10001:10001
 ENV NODE_ENV=production PORT=3000 GATEWAY_DATA_DIR=/var/lib/dev-mcp
 EXPOSE 3000 3100

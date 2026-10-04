@@ -13,12 +13,14 @@ import {
   sshLogin,
   workspaceContainer,
 } from "../../../scripts/ssh-access.mjs";
+import { runtimeName } from "../../../scripts/runtime-names.mjs";
 
 export function workspaceSshConfig(
   user: User,
   ssh: NonNullable<GatewayConfig["ssh"]>,
 ) {
-  const alias = user.id + "." + ssh.host;
+  const alias = runtimeName(user) + "." + ssh.host;
+  const legacyAlias = user.id + "." + ssh.host;
   const entryAlias = "dev-mcp-entry-" + user.id;
   return {
     alias,
@@ -30,12 +32,12 @@ export function workspaceSshConfig(
       "    IdentityFile ~/.ssh/id_ed25519",
       "    IdentitiesOnly yes",
       "",
-      `Host ${alias}`,
+      `Host ${[...new Set([alias, legacyAlias])].join(" ")}`,
       `    HostName ${workspaceContainer(user.id)}`,
       "    Port 2222",
       "    User workspace",
       `    ProxyJump ${entryAlias}`,
-      `    HostKeyAlias ${alias}`,
+      `    HostKeyAlias ${legacyAlias}`,
       "    IdentityFile ~/.ssh/id_ed25519",
       "    IdentitiesOnly yes",
       "",

@@ -127,8 +127,9 @@ it("shows each user's own connection, registers keys with CSRF, and waits for pr
   );
   page = await f.get();
   expect(page.payload).toContain(
-    `href="vscode://vscode-remote/ssh-remote+${f.alice.id}.ssh.example.test/workspace"`,
+    'href="vscode://vscode-remote/ssh-remote+alice.ssh.example.test/workspace"',
   );
+  expect(page.payload).toContain("ssh alice.ssh.example.test");
   expect(page.payload).toContain("SHA256:host-fingerprint");
   expect(page.payload).not.toContain("/host/");
   expect(
@@ -247,6 +248,13 @@ it("accepts only the session owner's versioned workspace lifecycle and rejects s
   ).toBe(303);
   const config = await f.get("/account/workspace/config");
   expect(config.statusCode).toBe(200);
+  expect(config.payload).toContain(
+    `Host alice.ssh.example.test ${f.alice.id}.ssh.example.test\n`,
+  );
+  expect(config.payload).toContain(
+    `HostKeyAlias ${f.alice.id}.ssh.example.test`,
+  );
+  expect(config.payload).toContain("HostName dev-mcp-workspace-" + f.alice.id);
   expect(config.payload).toContain("ProxyJump dev-mcp-entry-" + f.alice.id);
   expect(config.payload).toContain("User workspace");
   expect(config.payload).not.toContain(f.admin.id);

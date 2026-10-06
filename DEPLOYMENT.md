@@ -1,6 +1,18 @@
 # Current server deployment
 
-Updated on 2026-10-04 at `https://dev.crasnec.com`.
+Updated on 2026-10-06 (UTC) at `https://dev.crasnec.com`.
+
+## MCP audit request diagnostics (deployed 2026-10-06)
+
+Commit `9c6077a` was pushed to GitHub main and deployed by recreating the gateway at 03:14 UTC. Standard MCP methods with nested paths or camel-case names and the `skills/list` / `skills/get` discovery extension now retain their names in failure records. An exact allowlist keeps arbitrary custom method names redacted. HTTP failure records also identify the message kind and whether a nonempty session header was present, and both fields appear in audit details.
+
+These records support the next investigation of ChatGPT's repeated `MCP_SESSION_ID_REQUIRED` responses. This deployment adds diagnostic information; the HTTP 400 behavior still requires identifying and addressing the client's sessionless request. Existing MCP clients must initialize a new session after the gateway restart.
+
+Only the gateway was recreated. The eight other running container IDs were retained. Gateway image: `8cc7babfbb99`. The preceding image `bb10717592ff` is retained as `dev-mcp-gateway:rollback-20261006-before-request-metadata`.
+
+Validation: all 21 related MCP session/failure-audit and audit HTTP tests passed, along with TypeScript, style and diff checks. The gateway image compiled successfully and became healthy. Public HTTPS/OAuth verification passed. Runtime checks verified five formerly obscured method names, and two unauthenticated diagnostic requests created the expected 401 audit records with exact method names, message kinds and `sessionHeaderPresent: false`.
+
+The build also surfaced an existing dependency advisory: `npm audit --omit=dev` reports one critical finding for `proxy-addr` 2.0.7, [GHSA-jqcg-44mw-7w3h](https://github.com/advisories/GHSA-jqcg-44mw-7w3h), fixed in 2.0.8. The advisory concerns IPv6 trust-subnet compilation; this gateway configures numeric `trust proxy: 1`. Dependency updates were outside this diagnostic deployment and remain a separate maintenance item.
 
 ## MCP/development split (deployed 2026-10-04)
 

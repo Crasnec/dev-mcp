@@ -1459,35 +1459,6 @@ tbody tr:hover {
   margin: 0 0 2px;
   font-size: 13px;
 }
-.audit-invocation-section {
-  padding: 10px 0 14px;
-}
-.audit-invocation-section .audit-tool {
-  display: block;
-  margin-top: 6px;
-}
-.audit-detail-panel .audit-params-label {
-  margin-top: 12px;
-}
-.audit-tool-params {
-  max-height: 240px;
-  margin: 8px 0 0;
-  padding: 12px 14px;
-  background: var(--surface);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.audit-reason-section {
-  padding: 10px 0 14px;
-}
-.audit-reason-section p {
-  margin: 6px 0 0;
-  color: var(--ink-2);
-  font-size: 13px;
-  line-height: 1.7;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
 .audit-command-section {
   margin: 8px 0 16px;
 }

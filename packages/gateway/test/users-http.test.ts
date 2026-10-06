@@ -602,7 +602,8 @@ describe("multi-user accounts and administration", () => {
     });
     expect(auditDetail.statusCode).toBe(200);
     expect(auditDetail.payload).toContain('class="audit-detail-row"');
-    expect(auditDetail.payload).toContain("연관 프로세스·작동 로그");
+    expect(auditDetail.payload).toContain("호출한 프로세스·작동 로그");
+    expect(auditDetail.payload).toContain('class="audit-raw" open');
     expect(auditDetail.payload).toContain(
       "echo &lt;script&gt;x&lt;/script&gt;",
     );

@@ -130,7 +130,7 @@ describe("inline audit details and live updates over HTTP", () => {
     }
   });
 
-  it("puts MCP tool calls without a shell command first and shows their escaped arguments before process output", async () => {
+  it("keeps tool calls first in the list and shows escaped arguments in the expanded raw record", async () => {
     const { get, write, ipc } = await fixture();
     const params = {
       name: "example <script>project</script>",
@@ -160,27 +160,23 @@ describe("inline audit details and live updates over HTTP", () => {
       `/admin/audit?detail=${id}`,
     ]) {
       const detail = await get(url);
-      const invocation =
-        /<section class="audit-invocation-section">([\s\S]*?)<\/section>/.exec(
-          detail.payload,
-        )?.[1];
-      expect(invocation).toContain("project_clone");
-      expect(invocation).toContain("호출 인수");
-      expect(invocation).toContain("&lt;script&gt;project&lt;/script&gt;");
-      expect(invocation).toContain("https://github.com/example/project");
-      expect(invocation).not.toContain("<script>");
-      expect(
-        detail.payload.indexOf('class="audit-invocation-section"'),
-      ).toBeLessThan(detail.payload.indexOf('class="audit-reason-section"'));
-      expect(
-        detail.payload.indexOf('class="audit-invocation-section"'),
-      ).toBeLessThan(detail.payload.indexOf('class="audit-process-section"'));
+      const raw = /<details class="audit-raw" open>([\s\S]*?)<\/details>/.exec(
+        detail.payload,
+      )?.[1];
+      expect(raw).toContain("project_clone");
+      expect(raw).toContain("프로젝트를 복제합니다.");
+      expect(raw).toContain("&lt;script&gt;project&lt;/script&gt;");
+      expect(raw).toContain("https://github.com/example/project");
+      expect(raw).not.toContain("<script>");
+      expect(detail.payload).not.toContain('class="audit-invocation-section"');
+      expect(detail.payload).not.toContain('class="audit-reason-section"');
+      expect(detail.payload).not.toContain('class="audit-process-section"');
     }
     const live = await get(`/admin/audit/${id}/live`);
-    expect(live.json().changes.record).toMatchObject({
-      tool: "project_clone",
-      toolParams: JSON.stringify(params, null, 2),
-    });
+    const record = live.json().changes.record;
+    expect(record.tool).toBe("project_clone");
+    expect(record).not.toHaveProperty("toolParams");
+    expect(JSON.parse(record.details)).toMatchObject({ params });
     expect(ipc).not.toHaveBeenCalled();
   });
 
@@ -213,17 +209,14 @@ describe("inline audit details and live updates over HTTP", () => {
     ]) {
       const detail = await get(url);
       expect(detail.statusCode).toBe(200);
-      const reasonSection =
-        /<section class="audit-reason-section">([\s\S]*?)<\/section>/.exec(
-          detail.payload,
-        )?.[1];
-      expect(reasonSection).toContain("작업 이유");
-      expect(reasonSection).toContain(
-        "&lt;script&gt;alert(&quot;reason&quot;)",
-      );
-      expect(reasonSection).toContain("마지막검증지점끝");
-      expect(reasonSection).not.toContain("<script>");
-      expect(detail.payload).toContain("&quot;reason&quot;:");
+      const raw = /<details class="audit-raw" open>([\s\S]*?)<\/details>/.exec(
+        detail.payload,
+      )?.[1];
+      expect(raw).toContain("&quot;reason&quot;:");
+      expect(raw).toContain("&lt;script&gt;alert(");
+      expect(raw).toContain("마지막검증지점끝");
+      expect(raw).not.toContain("<script>");
+      expect(detail.payload).not.toContain('class="audit-reason-section"');
     }
   });
 
@@ -396,7 +389,82 @@ describe("inline audit details and live updates over HTTP", () => {
     expect(ipc).not.toHaveBeenCalled();
   });
 
-  it("refreshes related process metadata without rereading initial logs", async () => {
+  it("does not infer processes from projects, commands, timestamps or process-list calls", async () => {
+    const { get, write, ipc, process } = await fixture();
+    for (const event of [
+      { tool: "project_list", projectId: process.projectId },
+      { tool: "process_list" },
+      { tool: "process_list", params: { project_id: process.projectId } },
+      {
+        tool: "process_start",
+        projectId: process.projectId,
+        params: { command: process.command },
+      },
+    ]) {
+      const id = await write({ ...event, processId: undefined });
+      for (const url of [
+        `/admin/audit/${id}/detail`,
+        `/admin/audit?detail=${id}`,
+      ]) {
+        const detail = await get(url);
+        expect(detail.statusCode).toBe(200);
+        expect(detail.payload).not.toContain('class="audit-process-section"');
+        expect(logBlocks(detail.payload)).toEqual([]);
+        expect(detail.payload).toContain('class="audit-raw" open');
+      }
+      const live = await get(`/admin/audit/${id}/live`);
+      expect(live.json().changes.order).toEqual([]);
+      expect(live.json().changes.record).not.toHaveProperty("processId");
+    }
+    expect(ipc).not.toHaveBeenCalled();
+  });
+
+  it("shows only the explicit process ID from a result or call argument, even with identical commands", async () => {
+    const { get, write, ipc, state, process } = await fixture();
+    state.processes = success({
+      processes: [{ ...process, id: "unrelated-process" }, process],
+    });
+    for (const event of [
+      { processId: process.id },
+      {
+        tool: "process_logs",
+        processId: undefined,
+        params: { process_id: process.id },
+      },
+    ]) {
+      const id = await write(event);
+      const detail = await get(`/admin/audit/${id}/detail`);
+      expect(detail.payload).toContain(`data-audit-process="${process.id}"`);
+      expect(detail.payload).not.toContain("unrelated-process");
+      expect(logBlocks(detail.payload)).toHaveLength(1);
+      const live = await get(`/admin/audit/${id}/live`);
+      expect(live.json().changes.order).toEqual([process.id]);
+      expect(live.json().changes.record.processId).toBe(process.id);
+    }
+    expect(
+      ipc.mock.calls
+        .filter(([method]) => method === "process_logs")
+        .map(([, params]) => params),
+    ).toEqual([
+      { process_id: process.id, max_bytes: 16 * 1024 },
+      { process_id: process.id, max_bytes: 16 * 1024 },
+    ]);
+  });
+
+  it("does not substitute another process when the recorded process has disappeared", async () => {
+    const { get, write, ipc, process } = await fixture();
+    const id = await write({
+      processId: "missing-process",
+      projectId: process.projectId,
+      params: { command: process.command },
+    });
+    const detail = await get(`/admin/audit/${id}/detail`);
+    expect(detail.payload).toContain("이 호출의 프로세스를 찾지 못했습니다.");
+    expect(logBlocks(detail.payload)).toEqual([]);
+    expect(ipc.mock.calls.map(([method]) => method)).toEqual(["process_list"]);
+  });
+
+  it("refreshes the called process metadata without rereading initial logs", async () => {
     const { get, write, ipc, state, process } = await fixture();
     const id = await write();
     state.processes = success({
@@ -473,7 +541,7 @@ describe("inline audit details and live updates over HTTP", () => {
     expect(fallback.statusCode).toBe(200);
     expect(fallback.payload).toContain(`id="audit-detail-${id}"`);
     expect(fallback.payload).toContain('aria-expanded="true"');
-    expect(fallback.payload).toContain("연관 프로세스·작동 로그");
+    expect(fallback.payload).toContain("호출한 프로세스·작동 로그");
     expect(logBlocks(fallback.payload)).toEqual([
       "&lt;script&gt;runner output&lt;/script&gt;\n",
     ]);

@@ -415,7 +415,7 @@
     });
     const heading = element("div", "audit-process-heading");
     const title = element("div");
-    title.append(element("h3", "", "연관 프로세스·작동 로그"));
+    title.append(element("h3", "", "호출한 프로세스·작동 로그"));
     if (meta.ownerLabel) {
       title.append(element("p", "", meta.ownerLabel + "님의 실행 환경"));
     }
@@ -454,37 +454,18 @@
       );
       root.append(command);
     }
-    if (record.tool) {
-      const invocation = element("section", "audit-invocation-section");
-      invocation.append(
-        element("h3", "", "실행한 도구"),
-        element("code", "audit-tool", record.tool),
+    if (record.processId) {
+      const section = element("section", "audit-process-section");
+      section.append(
+        processMeta(meta),
+        element("div", "audit-process-list", undefined, {
+          "data-audit-processes": "",
+        }),
       );
-      if (record.toolParams) {
-        invocation.append(
-          element("h3", "audit-params-label", "호출 인수"),
-          element("pre", "command-block audit-tool-params", record.toolParams),
-        );
-      }
-      root.append(invocation);
+      root.append(section);
     }
-    if (record.reason) {
-      const reason = element("section", "audit-reason-section");
-      reason.append(
-        element("h3", "", "작업 이유"),
-        element("p", "", record.reason),
-      );
-      root.append(reason);
-    }
-    const section = element("section", "audit-process-section");
-    section.append(
-      processMeta(meta),
-      element("div", "audit-process-list", undefined, {
-        "data-audit-processes": "",
-      }),
-    );
-    root.append(section);
     const raw = element("details", "audit-raw");
+    raw.setAttribute("open", "");
     raw.append(
       element("summary", "", "원본 기록"),
       element("pre", "audit-json", record.details),

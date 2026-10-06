@@ -397,6 +397,7 @@ function detailResponse(
       ...record("a", "작업 <이유>"),
       details: '{"literal":"<script>"}',
       command: "echo <literal>",
+      processId: processes[0]?.id ?? "requested-job",
     },
     meta: {
       ownerLabel: "Admin",
@@ -433,16 +434,23 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
 describe("inline audit details", () => {
-  it("keeps MCP tool calls first in refreshed rows and displays their arguments at the top of inline details", async () => {
+  it("keeps tools first in refreshed rows and displays the raw record without duplicate sections", async () => {
     const row = auditRow("a");
     const h = harness([row]);
-    const params = '{"name":"<script>project</script>","ref":"main"}';
-    const call = { ...record("a"), tool: "project_clone" };
+    const call = {
+      ...record("a", "프로젝트 복제"),
+      tool: "project_clone",
+    };
+    const details = JSON.stringify({
+      tool: call.tool,
+      reason: call.reason,
+      params: { name: "<script>project</script>", ref: "main" },
+    });
     h.fetch.mockImplementation((url: URL) => {
       if (url.pathname === "/admin/audit/a/live") {
         return Promise.resolve(
           deltaResponse("audit-detail", "detail-one", {
-            record: { ...call, toolParams: params, details: "{}" },
+            record: { ...call, details },
             meta: {},
             order: [],
           }),
@@ -457,15 +465,12 @@ describe("inline audit details", () => {
     h.click(row);
     await vi.advanceTimersByTimeAsync(1);
     const detail = row.content.querySelector("[data-audit-fragment]")!;
-    expect(detail.firstElementChild?.className).toBe(
-      "audit-invocation-section",
-    );
-    expect(detail.querySelector(".audit-tool")?.textContent).toBe(
-      "project_clone",
-    );
-    expect(detail.querySelector(".audit-tool-params")?.textContent).toBe(
-      params,
-    );
+    expect(detail.firstElementChild?.className).toBe("audit-raw");
+    expect(detail.firstElementChild?.attributes.has("open")).toBe(true);
+    expect(detail.querySelector(".audit-json")?.textContent).toBe(details);
+    expect(detail.querySelector(".audit-invocation-section")).toBeNull();
+    expect(detail.querySelector(".audit-reason-section")).toBeNull();
+    expect(detail.querySelector(".audit-process-section")).toBeNull();
     expect(detail.querySelector("script")).toBeNull();
   });
 
@@ -878,7 +883,8 @@ describe("inline audit details", () => {
     h.click(row);
     await vi.advanceTimersByTimeAsync(1);
     const raw = row.content.querySelector(".audit-raw")!;
-    raw.setAttribute("open", "");
+    expect(raw.attributes.has("open")).toBe(true);
+    raw.attributes.delete("open");
     expect(row.content.querySelector(".audit-json")?.textContent).toBe(
       '{"literal":"<script>"}',
     );
@@ -893,7 +899,7 @@ describe("inline audit details", () => {
     expect(row.content.querySelector("script")).toBeNull();
     await vi.advanceTimersByTimeAsync(5000);
     expect(row.content.querySelector(".audit-raw")).toBe(raw);
-    expect(raw.attributes.has("open")).toBe(true);
+    expect(raw.attributes.has("open")).toBe(false);
     expect(row.content.querySelector(".audit-message")?.textContent).toBe(
       "<literal metadata>",
     );

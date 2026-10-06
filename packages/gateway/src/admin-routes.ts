@@ -89,11 +89,9 @@ interface AuditRow {
   source: Record<string, unknown>;
   ownerId?: string;
   processId?: string;
-  projectId?: string;
   command?: string;
   commandPreview?: string;
   tool?: string;
-  toolParams?: string;
   reason?: string;
   at: string;
   atDateTime?: string;
@@ -460,13 +458,9 @@ function installConsoleRoutes(
     const owner = row.ownerId
       ? allUsers.find((entry) => entry.id === row.ownerId)
       : undefined;
-    const related = Boolean(
-      row.processId || row.projectId || row.tool?.startsWith("process_"),
-    );
-    if (!related) {
+    if (!row.processId) {
       return {
         command: row.command,
-        message: "이 감사 기록에 연결된 백그라운드 프로세스가 없습니다.",
         processes: [],
       };
     }
@@ -486,7 +480,9 @@ function installConsoleRoutes(
         processes: [],
       };
     }
-    const matches = relatedProcesses(row, state.processes);
+    const matches = state.processes.filter(
+      (process) => process.id === row.processId,
+    );
     const processRows = await Promise.all(
       matches.map(async (process) => {
         const logs = includeLogs
@@ -538,7 +534,7 @@ function installConsoleRoutes(
       processListHref: base + "/processes?owner=" + owner.id,
       message:
         processRows.length === 0
-          ? "조건에 맞는 연관 프로세스를 찾지 못했습니다."
+          ? "이 호출의 프로세스를 찾지 못했습니다."
           : undefined,
       processes: processRows,
     };
@@ -1602,7 +1598,7 @@ function installConsoleRoutes(
           event: row.event,
           actor: row.actor,
           tool: row.tool,
-          toolParams: row.toolParams,
+          processId: row.processId,
           reason: row.reason,
           details: row.details,
           command: row.command,
@@ -1872,9 +1868,6 @@ function auditRow(entry: Record<string, unknown>, users: User[]): AuditRow {
     actorId;
   const params = recordValue(entry.params);
   const command = stringValue(params.command);
-  const toolParams = Object.fromEntries(
-    Object.entries(params).filter(([key]) => key !== "command"),
-  );
   const details: Record<string, unknown> = {};
   for (const key of [
     "at",
@@ -1936,14 +1929,10 @@ function auditRow(entry: Record<string, unknown>, users: User[]): AuditRow {
     ownerId:
       typeof entry.userId === "string" ? entry.userId : owner?.id || undefined,
     processId: stringValue(entry.processId) ?? stringValue(params.process_id),
-    projectId: stringValue(entry.projectId) ?? stringValue(params.project_id),
     command,
     commandPreview:
       command && command.length > 320 ? command.slice(0, 320) + "…" : command,
     tool: stringValue(entry.tool),
-    toolParams: Object.keys(toolParams).length
-      ? JSON.stringify(toolParams, null, 2)
-      : undefined,
     reason: stringValue(entry.reason)?.trim() || undefined,
     at: dateLabel(typeof entry.at === "string" ? entry.at : undefined),
     atDateTime: dateIso(typeof entry.at === "string" ? entry.at : undefined),
@@ -1993,42 +1982,6 @@ function auditDetailHref(
     (detailId ? "#audit-detail-" : "#audit-row-") +
     rowId
   );
-}
-
-function relatedProcesses(
-  row: AuditRow,
-  processes: ProcessSummary[],
-): ProcessSummary[] {
-  if (row.processId) {
-    return processes.filter((process) => process.id === row.processId);
-  }
-  let candidates = processes.filter(
-    (process) => !row.projectId || process.projectId === row.projectId,
-  );
-  if (row.tool === "process_start" && row.command) {
-    candidates = candidates.filter(
-      (process) => process.command === row.command,
-    );
-    const eventTime = Date.parse(String(row.source.at ?? ""));
-    candidates.sort((left, right) => {
-      if (!Number.isFinite(eventTime)) {
-        return Date.parse(right.startedAt) - Date.parse(left.startedAt);
-      }
-      return (
-        Math.abs(Date.parse(left.startedAt) - eventTime) -
-        Math.abs(Date.parse(right.startedAt) - eventTime)
-      );
-    });
-    return candidates.slice(0, 1);
-  }
-  if (!row.projectId && row.tool !== "process_list") {
-    return [];
-  }
-  return candidates
-    .sort(
-      (left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt),
-    )
-    .slice(0, 5);
 }
 
 function workspaceRequest(req: Request): boolean {

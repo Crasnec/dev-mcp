@@ -1,11 +1,10 @@
 <div class="audit-detail-panel" data-audit-fragment role="region" aria-label="{{event}} 상세">
   {{#detail.command}}<details class="audit-command-section audit-request-command" open><summary>요청한 명령</summary><pre class="command-block audit-command">{{detail.command}}</pre></details>{{/detail.command}}
-  {{#tool}}<section class="audit-invocation-section"><h3>실행한 도구</h3><code class="audit-tool">{{tool}}</code>{{#toolParams}}<h3 class="audit-params-label">호출 인수</h3><pre class="command-block audit-tool-params">{{toolParams}}</pre>{{/toolParams}}</section>{{/tool}}
-  {{#reason}}<section class="audit-reason-section"><h3>작업 이유</h3><p>{{reason}}</p></section>{{/reason}}
+  {{#processId}}
   {{#detail}}
   <section class="audit-process-section">
     <div data-audit-process-meta>
-      <div class="audit-process-heading"><div><h3>연관 프로세스·작동 로그</h3>{{#ownerLabel}}<p>{{ownerLabel}}님의 실행 환경</p>{{/ownerLabel}}</div>{{#processListHref}}<a class="audit-text-link" href="{{processListHref}}">프로세스 관리 →</a>{{/processListHref}}</div>
+      <div class="audit-process-heading"><div><h3>호출한 프로세스·작동 로그</h3>{{#ownerLabel}}<p>{{ownerLabel}}님의 실행 환경</p>{{/ownerLabel}}</div>{{#processListHref}}<a class="audit-text-link" href="{{processListHref}}">프로세스 관리 →</a>{{/processListHref}}</div>
       {{#message}}<p class="audit-message">{{message}}</p>{{/message}}
     </div>
     <div class="audit-process-list" data-audit-processes>
@@ -24,5 +23,6 @@
     </div>
   </section>
   {{/detail}}
-  <details class="audit-raw"><summary>원본 기록</summary><pre class="audit-json">{{details}}</pre></details>
+  {{/processId}}
+  <details class="audit-raw" open><summary>원본 기록</summary><pre class="audit-json">{{details}}</pre></details>
 </div>

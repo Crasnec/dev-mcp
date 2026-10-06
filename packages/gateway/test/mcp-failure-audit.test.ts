@@ -104,6 +104,90 @@ async function fixture() {
 }
 
 describe("MCP failure audit", () => {
+  it("identifies discovery requests and nested notifications without relaxing session checks", async () => {
+    const f = await fixture();
+    for (const [method, requestKind] of [
+      ["skills/list", "request"],
+      ["skills/get", "request"],
+      ["resources/templates/list", "request"],
+      ["logging/setLevel", "request"],
+      ["notifications/roots/list_changed", "notification"],
+    ]) {
+      const response = await f.post({
+        jsonrpc: "2.0",
+        ...(requestKind === "request" ? { id: 2 } : {}),
+        method,
+        params: { secret: "secret-discovery-value" },
+      });
+      expect(response.statusCode).toBe(400);
+      expect((await f.audit.recent()).records[0]).toMatchObject({
+        event: "mcp_error",
+        stage: "session",
+        errorCode: "MCP_SESSION_ID_REQUIRED",
+        requestMethod: method,
+        requestKind,
+        sessionHeaderPresent: false,
+      });
+    }
+    const initialized = await f.initialize();
+    const sid = String(initialized.headers["mcp-session-id"]);
+    const before = (await f.audit.recent()).records.length;
+    const accepted = await f.post(
+      { jsonrpc: "2.0", method: "notifications/initialized" },
+      sid,
+    );
+    expect(accepted.statusCode).toBe(202);
+    expect((await f.audit.recent()).records).toHaveLength(before);
+    const rejected = await f.post(
+      { jsonrpc: "2.0", id: 3, method: "tools/list" },
+      "secret-invalid-session-header",
+    );
+    expect(rejected.statusCode).toBe(404);
+    expect((await f.audit.recent()).records[0]).toMatchObject({
+      errorCode: "MCP_SESSION_NOT_FOUND",
+      requestMethod: "tools/list",
+      requestKind: "request",
+      sessionHeaderPresent: true,
+    });
+    await inject(f.app, {
+      method: "DELETE",
+      url: "/mcp",
+      headers: { ...f.headers, "mcp-session-id": sid },
+    });
+    const text = await readFile(path.join(f.dataDir, "audit.jsonl"), "utf8");
+    expect(text).not.toContain("secret-discovery-value");
+    expect(text).not.toContain("secret-invalid-session-header");
+  });
+
+  it("classifies rejected message shapes and redacts custom method names", async () => {
+    const f = await fixture();
+    for (const [body, requestKind] of [
+      [{ jsonrpc: "2.0", id: 1, result: {} }, "response"],
+      [[{ jsonrpc: "2.0", id: 2, method: "tools/list" }], "batch"],
+      [{ method: "tools/list" }, "invalid"],
+      [null, "invalid"],
+    ] as const) {
+      expect((await f.post(body)).statusCode).toBe(400);
+      expect((await f.audit.recent()).records[0]).toMatchObject({
+        requestKind,
+        sessionHeaderPresent: false,
+      });
+    }
+    const response = await f.post({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/secretmethodvalue",
+    });
+    expect(response.statusCode).toBe(400);
+    expect((await f.audit.recent()).records[0]).toMatchObject({
+      requestMethod: "unknown",
+      requestKind: "request",
+    });
+    const text = await readFile(path.join(f.dataDir, "audit.jsonl"), "utf8");
+    expect(text).not.toContain("secretmethodvalue");
+    expect(text).not.toContain(f.tokens.accessToken);
+  });
+
   it("records authentication rejection reasons and known principals without credentials", async () => {
     const f = await fixture();
     const request = { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} };

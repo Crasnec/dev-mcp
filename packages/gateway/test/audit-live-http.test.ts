@@ -103,6 +103,33 @@ async function fixture() {
 }
 
 describe("inline audit details and live updates over HTTP", () => {
+  it("shows MCP message kind and session-header presence in failure details", async () => {
+    const { get, write } = await fixture();
+    const id = await write({
+      event: "mcp_error",
+      tool: undefined,
+      processId: undefined,
+      requestMethod: "notifications/roots/list_changed",
+      requestKind: "notification",
+      sessionHeaderPresent: false,
+      errorCode: "MCP_SESSION_ID_REQUIRED",
+    });
+    for (const url of [
+      `/admin/audit/${id}/detail`,
+      `/admin/audit?detail=${id}`,
+    ]) {
+      const detail = await get(url);
+      expect(detail.statusCode).toBe(200);
+      expect(detail.payload).toContain("notifications/roots/list_changed");
+      expect(detail.payload).toContain(
+        "&quot;requestKind&quot;: &quot;notification&quot;",
+      );
+      expect(detail.payload).toContain(
+        "&quot;sessionHeaderPresent&quot;: false",
+      );
+    }
+  });
+
   it("puts MCP tool calls without a shell command first and shows their escaped arguments before process output", async () => {
     const { get, write, ipc } = await fixture();
     const params = {

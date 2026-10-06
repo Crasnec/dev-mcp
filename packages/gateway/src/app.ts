@@ -31,7 +31,12 @@ import { installPreviewRoutes } from "./preview-routes.ts";
 import { installSshRoutes } from "./ssh-routes.ts";
 import { SshAccessStore } from "./ssh-access-store.ts";
 import type { McpSessionManager } from "./mcp-sessions.ts";
-import { safeMcpMethod, safeMcpTool, type McpFailure } from "./mcp-audit.ts";
+import {
+  mcpMessageKind,
+  safeMcpMethod,
+  safeMcpTool,
+  type McpFailure,
+} from "./mcp-audit.ts";
 
 const SESSION_IDLE_TIMEOUT_MS = 24 * 60 * 60_000;
 
@@ -219,7 +224,9 @@ export function createApp(
         userId: principal?.userId,
         clientId: principal?.clientId,
         sessionId: auditedSessionHeader(req),
+        sessionHeaderPresent: !!sessionHeader(req),
         requestMethod: safeMcpMethod(req.body?.method),
+        requestKind: mcpMessageKind(req.body),
         tool: safeMcpTool(req.body?.params?.name),
         httpMethod: req.method,
         httpStatus: res.statusCode,

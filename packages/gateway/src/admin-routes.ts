@@ -1910,6 +1910,8 @@ function auditRow(entry: Record<string, unknown>, users: User[]): AuditRow {
     "stage",
     "issues",
     "requestMethod",
+    "requestKind",
+    "sessionHeaderPresent",
     "httpMethod",
     "httpStatus",
     "rpcErrorCode",

@@ -136,15 +136,72 @@ export class AuditedMcpServer extends McpServer {
   }
 }
 
+// Exact protocol names only: a syntactically valid custom method can still
+// contain credentials. Include nested paths, camel-case names and the skills
+// discovery extension used by OpenAI clients.
+const auditedMethods = new Set([
+  "initialize",
+  "ping",
+  "tools/list",
+  "tools/call",
+  "resources/list",
+  "resources/templates/list",
+  "resources/read",
+  "resources/subscribe",
+  "resources/unsubscribe",
+  "prompts/list",
+  "prompts/get",
+  "tasks/get",
+  "tasks/result",
+  "tasks/list",
+  "tasks/cancel",
+  "logging/setLevel",
+  "sampling/createMessage",
+  "elicitation/create",
+  "completion/complete",
+  "roots/list",
+  "skills/list",
+  "skills/get",
+  "notifications/cancelled",
+  "notifications/initialized",
+  "notifications/progress",
+  "notifications/tasks/status",
+  "notifications/resources/list_changed",
+  "notifications/resources/updated",
+  "notifications/prompts/list_changed",
+  "notifications/tools/list_changed",
+  "notifications/message",
+  "notifications/elicitation/complete",
+  "notifications/roots/list_changed",
+]);
+
 export function safeMcpMethod(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
   }
-  return /^(?:initialize|ping|(?:tools|resources|prompts|tasks)\/[a-z_]+|notifications\/[a-z_]+)$/.test(
-    value,
-  )
-    ? value.slice(0, 80)
-    : "unknown";
+  return auditedMethods.has(value) ? value : "unknown";
+}
+
+export function mcpMessageKind(
+  value: unknown,
+): "request" | "notification" | "response" | "batch" | "invalid" {
+  if (Array.isArray(value)) {
+    return "batch";
+  }
+  if (!value || typeof value !== "object") {
+    return "invalid";
+  }
+  const message = value as Record<string, unknown>;
+  if (message.jsonrpc !== "2.0") {
+    return "invalid";
+  }
+  if (typeof message.method === "string") {
+    return Object.hasOwn(message, "id") ? "request" : "notification";
+  }
+  return Object.hasOwn(message, "id") &&
+    (Object.hasOwn(message, "result") || Object.hasOwn(message, "error"))
+    ? "response"
+    : "invalid";
 }
 
 export function safeMcpTool(value: unknown): string | undefined {

@@ -2,6 +2,14 @@
 
 Updated on 2026-10-06 (UTC) at `https://dev.crasnec.com`.
 
+## Audit detail cleanup (deployed 2026-10-06)
+
+Commit `f80d3dd` was pushed to GitHub main and deployed by recreating the gateway at 04:47 UTC. Audit details now display only the process explicitly identified by the recorded result or `process_id` call argument. Project, command and timestamp matching no longer bring in other processes, and calls without a process ID omit the process section entirely. Duplicate tool, reason and argument sections were removed from details; the raw record opens by default. List headings, recorded values and requested command display remain available. Server-rendered and automatically refreshed administrator and account views use the same behavior, and polling preserves the user's raw-record disclosure state.
+
+Only the gateway was recreated. The eight other running container IDs were retained. Gateway image: `b9813c9d4dfc`. The preceding image `8cc7babfbb99` is retained as `dev-mcp-gateway:rollback-20261006-before-audit-detail-cleanup`.
+
+Validation: all 48 related audit, live-update, administrator and account HTTP/view tests passed, including explicit process selection, disappearance of a recorded process, and absence of unrelated runner calls. TypeScript, style and diff checks passed. The built gateway became healthy; deployed-template rendering and public HTTPS/OAuth checks passed.
+
 ## MCP audit request diagnostics (deployed 2026-10-06)
 
 Commit `9c6077a` was pushed to GitHub main and deployed by recreating the gateway at 03:14 UTC. Standard MCP methods with nested paths or camel-case names and the `skills/list` / `skills/get` discovery extension now retain their names in failure records. An exact allowlist keeps arbitrary custom method names redacted. HTTP failure records also identify the message kind and whether a nonempty session header was present, and both fields appear in audit details.

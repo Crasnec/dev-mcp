@@ -1,7 +1,7 @@
 ARG RUNNER_IMAGE=dev-mcp-runner:latest
 FROM ${RUNNER_IMAGE}
 USER 0:0
-RUN dnf -y --setopt=install_weak_deps=False install sudo openssh-server \
+RUN dnf -y --setopt=install_weak_deps=False install sudo openssh-server bubblewrap \
     && dnf clean all \
     && useradd --non-unique --uid $(id -u runner) --gid runner --home-dir /workspace/.dev-mcp-home --no-create-home --shell /bin/bash workspace \
     && usermod --password '*' workspace \

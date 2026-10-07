@@ -9,5 +9,6 @@ COPY scripts/runtime-names.mjs scripts/
 COPY scripts/workspace-operations.mjs scripts/ssh-registry.mjs scripts/
 COPY scripts/split-runtime.mjs scripts/development-workspace.mjs scripts/development-home.mjs scripts/git-auth.mjs scripts/ssh-server.mjs scripts/
 COPY docker/workspace-sshd_config docker/
+COPY docker/workspace-seccomp.json docker/
 ENV NODE_ENV=production
 CMD ["flock", "-n", "/runner-status/controller.lock", "node", "scripts/reconcile-user-runners.mjs"]

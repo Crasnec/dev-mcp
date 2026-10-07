@@ -44,6 +44,7 @@ services:
     environment:
       WORKSPACE_SSH_ENABLED: "true"
       WORKSPACE_IMAGE: ${WORKSPACE_IMAGE:-dev-mcp-workspace:latest}
+      WORKSPACE_APPARMOR_PROFILE: ${WORKSPACE_APPARMOR_PROFILE:-}
       SSH_ENTRY_DATA_DIR: /ssh-entry-data
       WORKSPACE_AUTH_DIR: /workspace-auth
       WORKSPACE_AUTH_VOLUME: ${COMPOSE_PROJECT_NAME:-dev-mcp}-workspace-auth

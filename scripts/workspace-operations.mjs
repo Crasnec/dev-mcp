@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 import {
   OperationError,
@@ -64,6 +65,14 @@ export class WorkspaceOperations {
       options.authVolume ??
       process.env.WORKSPACE_AUTH_VOLUME ??
       project + "-workspace-auth";
+    this.seccompProfile = fileURLToPath(
+      new URL("../docker/workspace-seccomp.json", import.meta.url),
+    );
+    this.apparmorProfile =
+      options.apparmorProfile ?? process.env.WORKSPACE_APPARMOR_PROFILE ?? "";
+    if (this.apparmorProfile && this.apparmorProfile !== "dev-mcp-workspace") {
+      throw new Error("Invalid workspace AppArmor profile");
+    }
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(this.authVolume)) {
       throw new Error("Invalid workspace auth volume");
     }
@@ -283,6 +292,16 @@ export class WorkspaceOperations {
       "--init",
       "--restart",
       "unless-stopped",
+      "--security-opt",
+      "seccomp=" + this.seccompProfile,
+      ...(this.apparmorProfile
+        ? [
+            "--security-opt",
+            "apparmor=" + this.apparmorProfile,
+            "--security-opt",
+            "systempaths=unconfined",
+          ]
+        : []),
       "--tmpfs",
       "/tmp:rw,nosuid,nodev,exec,mode=1777",
       "--mount",

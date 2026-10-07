@@ -420,6 +420,7 @@ it("separates MCP and SSH with private authentication, homes and networks and no
   const dir = path.dirname(f.usersFile);
   const env = {
     WORKSPACE_SSH_ENABLED: "true",
+    WORKSPACE_APPARMOR_PROFILE: "dev-mcp-workspace",
     SSH_ENTRY_DATA_DIR: path.join(dir, "entry"),
     WORKSPACE_AUTH_DIR: path.join(dir, "auth"),
   };
@@ -442,6 +443,8 @@ it("separates MCP and SSH with private authentication, homes and networks and no
         alice +
         ",readonly",
       "SSH_WORKSPACE=true",
+      "apparmor=dev-mcp-workspace",
+      "systempaths=unconfined",
       "type=volume,source=dev-mcp-user-" +
         alice +
         "-home,target=/workspace/.dev-mcp-home",
@@ -457,6 +460,10 @@ it("separates MCP and SSH with private authentication, homes and networks and no
   expect(runner).toContain("--read-only");
   expect(runner).toContain("--cap-drop");
   expect(runner).toContain("no-new-privileges:true");
+  expect(runner).not.toContain("apparmor=dev-mcp-workspace");
+  expect(runner).not.toContain("systempaths=unconfined");
+  expect(runner).not.toContain("--privileged");
+  expect(workspace).not.toContain("--privileged");
   expect(runner).toContain(
     "/workspace/.dev-mcp-home:ro,nosuid,nodev,noexec,mode=000",
   );

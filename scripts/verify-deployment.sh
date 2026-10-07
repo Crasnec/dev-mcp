@@ -39,7 +39,7 @@ if [[ -z "$runner_ids" ]]; then
   echo "No account runner is running yet; skipping runner isolation checks."
 fi
 for runner_id in $runner_ids; do
-  "${docker_command[@]}" inspect "$runner_id" --format '{{.Name}} {{json .HostConfig.ReadonlyRootfs}} {{json .HostConfig.CapDrop}} {{json .HostConfig.SecurityOpt}}'
+  "${docker_command[@]}" inspect "$runner_id" --format '{{.Name}} read-only={{.HostConfig.ReadonlyRootfs}} capabilities={{json .HostConfig.CapDrop}} apparmor={{.AppArmorProfile}}'
   runner_networks="$("${docker_command[@]}" inspect "$runner_id" --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}} {{end}}')"
   for network in $runner_networks; do
     if [[ " $gateway_networks " == *" $network "* ]]; then

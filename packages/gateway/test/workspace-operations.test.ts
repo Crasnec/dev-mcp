@@ -7,6 +7,7 @@ import { RunnerOperations } from "../../../scripts/runner-operations.mjs";
 import {
   WorkspaceOperations,
   validWorkspaceControl,
+  workspaceLifecycleControl,
 } from "../../../scripts/workspace-operations.mjs";
 import { SshRegistry } from "../../../scripts/ssh-registry.mjs";
 import {
@@ -64,6 +65,59 @@ const limits = {
   fileSizeMiB: 0,
   network: false,
 };
+it("chooses the newest admin or personal lifecycle request and validates ownership", () => {
+  const global = {
+    revision: randomUUID(),
+    actorId: randomUUID(),
+    action: "restart",
+    requestedAt: 200,
+  };
+  const personal = {
+    revision: randomUUID(),
+    actorId: id,
+    action: "stop",
+    requestedAt: 100,
+  };
+  expect(workspaceLifecycleControl(user, global, personal)).toMatchObject({
+    revision: global.revision,
+    actorId: id,
+    action: "restart",
+  });
+  expect(
+    workspaceLifecycleControl(user, global, { ...personal, requestedAt: 300 }),
+  ).toEqual({ ...personal, requestedAt: 300 });
+  expect(
+    workspaceLifecycleControl(user, { ...global, action: "apply" }, personal),
+  ).toEqual(personal);
+  expect(() =>
+    workspaceLifecycleControl(user, global, {
+      ...personal,
+      actorId: randomUUID(),
+    }),
+  ).toThrow("Invalid workspace request");
+});
+
+it("does not automatically start a created workspace while its MCP container is stopped", async () => {
+  const f = await fixture();
+  f.info.State = { Running: false, Status: "created" };
+  vi.spyOn(f.operations, "template").mockResolvedValue({
+    source: "original",
+    limits,
+  });
+  vi.spyOn(f.operations, "network").mockResolvedValue(undefined);
+  vi.mocked(f.runners.owned).mockResolvedValue({
+    name: "runner",
+    info: { ...f.info, State: { Running: false, Status: "exited" } },
+  });
+  await f.operations.sync(user);
+  expect(f.docker).not.toHaveBeenCalledWith("start", f.name);
+  vi.mocked(f.runners.owned).mockResolvedValue({
+    name: "runner",
+    info: { ...f.info, State: { Running: true, Status: "running" } },
+  });
+  await f.operations.sync(user);
+  expect(f.docker).toHaveBeenCalledWith("start", f.name);
+});
 it("stops VS Code writes before storage copying and preserves already stopped workspaces", async () => {
   const f = await fixture();
   expect(

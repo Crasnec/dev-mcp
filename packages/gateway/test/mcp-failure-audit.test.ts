@@ -295,13 +295,13 @@ describe("MCP failure audit", () => {
       sessionId: sid,
     });
     const unsupportedVersion = await f.post(request, sid, {
-      "mcp-protocol-version": "2099-01-01",
+      "mcp-protocol-version": "2025-01-01",
     });
     expect(unsupportedVersion.statusCode).toBe(400);
     expect((await f.audit.recent()).records[0]).toMatchObject({
       stage: "transport",
       errorCode: "MCP_PROTOCOL_VERSION_UNSUPPORTED",
-      protocolVersion: "2099-01-01",
+      protocolVersion: "2025-01-01",
     });
     const lost = randomUUID();
     expect((await f.post(request, lost)).statusCode).toBe(404);
@@ -443,10 +443,12 @@ describe("MCP failure audit", () => {
         clientId: f.client.clientId,
         issues: [{ field: "network_intent", code: "invalid_value" }],
       });
-      await client.callTool({
-        name: "missing_tool",
-        arguments: { secret: "secret-unknown-value" },
-      });
+      await expect(
+        client.callTool({
+          name: "missing_tool",
+          arguments: { secret: "secret-unknown-value" },
+        }),
+      ).rejects.toMatchObject({ code: -32602 });
       expect((await f.audit.recent()).records[0]).toMatchObject({
         stage: "tool_lookup",
         errorCode: "UNKNOWN_TOOL",

@@ -1119,6 +1119,13 @@ export class RunnerOperations {
       return;
     }
     if (!info) {
+      if (action === "stop") {
+        return;
+      }
+      if (action === "start" || action === "restart") {
+        await this.create(user, request.limits);
+        return;
+      }
       throw new Error("컨테이너가 없습니다. 먼저 실행 환경을 생성해 주세요.");
     }
     if (action === "stop") {

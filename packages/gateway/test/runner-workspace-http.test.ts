@@ -104,6 +104,50 @@ async function fixture() {
 }
 
 describe("runner workspace location", () => {
+  it("shows stopped containers in HTML and live data, separates development state and avoids treating stale observations as stopped", async () => {
+    const f = await fixture();
+    const statusFile = path.join(f.dataDir, "status/status.json");
+    const observe = (age = 0) =>
+      writeFile(
+        statusFile,
+        JSON.stringify({
+          entries: {
+            [f.target.id]: { state: "exited", observedAt: Date.now() - age },
+          },
+          workspaces: {
+            [f.target.id]: { state: "running", observedAt: Date.now() },
+          },
+        }),
+      );
+    await observe();
+    const url = "/admin/runners/" + f.target.id;
+    const page = await f.get(url);
+    expect(page.payload).toContain(
+      'data-live-field="connection" class="badge pending">중지됨',
+    );
+    expect(page.payload).toContain(
+      'data-live-field="developmentState">실행 중',
+    );
+    expect((await f.get("/admin/runners")).payload).toContain(
+      'class="badge pending">중지됨',
+    );
+    const live = (await f.get(url + "/live")).json().changes;
+    expect(live).toMatchObject({
+      ready: false,
+      connectionLabel: "중지됨",
+      containerState: "중지됨",
+      developmentState: "실행 중",
+    });
+    const list = (await f.get("/admin/runners/live")).json().changes;
+    expect(list["row:" + f.target.id]).toMatchObject({
+      connectionLabel: "중지됨",
+    });
+    await observe(61_000);
+    expect((await f.get(url + "/live")).json().changes).toMatchObject({
+      connectionLabel: "연결 확인 실패 · 상태 확인 중",
+      observationFresh: false,
+    });
+  });
   it("offers a move to a host directory and records the validated request", async () => {
     const { target, dataDir, post, form, observe } = await fixture();
     const url = "/admin/runners/" + target.id;

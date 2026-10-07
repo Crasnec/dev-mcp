@@ -435,6 +435,7 @@ describe("ordinary-user workspace authorization", () => {
     const start = await h.post("/account/processes", {
       project_id: own.project.id,
       command: "printf '<literal>'",
+      log_file: "build.log",
     });
     expect(start.statusCode).toBe(303);
     expect(start.headers.location).toBe(
@@ -445,6 +446,7 @@ describe("ordinary-user workspace authorization", () => {
     ).toMatchObject({
       project_id: own.project.id,
       command: "printf '<literal>'",
+      log_file: "build.log",
     });
     const stop = await h.post(
       `/account/processes/${h.alice.id}/${own.process.id}/stop`,

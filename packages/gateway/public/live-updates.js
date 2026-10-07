@@ -143,8 +143,8 @@
       text(field(node, "username"), row.username);
       badge(
         field(node, "connection"),
-        row.ready ? "연결됨" : "응답 없음",
-        row.ready ? "active" : "pending",
+        row.connectionLabel || (row.ready ? "연결됨" : "응답 없음"),
+        row.connectionStatus || (row.ready ? "active" : "pending"),
       );
       text(
         field(node, "projectCount"),
@@ -152,6 +152,7 @@
       );
     } else {
       text(field(node, "command"), row.command);
+      text(field(node, "mode"), row.modeLabel ?? "백그라운드");
       text(field(node, "pid"), row.pid ?? "—");
       time(field(node, "started"), row.startedDateTime, row.startedLabel);
     }
@@ -225,8 +226,8 @@
         const ready = model.get("ready");
         badge(
           field(region, "connection"),
-          ready ? "연결됨" : "연결 대기",
-          ready ? "active" : "pending",
+          model.get("connectionLabel") || (ready ? "연결됨" : "연결 대기"),
+          model.get("connectionStatus") || (ready ? "active" : "pending"),
         );
         break;
       }
@@ -242,6 +243,7 @@
       }
       case "runner-state": {
         text(field(region, "containerState"), model.get("containerState"));
+        text(field(region, "developmentState"), model.get("developmentState"));
         time(
           field(region, "observed"),
           model.get("observedDateTime"),
@@ -372,6 +374,25 @@
       log.scrollLeft = left;
       for (const node of processPage.querySelectorAll("[data-process-status]"))
         badge(node, result.process.statusLabel, result.process.status);
+      for (const node of processPage.querySelectorAll("[data-process-exit]"))
+        text(node, result.process.exitLabel ?? "확인 불가");
+      for (const [attribute, value] of [
+        ["data-log-notice", result.logNotice],
+        ["data-log-warning", result.logWarning],
+      ]) {
+        let message = processPage.querySelector(`[${attribute}]`);
+        if (value) {
+          if (!message) {
+            message = document.createElement("p");
+            message.className = "context-message";
+            message.setAttribute(attribute, "");
+            log.parentElement.insertBefore(message, log);
+          }
+          message.textContent = value;
+        } else if (message) {
+          message.remove();
+        }
+      }
       if (!running)
         for (const stop of processPage.querySelectorAll("[data-process-stop]"))
           stop.remove();

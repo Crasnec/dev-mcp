@@ -45,6 +45,14 @@ describe("OAuth HTTP endpoints", () => {
     });
     const callback = "https://chat.example.test/oauth/callback";
 
+    const metadata = await inject(app, {
+      method: "GET",
+      url: "/.well-known/oauth-authorization-server",
+    });
+    expect(metadata.json().authorization_response_iss_parameter_supported).toBe(
+      true,
+    );
+
     const invalid = await inject(app, {
       method: "POST",
       url: "/oauth/register",
@@ -156,6 +164,7 @@ describe("OAuth HTTP endpoints", () => {
     expect(denialRedirect.origin + denialRedirect.pathname).toBe(callback);
     expect(denialRedirect.searchParams.get("error")).toBe("access_denied");
     expect(denialRedirect.searchParams.get("state")).toBe("state-123");
+    expect(denialRedirect.searchParams.get("iss")).toBe("http://127.0.0.1");
 
     const session = await users.createSession(
       await adminAccount(users, dataDir),
@@ -183,6 +192,7 @@ describe("OAuth HTTP endpoints", () => {
     const redirected = new URL(approved.headers.location as string);
     expect(redirected.origin + redirected.pathname).toBe(callback);
     expect(redirected.searchParams.get("state")).toBe("state-123");
+    expect(redirected.searchParams.get("iss")).toBe("http://127.0.0.1");
     const code = redirected.searchParams.get("code")!;
 
     const mismatch = await form(app, "/oauth/token", {

@@ -1,7 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { OperationError, validUser } from "./runner-operations.mjs";
+import {
+  OperationError,
+  validUser,
+  validControl,
+} from "./runner-operations.mjs";
 import { workspaceContainer, parseSshPublicKey } from "./ssh-access.mjs";
 import {
   developmentContainer,
@@ -21,6 +25,30 @@ export const validWorkspaceControl = (request) =>
   uuid.test(request.actorId) &&
   Number.isSafeInteger(request.requestedAt) &&
   ["create", "start", "stop", "restart"].includes(request.action);
+
+// Admin lifecycle operations cover both containers. Personal workspace
+// operations remain independent; the most recent explicit request wins.
+export function workspaceLifecycleControl(user, runner, personal) {
+  if (
+    personal &&
+    (!validWorkspaceControl(personal) || personal.actorId !== user.id)
+  ) {
+    throw new Error("Invalid workspace request");
+  }
+  if (
+    !runner ||
+    !["create", "start", "stop", "restart"].includes(runner.action)
+  ) {
+    return personal;
+  }
+  if (!validControl(runner) || !Number.isSafeInteger(runner.requestedAt)) {
+    throw new Error("Invalid runner lifecycle request");
+  }
+  if (personal && personal.requestedAt > runner.requestedAt) {
+    return personal;
+  }
+  return { ...runner, actorId: user.id };
+}
 
 export class WorkspaceOperations {
   constructor(docker, runners, registry, project, options = {}) {
@@ -545,7 +573,14 @@ export class WorkspaceOperations {
       await this.internet(user);
       await this.docker("network", "connect", internet, name);
     }
-    if (resume || (autoStart && info.State.Status === "created")) {
+    const runner =
+      autoStart && info.State.Status === "created"
+        ? (await this.runners.owned(user)).info
+        : undefined;
+    if (
+      resume ||
+      (autoStart && info.State.Status === "created" && runner?.State.Running)
+    ) {
       await this.docker("start", name);
     }
   }
@@ -561,6 +596,9 @@ export class WorkspaceOperations {
     }
     const { name, info } = await this.owned(user);
     if (!info) {
+      if (request.action === "stop") {
+        return;
+      }
       throw new OperationError("Workspace가 없습니다. 먼저 생성해 주세요.");
     }
     if (request.action === "stop") {

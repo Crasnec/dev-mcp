@@ -434,6 +434,47 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
 describe("inline audit details", () => {
+  it("updates repeat counts in open details after text selection clears without replacing the disclosure", async () => {
+    const row = auditRow("a"),
+      h = harness([row]);
+    let calls = 0;
+    h.fetch.mockImplementation((url: URL) => {
+      if (url.pathname !== "/admin/audit/a/live") {
+        return new Promise(() => {});
+      }
+      calls += 1;
+      if (calls > 2) {
+        return Promise.resolve({ ok: true, status: 204 });
+      }
+      return Promise.resolve(
+        deltaResponse("audit-detail", "detail-" + calls, {
+          record: {
+            ...record("a", "동일 오류"),
+            aggregated: true,
+            details: JSON.stringify({ repeatCount: calls }),
+          },
+          meta: {},
+          order: [],
+        }),
+      );
+    });
+    h.start();
+    h.click(row);
+    await vi.advanceTimersByTimeAsync(1);
+    const disclosure = row.content.querySelector(".audit-raw")!;
+    const raw = row.content.querySelector(".audit-json")!;
+    disclosure.attributes.delete("open");
+    h.selection.isCollapsed = false;
+    h.selection.anchorNode = h.selection.focusNode = raw;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(raw.textContent).toBe('{"repeatCount":1}');
+    h.selection.anchorNode = h.selection.focusNode = null;
+    h.selection.isCollapsed = true;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(raw.textContent).toBe('{"repeatCount":2}');
+    expect(row.content.querySelector(".audit-raw")).toBe(disclosure);
+    expect(disclosure.attributes.has("open")).toBe(false);
+  });
   it("keeps tools first in refreshed rows and displays the raw record without duplicate sections", async () => {
     const row = auditRow("a");
     const h = harness([row]);

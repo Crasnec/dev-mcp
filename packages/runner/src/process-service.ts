@@ -10,14 +10,17 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
+import { finished } from "node:stream/promises";
 import type { NetworkIntent, ToolResult } from "./protocol.ts";
 import { errorMessage, fail, ok } from "./protocol.ts";
 import type { RunnerConfig } from "./config.ts";
 import { JsonStore } from "./json-store.ts";
 import type { ProjectService } from "./project-service.ts";
-import { resolveExisting } from "./paths.ts";
-import { cleanEnvironment } from "./subprocess.ts";
+import { resolveExisting, resolveForWrite } from "./paths.ts";
+import { cleanEnvironment, Semaphore } from "./subprocess.ts";
+import { FileLogCapture } from "./file-log-capture.ts";
 
 interface ProcessRecord {
   id: string;
@@ -34,13 +37,19 @@ interface ProcessRecord {
   endedAt?: string;
   logFile: string;
   origin?: "mcp" | "terminal";
+  mode?: "command" | "background";
+  logPath?: string;
+  logWarning?: string;
+  timedOut?: boolean;
 }
+export type ExecutionRecord = Omit<ProcessRecord, "logFile" | "procStart">;
 interface ProcessRegistry {
   processes: ProcessRecord[];
 }
 interface ProcessExit {
   exitCode: number | null;
   signal: NodeJS.Signals | null;
+  timedOut: boolean;
 }
 
 export class ProcessService {
@@ -48,6 +57,9 @@ export class ProcessService {
   private readonly logDir: string;
   private readonly logCompletions = new Map<string, Promise<ProcessExit>>();
   private readonly discovered = new Map<string, ProcessRecord>();
+  private readonly fileCaptures = new Map<string, FileLogCapture>();
+  private readonly stopRequests = new Set<string>();
+  private readonly launches = new Semaphore(1);
 
   constructor(
     private readonly config: RunnerConfig,
@@ -57,7 +69,9 @@ export class ProcessService {
       path.join(config.dataDir, "processes.json"),
       () => ({ processes: [] }),
     );
-    this.logDir = path.join(config.dataDir, "process-logs");
+    // Commands and background processes share logs and execution records.
+    // Existing records retain their original logFile, so no migration is needed.
+    this.logDir = path.join(config.dataDir, "output");
   }
 
   async initialize(): Promise<void> {
@@ -81,7 +95,60 @@ export class ProcessService {
     command: string,
     cwd = ".",
     networkIntent: NetworkIntent = "none",
+    logFile?: string,
   ): Promise<ToolResult> {
+    return this.launches.use(() =>
+      this.launch(
+        projectId,
+        command,
+        cwd,
+        networkIntent,
+        "background",
+        0,
+        logFile,
+      ),
+    );
+  }
+
+  async run(
+    projectId: string,
+    command: string,
+    cwd: string,
+    networkIntent: NetworkIntent,
+    timeoutMs: number,
+    logFile?: string,
+  ): Promise<ToolResult> {
+    const started = await this.launches.use(() =>
+      this.launch(
+        projectId,
+        command,
+        cwd,
+        networkIntent,
+        "command",
+        timeoutMs,
+        logFile,
+      ),
+    );
+    if (!started.ok) {
+      return started;
+    }
+    const id = (started.data as { process: ExecutionRecord }).process.id;
+    await this.logCompletions.get(id);
+    return this.status(id);
+  }
+
+  private async launch(
+    projectId: string,
+    command: string,
+    cwd: string,
+    networkIntent: NetworkIntent,
+    mode: "command" | "background",
+    timeoutMs: number,
+    logPath?: string,
+  ): Promise<ToolResult> {
+    let child: ChildProcess | undefined;
+    let fileCapture: FileLogCapture | undefined;
+    let executionId: string | undefined;
     try {
       if (!command.trim()) {
         return fail("INVALID_COMMAND", "Command cannot be empty");
@@ -91,9 +158,12 @@ export class ProcessService {
       }
       const registry = await this.store.read();
       const running = registry.processes.filter(
-        (record) => record.status === "running",
+        (record) => record.status === "running" && record.mode !== "command",
       ).length;
-      if (running >= this.config.maxConcurrentProcesses) {
+      if (
+        mode === "background" &&
+        running >= this.config.maxConcurrentProcesses
+      ) {
         return fail(
           "PROCESS_LIMIT",
           "Maximum concurrent background processes reached",
@@ -101,11 +171,21 @@ export class ProcessService {
       }
       const { root } = await this.projects.get(projectId);
       const workingDirectory = await resolveExisting(root, cwd);
+      if (logPath !== undefined) {
+        await resolveForWrite(root, logPath);
+      }
       const id = randomUUID();
+      executionId = id;
       const logFile = path.join(this.logDir, `${id}.log`);
       await writeFile(logFile, "", { flag: "a", mode: 0o600 });
       const log = createWriteStream(logFile, { flags: "a", mode: 0o600 });
-      const child = spawn("/bin/bash", ["-lc", command], {
+      await once(log, "open");
+      if (logPath !== undefined) {
+        fileCapture = new FileLogCapture(root, logPath, log);
+        fileCapture.start();
+        this.fileCaptures.set(id, fileCapture);
+      }
+      const spawned = spawn("/bin/bash", ["-lc", command], {
         cwd: workingDirectory,
         env: cleanEnvironment({
           home: this.config.userHome ?? this.config.dataDir,
@@ -120,51 +200,105 @@ export class ProcessService {
         detached: true,
         stdio: ["ignore", "pipe", "pipe"],
       });
-      if (!child.pid) {
-        return fail("PROCESS_START_FAILED", "Process did not return a PID");
-      }
-      child.stdout.pipe(log, { end: false });
-      child.stderr.pipe(log, { end: false });
-      const completion = new Promise<ProcessExit>((resolve) => {
-        child.once("close", (exitCode, signal) => {
-          log.end(() => resolve({ exitCode, signal }));
+      child = spawned;
+      let logWarning: string | undefined;
+      let timedOut = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let killTimer: ReturnType<typeof setTimeout> | undefined;
+      log.on("error", (error) => {
+        logWarning = errorMessage(error);
+        killProcessGroup(spawned.pid, "SIGTERM");
+      });
+      spawned.stdout.pipe(log, { end: false });
+      spawned.stderr.pipe(log, { end: false });
+      const drained = new Promise<ProcessExit>((resolve) => {
+        spawned.once("close", (exitCode, signal) => {
+          clearTimeout(timer);
+          clearTimeout(killTimer);
+          void (async () => {
+            await fileCapture?.finish();
+            log.end();
+            await finished(log).catch((error) => {
+              logWarning = errorMessage(error);
+            });
+            resolve({ exitCode, signal, timedOut });
+          })();
         });
       });
+      await once(spawned, "spawn");
+      if (!spawned.pid) {
+        throw new Error("Process did not return a PID");
+      }
+      if (timeoutMs > 0) {
+        timer = setTimeout(() => {
+          timedOut = true;
+          killProcessGroup(spawned.pid, "SIGTERM");
+          killTimer = setTimeout(
+            () => killProcessGroup(spawned.pid, "SIGKILL"),
+            2_000,
+          );
+          killTimer.unref();
+        }, timeoutMs);
+        timer.unref();
+      }
       const record: ProcessRecord = {
         id,
         projectId,
         command,
         cwd,
         networkIntent,
-        pid: child.pid,
-        procStart: await processStart(child.pid),
+        pid: spawned.pid,
+        procStart: await processStart(spawned.pid).catch(() => ""),
         startedAt: new Date().toISOString(),
         status: "running",
         logFile,
         origin: "mcp",
+        mode,
+        ...(logPath !== undefined ? { logPath } : {}),
       };
-      this.logCompletions.set(id, completion);
+      this.logCompletions.set(id, drained);
       await this.store.update((value) => {
         value.processes.push(record);
       });
-      void completion.then(async ({ exitCode, signal }) => {
-        try {
-          await this.store.update((value) => {
-            const current = value.processes.find((entry) => entry.id === id);
-            if (current && current.status === "running") {
-              current.status = "exited";
-              current.exitCode = exitCode;
-              current.signal = signal;
-              current.endedAt = new Date().toISOString();
-            }
-          });
-        } finally {
-          this.logCompletions.delete(id);
-        }
-      });
-      child.unref();
+      const completion = drained.then(
+        async ({ exitCode, signal, timedOut }) => {
+          try {
+            await this.store.update((value) => {
+              const current = value.processes.find((entry) => entry.id === id);
+              if (current && current.status === "running") {
+                current.status = this.stopRequests.has(id)
+                  ? "stopped"
+                  : "exited";
+                current.exitCode = exitCode;
+                current.signal = signal;
+                current.timedOut = timedOut;
+                current.logWarning = logWarning ?? fileCapture?.warning;
+                current.endedAt = new Date().toISOString();
+              }
+            });
+          } finally {
+            this.logCompletions.delete(id);
+            this.fileCaptures.delete(id);
+            this.stopRequests.delete(id);
+          }
+          return { exitCode, signal, timedOut };
+        },
+      );
+      this.logCompletions.set(id, completion);
+      // Background executions have no waiter; run() still observes failures.
+      void completion.catch(() => undefined);
+      if (mode === "background") {
+        spawned.unref();
+      }
       return ok({ process: publicRecord(record) });
     } catch (error) {
+      killProcessGroup(child?.pid, "SIGKILL");
+      await fileCapture?.finish();
+      if (executionId) {
+        this.logCompletions.delete(executionId);
+        this.fileCaptures.delete(executionId);
+        this.stopRequests.delete(executionId);
+      }
       return fail(
         (error as { code?: string }).code ?? "PROCESS_START_FAILED",
         errorMessage(error),
@@ -221,6 +355,8 @@ export class ProcessService {
       if (!record) {
         return fail("PROCESS_NOT_FOUND", `Unknown process: ${id}`);
       }
+      const fileCapture = this.fileCaptures.get(id);
+      await fileCapture?.capture();
       const { offset, pending } = cursor
         ? decodeLogCursor(cursor, id)
         : { offset: 0, pending: Buffer.alloc(0) };
@@ -259,6 +395,12 @@ export class ProcessService {
           offset,
           nextOffset,
           cursor: nextCursor,
+          ...(record.logPath !== undefined
+            ? { logSource: "file", logFile: record.logPath }
+            : { logSource: "stdio" }),
+          ...(fileCapture?.warning || record.logWarning
+            ? { logWarning: fileCapture?.warning ?? record.logWarning }
+            : {}),
         },
         {
           truncated,
@@ -293,6 +435,7 @@ export class ProcessService {
           "PID no longer refers to the recorded process",
         );
       }
+      this.stopRequests.add(id);
       try {
         process.kill(-record.pid, "SIGTERM");
       } catch {
@@ -322,7 +465,7 @@ export class ProcessService {
         const current = registry.processes.find((entry) => entry.id === id);
         if (current) {
           current.status = "stopped";
-          current.signal = "SIGTERM";
+          current.signal ??= "SIGTERM";
           current.endedAt = new Date().toISOString();
         }
       });
@@ -499,6 +642,24 @@ function publicRecord(
 ): Omit<ProcessRecord, "logFile" | "procStart"> {
   const { logFile: _, procStart: __, ...safe } = record;
   return safe;
+}
+
+function killProcessGroup(
+  pid: number | undefined,
+  signal: NodeJS.Signals,
+): void {
+  if (!pid) {
+    return;
+  }
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    try {
+      process.kill(pid, signal);
+    } catch {
+      /* already exited */
+    }
+  }
 }
 async function processStart(pid: number): Promise<string> {
   const value = await readFile(`/proc/${pid}/stat`, "utf8");

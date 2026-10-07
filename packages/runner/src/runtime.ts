@@ -23,8 +23,8 @@ export class RunnerRuntime {
     this.projects = new ProjectService(config);
     this.outputs = new OutputStore(config.dataDir, config.maxOutputBytes);
     this.files = new FileService(config, this.projects);
-    this.commands = new CommandService(config, this.projects, this.outputs);
     this.processes = new ProcessService(config, this.projects);
+    this.commands = new CommandService(config, this.processes, this.outputs);
     this.git = new GitService(config, this.projects, this.outputs);
     this.gitAuth = new GitAuthSync(config);
   }
@@ -106,6 +106,7 @@ export class RunnerRuntime {
             optionalStr(p, "cwd") ?? ".",
             optionalInt(p, "timeout_ms"),
             networkIntent(p),
+            optionalStr(p, "log_file"),
           );
         case "command_output":
           return this.outputs.read(
@@ -118,6 +119,7 @@ export class RunnerRuntime {
             str(p, "command"),
             optionalStr(p, "cwd") ?? ".",
             networkIntent(p),
+            optionalStr(p, "log_file"),
           );
         case "process_list":
           return this.processes.list(optionalStr(p, "project_id"));

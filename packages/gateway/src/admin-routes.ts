@@ -28,6 +28,11 @@ import { errorPage, sendPage } from "./pages.ts";
 import { renderFragment } from "./views.ts";
 import { LiveSnapshots } from "./live-snapshots.ts";
 import {
+  containerStateLabel,
+  observationFresh,
+  runnerConnection,
+} from "./runner-state.ts";
+import {
   adminView,
   dateLabel,
   dateIso,
@@ -46,13 +51,58 @@ interface ProcessSummary {
   status: string;
   pid: number;
   startedAt: string;
-  exitCode?: number;
+  exitCode?: number | null;
+  signal?: string | null;
+  timedOut?: boolean;
+  mode?: "command" | "background";
+  logPath?: string;
 }
 interface ProcessLogPage {
   output: string;
   captureAvailable?: boolean;
   cursor?: string;
   nextOffset?: number;
+  logSource?: string;
+  logFile?: string;
+  logWarning?: string;
+}
+
+function executionModeLabel(process: ProcessSummary): string {
+  return process.mode === "command" ? "완료까지 대기" : "백그라운드";
+}
+
+function executionExitLabel(process: ProcessSummary): string {
+  if (process.timedOut) {
+    return "시간 제한 초과";
+  }
+  if (process.exitCode !== undefined && process.exitCode !== null) {
+    return String(process.exitCode);
+  }
+  return (
+    process.signal ?? (process.status === "running" ? "실행 중" : "확인 불가")
+  );
+}
+
+function executionLogNotice(
+  page: ProcessLogPage | undefined,
+  process: ProcessSummary,
+): string {
+  if (page?.captureAvailable === false) {
+    return "터미널에서 시작한 프로세스입니다. 출력은 시작한 터미널에서 확인하세요.";
+  }
+  const logFile = page?.logFile ?? process.logPath;
+  return logFile !== undefined
+    ? `표준 출력·표준 오류와 지정한 로그 파일 ‘${logFile}’의 내용을 표시합니다.`
+    : "표준 출력·표준 오류를 표시합니다. 파일로 보낸 출력은 실행할 때 로그 파일을 지정해야 표시됩니다.";
+}
+
+function executionLogWarning(
+  page: ProcessLogPage | undefined,
+): string | undefined {
+  if (page?.logWarning === "The selected log file has not been created.") {
+    return "지정한 로그 파일이 아직 생성되지 않았습니다.";
+  }
+  return page?.logWarning;
 }
 
 function processLogCursor(
@@ -505,9 +555,18 @@ function installConsoleRoutes(
         return {
           ...process,
           statusLabel: statusLabel(process.status),
+          modeLabel: executionModeLabel(process),
+          exitLabel: executionExitLabel(process),
           startedLabel: dateLabel(process.startedAt),
           startedDateTime: dateIso(process.startedAt),
           output,
+          logNotice: executionLogNotice(
+            logs?.data as ProcessLogPage | undefined,
+            process,
+          ),
+          logWarning: executionLogWarning(
+            logs?.data as ProcessLogPage | undefined,
+          ),
           empty: !output && !logs?.error,
           logError:
             logs && !logs.ok
@@ -936,9 +995,11 @@ function installConsoleRoutes(
         ...(await Promise.all(
           list.rows.slice(index, index + 4).map(async (owner) => {
             const state = await projectsFor(owner, res);
+            const { observation } = await controls.read(owner.id);
             return {
               ...userRow(owner),
               ...state,
+              ...runnerConnection(state.ready, observation),
               projectCount: state.projects.length,
               href: base + "/runners/" + owner.id,
             };
@@ -959,6 +1020,8 @@ function installConsoleRoutes(
               status: row.status,
               statusLabel: row.statusLabel,
               ready: row.ready,
+              connectionLabel: row.connectionLabel,
+              connectionStatus: row.connectionStatus,
               projectCount: row.projectCount,
               href: row.href,
             },
@@ -978,14 +1041,15 @@ function installConsoleRoutes(
   router.get(["/runners/:id", "/runners/:id/live"], async (req, res) => {
     const owner = await user(String(req.params.id), res);
     const state = await projectsFor(owner, res);
-    const { control, observation } = await controls.read(owner.id);
-    const fresh = observation && Date.now() - observation.observedAt < 60_000;
+    const { control, observation, development } = await controls.read(owner.id);
+    const fresh = observationFresh(observation);
     const limits = control?.limits ?? observation;
     const mode = observation?.workspaceMode;
     const model = {
       livePage: true,
       owner: userRow(owner),
       ...state,
+      ...runnerConnection(state.ready, observation),
       hostWorkspace: mode === "host",
       workspace: selfScope
         ? undefined
@@ -994,23 +1058,16 @@ function installConsoleRoutes(
       operationPending:
         control &&
         (control.revision !== observation?.revision ||
-          observation?.phase === "applying"),
+          (observation?.runtimePhase ?? observation?.phase) === "applying"),
       operationMessage:
         control?.revision === observation?.revision
-          ? observation?.message
+          ? (observation?.runtimeMessage ?? observation?.message)
           : undefined,
       observationFresh: fresh,
-      containerState: fresh
-        ? ({
-            running: "실행 중",
-            exited: "중지됨",
-            created: "생성됨 · 시작 전",
-            restarting: "재시작 중",
-            paused: "일시 정지",
-            missing: "미생성",
-            unknown: "확인 실패",
-          }[observation.state] ?? observation.state)
-        : "확인 중 · 상태 정보 없음",
+      containerState: containerStateLabel(observation),
+      developmentState: development
+        ? containerStateLabel(development)
+        : "상태 정보 없음",
       observedLabel: dateLabel(observation?.observedAt),
       observedDateTime: dateIso(observation?.observedAt),
       canCreate: owner.status === "active",
@@ -1039,9 +1096,12 @@ function installConsoleRoutes(
     if (live(req)) {
       const keys = [
         "ready",
+        "connectionLabel",
+        "connectionStatus",
         "operationPending",
         "operationMessage",
         "containerState",
+        "developmentState",
         "observedLabel",
         "observedDateTime",
         "observationFresh",
@@ -1112,6 +1172,7 @@ function installConsoleRoutes(
       .map((entry) => ({
         ...entry,
         statusLabel: statusLabel(entry.status),
+        modeLabel: executionModeLabel(entry),
         startedLabel: dateLabel(entry.startedAt),
         startedDateTime: dateIso(entry.startedAt),
         href:
@@ -1152,6 +1213,7 @@ function installConsoleRoutes(
               command: row.command,
               status: row.status,
               statusLabel: row.statusLabel,
+              modeLabel: row.modeLabel,
               pid: row.pid,
               startedLabel: row.startedLabel,
               startedDateTime: row.startedDateTime,
@@ -1187,6 +1249,7 @@ function installConsoleRoutes(
     const projectId = field(req, "project_id");
     const command = field(req, "command");
     const networkIntent = field(req, "network_intent") || "none";
+    const logFile = field(req, "log_file").trim();
     if (
       !command.trim() ||
       Buffer.byteLength(command) > 32768 ||
@@ -1199,6 +1262,7 @@ function installConsoleRoutes(
       project_id: project.id,
       command,
       network_intent: networkIntent,
+      ...(logFile ? { log_file: logFile } : {}),
     });
     if (!result.ok) {
       throw new AdminError(
@@ -1211,7 +1275,11 @@ function installConsoleRoutes(
       userId: owner.id,
       projectId: project.id,
       ...(typeof started?.id === "string" ? { processId: started.id } : {}),
-      params: { command, network_intent: networkIntent },
+      params: {
+        command,
+        network_intent: networkIntent,
+        ...(logFile ? { log_file: logFile } : {}),
+      },
     });
     return res.redirect(
       303,
@@ -1259,7 +1327,9 @@ function installConsoleRoutes(
       !page.output &&
       cursor === nextCursor &&
       !logs.truncated &&
-      query(req, "status") === process.status
+      query(req, "status") === process.status &&
+      process.logPath === undefined &&
+      !page.logWarning
     ) {
       return res.status(204).end();
     }
@@ -1267,8 +1337,11 @@ function installConsoleRoutes(
       process: {
         status: process.status,
         statusLabel: statusLabel(process.status),
+        exitLabel: executionExitLabel(process),
       },
       output: page.output,
+      logNotice: executionLogNotice(page, process),
+      logWarning: executionLogWarning(page),
       cursor: nextCursor,
       more: logs.truncated === true,
     });
@@ -1304,15 +1377,18 @@ function installConsoleRoutes(
       process: {
         ...process,
         statusLabel: statusLabel(process.status),
+        modeLabel: executionModeLabel(process),
+        exitLabel: executionExitLabel(process),
         startedLabel: dateLabel(process.startedAt),
         startedDateTime: dateIso(process.startedAt),
       },
       running: process.status === "running",
       output: logs.ok ? (logs.data as ProcessLogPage).output : "",
-      logNotice:
-        logs.ok && (logs.data as ProcessLogPage).captureAvailable === false
-          ? "터미널에서 시작한 프로세스입니다. 출력은 시작한 터미널에서 확인하세요."
-          : undefined,
+      logNotice: executionLogNotice(
+        logs.data as ProcessLogPage | undefined,
+        process,
+      ),
+      logWarning: executionLogWarning(logs.data as ProcessLogPage | undefined),
       logError: logs.ok ? undefined : logs.error?.message,
       logCursor: logs.ok
         ? processLogCursor(
@@ -1601,6 +1677,7 @@ function installConsoleRoutes(
           processId: row.processId,
           reason: row.reason,
           details: row.details,
+          ...(source.aggregated === true ? { aggregated: true } : {}),
           command: row.command,
         },
         meta: {
@@ -1902,6 +1979,11 @@ function auditRow(entry: Record<string, unknown>, users: User[]): AuditRow {
     "errorCode",
     "stage",
     "issues",
+    "aggregated",
+    "aggregationId",
+    "repeatCount",
+    "firstSeenAt",
+    "lastSeenAt",
     "requestMethod",
     "requestKind",
     "sessionHeaderPresent",
@@ -1933,7 +2015,10 @@ function auditRow(entry: Record<string, unknown>, users: User[]): AuditRow {
     commandPreview:
       command && command.length > 320 ? command.slice(0, 320) + "…" : command,
     tool: stringValue(entry.tool),
-    reason: stringValue(entry.reason)?.trim() || undefined,
+    reason:
+      entry.aggregated === true
+        ? `동일 오류 추가 ${entry.repeatCount}회 (${dateLabel(stringValue(entry.firstSeenAt))}부터)`
+        : stringValue(entry.reason)?.trim() || undefined,
     at: dateLabel(typeof entry.at === "string" ? entry.at : undefined),
     atDateTime: dateIso(typeof entry.at === "string" ? entry.at : undefined),
     sortAt: typeof entry.at === "string" ? entry.at : "",
@@ -1945,7 +2030,11 @@ function auditRow(entry: Record<string, unknown>, users: User[]): AuditRow {
 
 function auditRecordId(entry: Record<string, unknown>): string {
   return createHash("sha256")
-    .update(JSON.stringify(entry))
+    .update(
+      entry.aggregated === true && typeof entry.aggregationId === "string"
+        ? entry.aggregationId
+        : JSON.stringify(entry),
+    )
     .digest("base64url")
     .slice(0, 20);
 }

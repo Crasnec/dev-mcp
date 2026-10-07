@@ -1,5 +1,5 @@
 <section class="panel" data-live-feed="processes" data-live-url="{{consoleBase}}/processes/live"{{^selfScope}} data-live-owner="{{owner.id}}"{{/selfScope}}>
-  <p class="padded help">MCP에서 실행한 프로세스를 표시합니다. SSH·VS Code에서 시작한 프로세스는 별도 개발 환경에서 확인할 수 있습니다.</p>
+  <p class="padded help">MCP에서 실행한 명령과 백그라운드 프로세스의 상태·로그를 표시합니다. SSH·VS Code에서 시작한 프로세스는 별도 개발 환경에서 확인할 수 있습니다.</p>
   <form class="toolbar" method="get" action="{{consoleBase}}/processes">{{> partials/sort-fields}}{{> partials/owner-filter}}<label class="filter-field grow">명령 검색<input type="search" name="q" value="{{q}}" placeholder="실행 명령"></label><label class="filter-field">상태<select name="status"><option value="">전체 상태</option>{{#statuses}}<option value="{{value}}" {{#selected}}selected{{/selected}}>{{label}}</option>{{/statuses}}</select></label><button class="primary" type="submit">조회</button><a class="button quiet" href="{{consoleBase}}/processes{{^selfScope}}?owner={{owner.id}}{{/selfScope}}">초기화</a></form>
   <div data-live-region="processes">
   <div data-live-unavailable{{#ready}} hidden{{/ready}}><div class="context-message">실행 환경이 응답하지 않습니다. 중지되었거나 아직 준비되지 않았을 수 있습니다. <a data-live-runner-link href="{{consoleBase}}/runners/{{owner.id}}">실행 환경 확인 →</a></div></div>
@@ -13,11 +13,12 @@
 {{#ready}}<section class="panel padded">
   <h2>새 프로세스 실행</h2>
   {{#projects.length}}
-  <p class="help">선택한 프로젝트에서 명령을 실행합니다. 시작한 작업의 상태와 로그는 위 목록에서 확인할 수 있습니다.</p>
+  <p class="help">선택한 프로젝트에서 백그라운드로 실행합니다. 시작한 작업의 상태와 로그는 위 목록에서 확인할 수 있습니다.</p>
   <form method="post" action="{{consoleBase}}/processes">
     {{> partials/csrf}}{{^selfScope}}<input type="hidden" name="owner" value="{{owner.id}}">{{/selfScope}}
     <label>프로젝트<select name="project_id" required>{{#projects}}<option value="{{id}}">{{name}}</option>{{/projects}}</select></label>
     <label>실행 명령<textarea name="command" required maxlength="32768" rows="4" placeholder="npm run dev" spellcheck="false"></textarea></label>
+    <label>로그 파일 (선택)<input name="log_file" maxlength="4096" placeholder="build.log"><span class="help">출력을 파일로 보낼 때 지정하세요. 프로젝트 루트 기준 경로이며, 파일의 기존 내용과 이후 출력을 함께 수집합니다.</span></label>
     <label>네트워크 사용<select name="network_intent"><option value="none">사용 안 함</option><option value="read">읽기</option><option value="write">쓰기</option></select></label>
     <button class="primary" type="submit">프로세스 실행</button>
   </form>

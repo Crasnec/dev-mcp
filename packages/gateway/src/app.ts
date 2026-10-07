@@ -1,11 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import express, { type Express, type Request, type Response } from "express";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
+  NodeStreamableHTTPServerTransport as StreamableHTTPServerTransport,
+  toNodeHandler,
+  toWebRequest,
+} from "@modelcontextprotocol/node";
+import {
+  createMcpHandler,
+  isLegacyRequest,
   isInitializeRequest,
   SUPPORTED_PROTOCOL_VERSIONS,
-} from "@modelcontextprotocol/sdk/types.js";
+} from "@modelcontextprotocol/server";
 import type { GatewayConfig, Scope } from "./config.ts";
 import { AuthStore, type TokenInfo } from "./auth-store.ts";
 import { AuditLogger } from "./audit.ts";
@@ -31,14 +37,13 @@ import { installPreviewRoutes } from "./preview-routes.ts";
 import { installSshRoutes } from "./ssh-routes.ts";
 import { SshAccessStore } from "./ssh-access-store.ts";
 import type { McpSessionManager } from "./mcp-sessions.ts";
+import { McpSessionRegistry } from "./mcp-session-registry.ts";
 import {
   mcpMessageKind,
   safeMcpMethod,
   safeMcpTool,
   type McpFailure,
 } from "./mcp-audit.ts";
-
-const SESSION_IDLE_TIMEOUT_MS = 24 * 60 * 60_000;
 
 interface McpSession {
   createdAt: number;
@@ -49,7 +54,6 @@ interface McpSession {
   scopeKey: string;
   server: ReturnType<typeof createMcpServer>;
   transport: StreamableHTTPServerTransport;
-  idleTimer?: NodeJS.Timeout;
 }
 
 export interface AppDependencies {
@@ -84,17 +88,13 @@ export function createApp(
   const previewAuth =
     dependencies.previewAuth ?? new PreviewAuth(config.dataDir);
   const loginLimiter = new LoginLimiter();
-  const sessions = new Map<string, McpSession>();
+  const registry = new McpSessionRegistry<McpSession>((session) =>
+    session.server.close(),
+  );
+  const sessions = registry.sessions;
 
   const forgetSession = (sessionId: string, session: McpSession): void => {
-    if (sessions.get(sessionId) !== session) {
-      return;
-    }
-    sessions.delete(sessionId);
-    if (session.idleTimer) {
-      clearTimeout(session.idleTimer);
-      session.idleTimer = undefined;
-    }
+    registry.forget(sessionId, session);
   };
 
   const closeSession = async (
@@ -103,17 +103,6 @@ export function createApp(
   ): Promise<void> => {
     forgetSession(sessionId, session);
     await session.server.close();
-  };
-
-  const touchSession = (sessionId: string, session: McpSession): void => {
-    session.lastSeenAt = Date.now();
-    if (session.idleTimer) {
-      clearTimeout(session.idleTimer);
-    }
-    session.idleTimer = setTimeout(() => {
-      void closeSession(sessionId, session);
-    }, SESSION_IDLE_TIMEOUT_MS);
-    session.idleTimer.unref();
   };
 
   const mcpSessions: McpSessionManager = {
@@ -230,6 +219,7 @@ export function createApp(
         tool: safeMcpTool(req.body?.params?.name),
         httpMethod: req.method,
         httpStatus: res.statusCode,
+        rpcErrorCode: res.locals.mcpRpcErrorCode,
         protocolVersion: /^\d{4}-\d{2}-\d{2}$/.test(
           req.header("mcp-protocol-version") ?? "",
         )
@@ -250,14 +240,75 @@ export function createApp(
       return;
     }
     try {
+      // The SDK classifies malformed modern claims as modern too, so a bad
+      // envelope cannot fall through to the legacy session/initialize path.
+      const webRequest = await toWebRequest(req, req.body);
+      if (!(await isLegacyRequest(webRequest, req.body))) {
+        const modern = createMcpHandler(
+          () =>
+            createMcpServer({
+              scopes: token.scopes,
+              actor: `${token.userId}:${token.clientId}`,
+              principal: {
+                userId: token.userId,
+                authVersion: token.authVersion,
+              },
+              clientId: token.clientId,
+              ipc: runners.forUser(token.user),
+              audit,
+              protocolEra: "modern",
+              failureRecorded: () => {
+                res.locals.mcpFailureAudited = true;
+              },
+              apps: {
+                service: apps,
+                owner: token.user,
+                publicAllowed: async () => (await settings.read()).publicApps,
+              },
+              resourceMetadataUrl: `${config.publicBaseUrl}/.well-known/oauth-protected-resource`,
+            }),
+          { legacy: "reject", maxRequestBodySize: 2 * 1024 * 1024 },
+        );
+        try {
+          await toNodeHandler({
+            fetch: async (request, options) => {
+              const response = await modern.fetch(request, options);
+              if (
+                response.status >= 400 &&
+                response.headers
+                  .get("content-type")
+                  ?.includes("application/json")
+              ) {
+                const reply = await response
+                  .clone()
+                  .json()
+                  .catch(() => undefined);
+                const code = reply?.error?.code;
+                if (typeof code === "number") {
+                  res.locals.mcpRpcErrorCode = code;
+                  res.locals.mcpFailure = modernHttpFailure(code);
+                }
+              }
+              return response;
+            },
+          })(req, res, req.body);
+        } finally {
+          await modern.close();
+        }
+        return;
+      }
       const sessionId = sessionHeader(req);
       if (sessionId) {
         const session = authorizedSession(sessions, sessionId, token, res);
         if (!session) {
           return;
         }
-        touchSession(sessionId, session);
-        await session.transport.handleRequest(req, res, req.body);
+        const endRequest = registry.begin(session);
+        try {
+          await session.transport.handleRequest(req, res, req.body);
+        } finally {
+          endRequest();
+        }
         return;
       }
       if (!isInitializeRequest(req.body)) {
@@ -275,57 +326,79 @@ export function createApp(
         return;
       }
 
-      let session: McpSession;
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: randomUUID,
-        enableJsonResponse: true,
-        onsessioninitialized: (createdSessionId) => {
-          sessions.set(createdSessionId, session);
-          touchSession(createdSessionId, session);
-        },
-        onsessionclosed: (closedSessionId) => {
-          forgetSession(closedSessionId, session);
-        },
-      });
-      const server = createMcpServer({
-        scopes: token.scopes,
-        actor: `${token.userId}:${token.clientId}`,
-        principal: { userId: token.userId, authVersion: token.authVersion },
-        clientId: token.clientId,
-        ipc: runners.forUser(token.user),
-        audit,
-        apps: {
-          service: apps,
-          owner: token.user,
-          publicAllowed: async () => (await settings.read()).publicApps,
-        },
-        resourceMetadataUrl: `${config.publicBaseUrl}/.well-known/oauth-protected-resource`,
-      });
-      session = {
-        createdAt: Date.now(),
-        lastSeenAt: Date.now(),
-        actor: token.clientId,
-        userId: token.userId,
-        authVersion: token.authVersion,
-        scopeKey: scopeKey(token.scopes),
-        server,
-        transport,
-      };
-      transport.onclose = () => {
-        const closedSessionId = transport.sessionId;
-        if (closedSessionId) {
-          forgetSession(closedSessionId, session);
-        }
-      };
-      try {
-        await server.connect(transport);
-        await transport.handleRequest(req, res, req.body);
-      } catch (error) {
-        await server.close();
-        throw error;
+      const releaseReservation = registry.reserve(token.userId, token.clientId);
+      if (!releaseReservation) {
+        res.locals.mcpFailure = {
+          stage: "session",
+          errorCode: "MCP_SESSION_LIMIT_REACHED",
+          message:
+            "All available MCP sessions are busy; retry initialization later",
+        };
+        res.setHeader("Retry-After", "5");
+        sendMcpError(
+          res,
+          429,
+          -32000,
+          "MCP session limit reached; retry later",
+        );
+        return;
       }
-      if (!transport.sessionId) {
-        await server.close();
+      let session: McpSession;
+      try {
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: randomUUID,
+          enableJsonResponse: true,
+          onsessioninitialized: (createdSessionId) => {
+            releaseReservation();
+            registry.register(createdSessionId, session);
+          },
+          onsessionclosed: (closedSessionId) => {
+            forgetSession(closedSessionId, session);
+          },
+        });
+        const server = createMcpServer({
+          scopes: token.scopes,
+          actor: `${token.userId}:${token.clientId}`,
+          principal: { userId: token.userId, authVersion: token.authVersion },
+          clientId: token.clientId,
+          ipc: runners.forUser(token.user),
+          audit,
+          requestStarted: () => registry.begin(session),
+          apps: {
+            service: apps,
+            owner: token.user,
+            publicAllowed: async () => (await settings.read()).publicApps,
+          },
+          resourceMetadataUrl: `${config.publicBaseUrl}/.well-known/oauth-protected-resource`,
+        });
+        session = {
+          createdAt: Date.now(),
+          lastSeenAt: Date.now(),
+          actor: token.clientId,
+          userId: token.userId,
+          authVersion: token.authVersion,
+          scopeKey: scopeKey(token.scopes),
+          server,
+          transport,
+        };
+        transport.onclose = () => {
+          const closedSessionId = transport.sessionId;
+          if (closedSessionId) {
+            forgetSession(closedSessionId, session);
+          }
+        };
+        try {
+          await server.connect(transport);
+          await transport.handleRequest(req, res, req.body);
+        } catch (error) {
+          await server.close();
+          throw error;
+        }
+        if (!transport.sessionId) {
+          await server.close();
+        }
+      } finally {
+        releaseReservation();
       }
     } catch (error) {
       res.locals.mcpFailure = {
@@ -346,6 +419,17 @@ export function createApp(
       if (!token) {
         return;
       }
+      const revision = req.header("mcp-protocol-version") ?? "";
+      if (/^\d{4}-\d{2}-\d{2}$/.test(revision) && revision >= "2026-01-01") {
+        res.locals.mcpFailure = {
+          stage: "transport",
+          errorCode: "MCP_HTTP_METHOD_NOT_ALLOWED",
+          message: "Modern MCP requests require HTTP POST",
+        };
+        res.setHeader("Allow", "POST");
+        sendMcpError(res, 405, -32600, "Modern MCP requests require HTTP POST");
+        return;
+      }
       const sessionId = sessionHeader(req);
       if (!sessionId) {
         res.locals.mcpFailure = {
@@ -360,10 +444,18 @@ export function createApp(
       if (!session) {
         return;
       }
-      touchSession(sessionId, session);
+      registry.touch(session);
+      // GET streams remain usable between protocol requests. A dropped HTTP
+      // connection does not release the separate pin held by a tool request.
+      const endStream = method === "get" ? registry.begin(session) : undefined;
+      if (endStream) {
+        res.once("finish", endStream);
+        res.once("close", endStream);
+      }
       try {
         await session.transport.handleRequest(req, res);
       } catch (error) {
+        endStream?.();
         res.locals.mcpFailure = {
           stage: "handler",
           errorCode: "MCP_INTERNAL_ERROR",
@@ -476,6 +568,30 @@ function transportHttpFailure(req: Request, status: number): McpFailure {
 
 function scopeKey(scopes: Scope[]): string {
   return [...new Set(scopes)].sort().join(" ");
+}
+
+function modernHttpFailure(code: number): McpFailure {
+  const errors: Record<number, [string, string]> = {
+    [-32020]: [
+      "MCP_PROTOCOL_METADATA_INVALID",
+      "MCP headers and request metadata are missing or inconsistent",
+    ],
+    [-32021]: [
+      "MCP_CLIENT_CAPABILITY_REQUIRED",
+      "MCP request requires a declared client capability",
+    ],
+    [-32022]: [
+      "MCP_PROTOCOL_VERSION_UNSUPPORTED",
+      "MCP protocol version is not supported",
+    ],
+    [-32601]: ["MCP_METHOD_NOT_FOUND", "MCP method is not supported"],
+    [-32602]: ["MCP_INVALID_PARAMS", "MCP request parameters are invalid"],
+  };
+  const [errorCode, message] = errors[code] ?? [
+    "MCP_PROTOCOL_ERROR",
+    "MCP request was rejected by the protocol handler",
+  ];
+  return { stage: "protocol", errorCode, message };
 }
 
 function authorizedSession(

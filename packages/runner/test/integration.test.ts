@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
@@ -26,6 +33,11 @@ async function runtimeFixture(
   const data = path.join(base, "runner-data");
   const root = path.join(workspace, "demo");
   await mkdir(root, { recursive: true });
+  // Runner environments intentionally omit the host PATH. Provision the test
+  // dependency inside their temporary HOME, even when rg is a host tool shim.
+  const rg = (await exec("sh", ["-c", "command -v rg"])).stdout.trim();
+  await mkdir(path.join(data, ".local", "bin"), { recursive: true });
+  await symlink(rg, path.join(data, ".local", "bin", "rg"));
   await writeFile(path.join(root, "hello.txt"), "hello\n");
   await exec("git", ["init", "-q"], { cwd: root });
   await exec("git", ["config", "user.name", "Fixture"], { cwd: root });

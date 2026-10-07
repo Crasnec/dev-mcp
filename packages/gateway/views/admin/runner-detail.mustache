@@ -1,4 +1,4 @@
-<div class="detail-heading" data-live-feed="runner" data-live-url="{{consoleBase}}/runners/{{owner.id}}/live"><div>{{^selfScope}}<a class="back-link" href="{{consoleBase}}/runners">← 실행 환경 목록</a>{{/selfScope}}<h2>{{#selfScope}}내 실행 환경{{/selfScope}}{{^selfScope}}{{owner.username}}님의 실행 환경{{/selfScope}}</h2><span data-live-region="runner-connection"><span data-live-field="connection" class="badge {{#ready}}active{{/ready}}{{^ready}}pending{{/ready}}">{{#ready}}연결됨{{/ready}}{{^ready}}연결 대기{{/ready}}</span></span></div><a class="button" href="{{consoleBase}}/runners/{{owner.id}}">상태 새로고침 ↻</a></div>
+<div class="detail-heading" data-live-feed="runner" data-live-url="{{consoleBase}}/runners/{{owner.id}}/live"><div>{{^selfScope}}<a class="back-link" href="{{consoleBase}}/runners">← 실행 환경 목록</a>{{/selfScope}}<h2>{{#selfScope}}내 실행 환경{{/selfScope}}{{^selfScope}}{{owner.username}}님의 실행 환경{{/selfScope}}</h2><span data-live-region="runner-connection"><span data-live-field="connection" class="badge {{connectionStatus}}">{{connectionLabel}}</span></span></div><a class="button" href="{{consoleBase}}/runners/{{owner.id}}">상태 새로고침 ↻</a></div>
 {{#selfScope}}<div class="actions"><a class="button" href="/account/workspace">개발 workspace · VS Code 연결 관리</a></div>{{/selfScope}}
 <div data-live-region="runner-operation">
 <p data-live-field="operationPending" class="context-message" role="status"{{^operationPending}} hidden{{/operationPending}}>운영 요청을 처리 중입니다.</p>
@@ -9,7 +9,7 @@
     <section class="panel padded">
       <h2>{{#selfScope}}실행 환경 상태{{/selfScope}}{{^selfScope}}실행 환경 운영{{/selfScope}}</h2>
       <div data-live-region="runner-state">
-      <dl class="properties"><div><dt>컨테이너 상태</dt><dd data-live-field="containerState">{{containerState}}</dd></div><div><dt>마지막 확인</dt><dd><time data-live-field="observed" datetime="{{observedDateTime}}" data-local-time>{{observedLabel}}</time></dd></div></dl>
+      <dl class="properties"><div><dt>MCP 컨테이너</dt><dd data-live-field="containerState">{{containerState}}</dd></div><div><dt>개발 컨테이너</dt><dd data-live-field="developmentState">{{developmentState}}</dd></div><div><dt>마지막 확인</dt><dd><time data-live-field="observed" datetime="{{observedDateTime}}" data-local-time>{{observedLabel}}</time></dd></div></dl>
       <p data-live-field="observationMissing" class="help"{{#observationFresh}} hidden{{/observationFresh}}>관리 서비스의 상태 정보가 아직 없거나 오래되었습니다. 새 상태가 확인되면 여기에 표시됩니다.</p>
       </div>
       {{^selfScope}}
@@ -21,7 +21,7 @@
           <button class="danger" type="submit" name="action" value="stop">중지</button>
         </div>
       </form>
-      <p class="help">중지·재시작하면 실행 중인 작업이 종료됩니다. 프로젝트와 저장된 파일은 유지됩니다. 계정 사용 중지와 실행 환경 중지는 별개입니다.</p>
+      <p class="help">시작·중지·재시작은 MCP와 개발 컨테이너에 함께 적용됩니다. 중지·재시작하면 실행 중인 작업이 종료됩니다. 프로젝트와 저장된 파일은 유지됩니다. 계정 사용 중지와 실행 환경 중지는 별개입니다.</p>
       <a class="button" href="{{consoleBase}}/users/{{owner.id}}">계정 상태 관리 →</a>
       {{/selfScope}}
     </section>

@@ -19,6 +19,77 @@ afterEach(async () => {
 });
 
 describe("MCP HTTP sessions", () => {
+  it("bounds reconnect sessions, returns 404 for evicted sessions and allows clients to initialize again", async () => {
+    const dataDir = await mkdtemp(path.join(os.tmpdir(), "mcp-reconnect-"));
+    temporary.push(dataDir);
+    const users = new UserStore(dataDir),
+      store = new AuthStore(dataDir);
+    const owner = await adminAccount(users, dataDir);
+    const client = await store.registerClient("reconnecting", [
+      "https://example.test/callback",
+    ]);
+    const token = (
+      await store.issueTokens(client.clientId, ["workspace:read"], {
+        userId: owner.id,
+        authVersion: owner.authVersion,
+      })
+    ).accessToken;
+    const app = createApp(
+      { port: 3000, publicBaseUrl: "https://dev.example.test", dataDir },
+      { users },
+    );
+    const initialize = () =>
+      mcpPost(app, token, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: LATEST_PROTOCOL_VERSION,
+          capabilities: {},
+          clientInfo: { name: "reconnect", version: "1" },
+        },
+      });
+    const ids: string[] = [];
+    for (let index = 0; index < 18; index += 1) {
+      const response = await initialize();
+      expect(response.statusCode).toBe(200);
+      ids.push(String(response.headers["mcp-session-id"]));
+    }
+    const list = (id: string) =>
+      mcpPost(
+        app,
+        token,
+        { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
+        id,
+      );
+    expect((await list(ids[0]!)).statusCode).toBe(404);
+    expect((await list(ids[17]!)).statusCode).toBe(200);
+    const burst = await Promise.all(Array.from({ length: 40 }, initialize));
+    for (const response of burst) {
+      expect([200, 429]).toContain(response.statusCode);
+      if (response.statusCode === 200)
+        ids.push(String(response.headers["mcp-session-id"]));
+    }
+    const alive: string[] = [];
+    for (const id of ids) {
+      const response = await list(id);
+      expect([200, 404]).toContain(response.statusCode);
+      if (response.statusCode === 200) {
+        alive.push(id);
+      }
+    }
+    expect(alive).toHaveLength(16);
+    await Promise.all(
+      alive.map((id) =>
+        inject(app, {
+          method: "DELETE",
+          url: "/mcp",
+          headers: mcpHeaders(token, id),
+        }),
+      ),
+    );
+    expect((await initialize()).statusCode).toBe(200);
+  });
   it("closes selected user sessions and revokes one user's connection without affecting another", async () => {
     const dataDir = await mkdtemp(
       path.join(os.tmpdir(), "mcp-session-management-"),

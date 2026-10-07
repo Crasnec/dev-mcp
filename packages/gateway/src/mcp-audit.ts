@@ -1,16 +1,15 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type {
-  Transport,
-  TransportSendOptions,
-} from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
+  McpServer,
+  SUPPORTED_PROTOCOL_VERSIONS,
   isJSONRPCRequest,
-  isJSONRPCResponse,
-  isJSONRPCError,
+  isJSONRPCResultResponse as isJSONRPCResponse,
+  isJSONRPCErrorResponse as isJSONRPCError,
   type JSONRPCMessage,
   type JSONRPCRequest,
   type RequestId,
-} from "@modelcontextprotocol/sdk/types.js";
+  type Transport,
+  type TransportSendOptions,
+} from "@modelcontextprotocol/server";
 import type { AuditLogger } from "./audit.ts";
 
 export interface McpFailure {
@@ -26,6 +25,9 @@ interface AuditOptions {
   actor: string;
   userId: string;
   clientId?: string;
+  protocolEra?: "legacy" | "modern";
+  failureRecorded?: () => void;
+  requestStarted?: () => () => void;
   diagnoseTool: (name: unknown, args: unknown) => Promise<McpFailure>;
 }
 
@@ -36,6 +38,10 @@ export class AuditedMcpServer extends McpServer {
     super(
       { name: "dev-mcp", version: "0.1.0" },
       {
+        supportedProtocolVersions: SUPPORTED_PROTOCOL_VERSIONS.filter(
+          (version) =>
+            version >= "2026-01-01" === (auditOptions.protocolEra === "modern"),
+        ),
         instructions:
           "Perform development work yourself using this server's tools. Never invoke, install, authenticate, or delegate work to Codex, Claude Code, or another AI agent through command_run, process_start, app_deploy, scripts, aliases, wrappers, copied binaries, remote execution, or any other workaround. A denied or unavailable agent must not be retried by another route. MCP runs in a separate container with Git/GitHub credentials only; the interactive development container and its AI credentials are unavailable.",
       },
@@ -43,24 +49,36 @@ export class AuditedMcpServer extends McpServer {
   }
 
   override connect(transport: Transport): Promise<void> {
-    const pending = new Map<RequestId, JSONRPCRequest>();
+    const pending = new Map<
+      RequestId,
+      { request: JSONRPCRequest; finish?: () => void }
+    >();
     const options = this.auditOptions;
+    const clearPending = () => {
+      for (const request of pending.values()) request.finish?.();
+      pending.clear();
+    };
     const wrapped: Transport = {
       start: () => transport.start(),
       close: () => {
-        pending.clear();
+        clearPending();
         return transport.close();
       },
       get sessionId() {
         return transport.sessionId;
       },
       setProtocolVersion: transport.setProtocolVersion?.bind(transport),
+      setSupportedProtocolVersions:
+        transport.setSupportedProtocolVersions?.bind(transport),
+      get hasPerRequestStream() {
+        return transport.hasPerRequestStream;
+      },
       get onclose() {
         return transport.onclose;
       },
       set onclose(handler) {
         transport.onclose = () => {
-          pending.clear();
+          clearPending();
           handler?.();
         };
       },
@@ -76,60 +94,79 @@ export class AuditedMcpServer extends McpServer {
       set onmessage(handler) {
         transport.onmessage = handler
           ? (message, extra) => {
-              if (isJSONRPCRequest(message)) {
-                pending.set(message.id, message);
+              if (isJSONRPCRequest(message) && !pending.has(message.id)) {
+                pending.set(message.id, {
+                  request: message,
+                  finish: options.requestStarted?.(),
+                });
               }
               handler(message, extra);
             }
           : undefined;
       },
       async send(message: JSONRPCMessage, sendOptions?: TransportSendOptions) {
-        if (isJSONRPCResponse(message) || isJSONRPCError(message)) {
-          const request =
-            message.id === null || message.id === undefined
-              ? undefined
-              : pending.get(message.id);
-          if (message.id !== null && message.id !== undefined) {
-            pending.delete(message.id);
-          }
-          if (request) {
-            let failure: McpFailure | undefined;
-            if (isJSONRPCError(message)) {
-              failure = {
-                stage: "protocol",
-                errorCode: "MCP_PROTOCOL_ERROR",
-                message: "MCP request was rejected by the protocol handler",
-              };
-            } else if (
-              request.method === "tools/call" &&
-              message.result.isError === true &&
-              message.result.structuredContent === undefined
-            ) {
-              failure = await options.diagnoseTool(
-                request.params?.name,
-                request.params?.arguments,
-              );
+        let finish: (() => void) | undefined;
+        try {
+          if (isJSONRPCResponse(message) || isJSONRPCError(message)) {
+            const tracked =
+              message.id === null || message.id === undefined
+                ? undefined
+                : pending.get(message.id);
+            const request = tracked?.request;
+            finish = tracked?.finish;
+            if (message.id !== null && message.id !== undefined) {
+              pending.delete(message.id);
             }
-            if (failure) {
-              await options.audit
-                .write({
-                  event: "mcp_error",
-                  actor: options.actor,
-                  userId: options.userId,
-                  clientId: options.clientId,
-                  sessionId: transport.sessionId,
-                  requestMethod: safeMcpMethod(request.method),
-                  rpcErrorCode: isJSONRPCError(message)
-                    ? message.error.code
-                    : undefined,
-                  ok: false,
-                  ...failure,
-                })
-                .catch(() => undefined);
+            if (request) {
+              let failure: McpFailure | undefined;
+              if (isJSONRPCError(message)) {
+                failure =
+                  request.method === "tools/call" &&
+                  typeof request.params?.name === "string"
+                    ? await options.diagnoseTool(
+                        request.params?.name,
+                        request.params?.arguments,
+                      )
+                    : {
+                        stage: "protocol",
+                        errorCode: "MCP_PROTOCOL_ERROR",
+                        message:
+                          "MCP request was rejected by the protocol handler",
+                      };
+              } else if (
+                request.method === "tools/call" &&
+                message.result.isError === true &&
+                message.result.structuredContent === undefined
+              ) {
+                failure = await options.diagnoseTool(
+                  request.params?.name,
+                  request.params?.arguments,
+                );
+              }
+              if (failure) {
+                await options.audit
+                  .write({
+                    event: "mcp_error",
+                    actor: options.actor,
+                    userId: options.userId,
+                    clientId: options.clientId,
+                    sessionId: transport.sessionId,
+                    requestMethod: safeMcpMethod(request.method),
+                    rpcErrorCode: isJSONRPCError(message)
+                      ? message.error.code
+                      : undefined,
+                    ok: false,
+                    ...failure,
+                  })
+                  .catch(() => undefined);
+                options.failureRecorded?.();
+              }
             }
           }
+          return await transport.send(message, sendOptions);
+        } finally {
+          finish?.();
         }
-        return transport.send(message, sendOptions);
       },
     };
     return super.connect(wrapped);
@@ -140,6 +177,8 @@ export class AuditedMcpServer extends McpServer {
 // contain credentials. Include nested paths, camel-case names and the skills
 // discovery extension used by OpenAI clients.
 const auditedMethods = new Set([
+  "server/discover",
+  "subscriptions/listen",
   "initialize",
   "ping",
   "tools/list",

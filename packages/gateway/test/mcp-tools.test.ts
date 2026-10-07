@@ -18,6 +18,55 @@ afterEach(async () => {
 });
 
 describe("MCP tool catalog", () => {
+  it("pins protocol requests until their asynchronous tool result is sent", async () => {
+    const data = await mkdtemp(path.join(os.tmpdir(), "mcp-request-lifetime-"));
+    temporary.push(data);
+    let active = 0;
+    let finishTool!: () => void;
+    let started!: () => void;
+    const didStart = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const ipc = {
+      call: async () => {
+        started();
+        await new Promise<void>((resolve) => {
+          finishTool = resolve;
+        });
+        return { ok: true, data: { projects: [] }, truncated: false };
+      },
+    } as unknown as IpcClient;
+    const server = createMcpServer({
+      scopes: ["workspace:read"],
+      actor: "alice:client",
+      principal: { userId: "alice", authVersion: 1 },
+      ipc,
+      audit: new AuditLogger(data),
+      resourceMetadataUrl: "https://example.test/metadata",
+      requestStarted: () => {
+        active += 1;
+        return () => {
+          active -= 1;
+        };
+      },
+    });
+    const client = new Client({ name: "lifetime", version: "1" });
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    const result = client.callTool({
+      name: "project_list",
+      arguments: { reason: "Inspect projects" },
+    });
+    await didStart;
+    expect(active).toBe(1);
+    finishTool();
+    await result;
+    expect(active).toBe(0);
+    await client.close();
+    await server.close();
+  });
   it("publishes schemas, structured outputs, and safety annotations", async () => {
     const data = await mkdtemp(path.join(os.tmpdir(), "mcp-catalog-"));
     temporary.push(data);
@@ -208,78 +257,84 @@ describe("MCP tool catalog", () => {
     await server.close();
   });
 
-  it("records the owner and returned process id for process starts", async () => {
-    const data = await mkdtemp(path.join(os.tmpdir(), "mcp-process-audit-"));
-    temporary.push(data);
-    const projectId = "00000000-0000-4000-8000-000000000000";
-    const processId = "11111111-1111-4111-8111-111111111111";
-    const ipc = {
-      call: vi.fn(async () => ({
-        ok: true,
-        data: {
-          process: {
-            id: processId,
-            projectId,
-            command: "npm run dev",
+  it.each(["process_start", "command_run"])(
+    "records the owner and returned process id for %s",
+    async (tool) => {
+      const data = await mkdtemp(path.join(os.tmpdir(), "mcp-process-audit-"));
+      temporary.push(data);
+      const projectId = "00000000-0000-4000-8000-000000000000";
+      const processId = "11111111-1111-4111-8111-111111111111";
+      const ipc = {
+        call: vi.fn(async () => ({
+          ok: true,
+          data: {
+            process: {
+              id: processId,
+              projectId,
+              command: "npm run dev",
+            },
           },
+          truncated: false,
+        })),
+      } as unknown as IpcClient;
+      const server = createMcpServer({
+        scopes: ["command:run"],
+        actor: "user-id:client-id",
+        principal: { userId: "user-id", authVersion: 1 },
+        ipc,
+        audit: new AuditLogger(data),
+        resourceMetadataUrl:
+          "https://dev.example.test/.well-known/oauth-protected-resource",
+      });
+      const client = new Client({ name: "process-test", version: "1.0.0" });
+      const [clientTransport, serverTransport] =
+        InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+      const result = await client.callTool({
+        name: tool,
+        arguments: {
+          reason: "Inspect the requested resource",
+          project_id: projectId,
+          command: "npm run dev",
+          network_intent: "none",
+          log_file: "build.log",
         },
-        truncated: false,
-      })),
-    } as unknown as IpcClient;
-    const server = createMcpServer({
-      scopes: ["command:run"],
-      actor: "user-id:client-id",
-      principal: { userId: "user-id", authVersion: 1 },
-      ipc,
-      audit: new AuditLogger(data),
-      resourceMetadataUrl:
-        "https://dev.example.test/.well-known/oauth-protected-resource",
-    });
-    const client = new Client({ name: "process-test", version: "1.0.0" });
-    const [clientTransport, serverTransport] =
-      InMemoryTransport.createLinkedPair();
-    await server.connect(serverTransport);
-    await client.connect(clientTransport);
-    const result = await client.callTool({
-      name: "process_start",
-      arguments: {
-        reason: "Inspect the requested resource",
-        project_id: projectId,
-        command: "npm run dev",
-        network_intent: "none",
-      },
-    });
-    expect(result.isError).toBe(false);
-    expect(ipc.call).toHaveBeenCalledWith(
-      "process_start",
-      {
-        project_id: projectId,
-        command: "npm run dev",
-        network_intent: "none",
-      },
-      "user-id:client-id",
-    );
-    await client.close();
-    await server.close();
+      });
+      expect(result.isError).toBe(false);
+      expect(ipc.call).toHaveBeenCalledWith(
+        tool,
+        {
+          project_id: projectId,
+          command: "npm run dev",
+          network_intent: "none",
+          log_file: "build.log",
+        },
+        "user-id:client-id",
+      );
+      await client.close();
+      await server.close();
 
-    const entry = JSON.parse(
-      (await readFile(path.join(data, "audit.jsonl"), "utf8")).trim(),
-    );
-    expect(entry).toMatchObject({
-      event: "tool_call",
-      actor: "user-id:client-id",
-      userId: "user-id",
-      tool: "process_start",
-      reason: "Inspect the requested resource",
-      processId,
-      projectId,
-      params: {
-        project_id: projectId,
-        command: "npm run dev",
-        network_intent: "none",
-      },
-    });
-  });
+      const entry = JSON.parse(
+        (await readFile(path.join(data, "audit.jsonl"), "utf8")).trim(),
+      );
+      expect(entry).toMatchObject({
+        event: "tool_call",
+        actor: "user-id:client-id",
+        userId: "user-id",
+        tool,
+        reason: "Inspect the requested resource",
+        processId,
+        projectId,
+        params: {
+          project_id: projectId,
+          command: "npm run dev",
+          network_intent: "none",
+          log_file: "build.log",
+        },
+      });
+    },
+  );
 
   it("requires a bounded reason before invoking a tool and audits normalized reasons on success and failure", async () => {
     const data = await mkdtemp(path.join(os.tmpdir(), "mcp-reason-"));
@@ -321,7 +376,13 @@ describe("MCP tool catalog", () => {
       }
       expect(call).not.toHaveBeenCalled();
       const rejected = (await audit.recent()).records;
-      expect(rejected).toHaveLength(6);
+      expect(
+        rejected.reduce(
+          (count, entry) =>
+            count + (entry.aggregated ? Number(entry.repeatCount) : 1),
+          0,
+        ),
+      ).toBe(6);
       for (const entry of rejected) {
         expect(entry).toMatchObject({
           event: "mcp_error",

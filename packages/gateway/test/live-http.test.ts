@@ -84,6 +84,52 @@ async function fixture() {
 }
 
 describe("automatic process and runner updates over HTTP", () => {
+  it("shows command mode, exit status and redirected-file notices outside the log output", async () => {
+    const { get, state, process, detailUrl } = await fixture();
+    state.processes = success({
+      processes: [
+        {
+          ...process,
+          mode: "command",
+          status: "exited",
+          exitCode: 7,
+          logPath: "build<file>.log",
+        },
+      ],
+    });
+    state.logs = success({
+      output: "",
+      cursor: "file-cursor",
+      logSource: "file",
+      logFile: "build<file>.log",
+      logWarning: "The selected log file has not been created.",
+    });
+    const page = await get(detailUrl);
+    expect(page.statusCode).toBe(200);
+    expect(page.payload).toContain("완료까지 대기");
+    expect(page.payload).toContain("data-process-exit>7</dd>");
+    expect(page.payload).toContain("build&lt;file&gt;.log");
+    expect(page.payload).toContain(
+      "지정한 로그 파일이 아직 생성되지 않았습니다.",
+    );
+    expect(page.payload).toMatch(/data-live-log[^>]*><\/pre>/);
+    state.logs = success({
+      output: "",
+      cursor: "file-cursor",
+      logFile: "build<file>.log",
+    });
+    const live = await get(
+      detailUrl + "/live?cursor=file-cursor&status=exited",
+    );
+    expect(live.statusCode).toBe(200);
+    expect(live.json()).toMatchObject({
+      process: { exitLabel: "7" },
+      output: "",
+      logNotice: expect.stringContaining("build<file>.log"),
+    });
+    expect(live.json()).not.toHaveProperty("logWarning");
+  });
+
   it("shows terminal log availability once and leaves repeated live polls idle", async () => {
     const { get, state, process, detailUrl } = await fixture();
     state.logs = success({
@@ -211,7 +257,10 @@ describe("automatic process and runner updates over HTTP", () => {
         process: {
           status: page.status,
           statusLabel: page.status === "running" ? "실행 중" : "완료",
+          exitLabel: page.status === "running" ? "실행 중" : "확인 불가",
         },
+        logNotice:
+          "표준 출력·표준 오류를 표시합니다. 파일로 보낸 출력은 실행할 때 로그 파일을 지정해야 표시됩니다.",
         output: page.output,
         cursor: page.cursor,
         more: page.more,

@@ -11,10 +11,12 @@
       {{#processes}}
       <article class="audit-process-card" data-audit-process="{{id}}" data-live-url="{{liveUrl}}" data-running="{{runningText}}" data-more="{{moreText}}">
         <header data-audit-process-header>
-          <div class="audit-process-identity"><div class="audit-process-facts"><span class="badge {{status}}" data-process-status>{{statusLabel}}</span><span>PID {{pid}}</span><span><time datetime="{{startedDateTime}}" data-local-time>{{startedLabel}}</time> 시작</span></div><strong class="audit-process-command">{{command}}</strong><code class="audit-process-id">{{id}}</code></div>
+          <div class="audit-process-identity"><div class="audit-process-facts"><span class="badge {{status}}" data-process-status>{{statusLabel}}</span><span>{{modeLabel}}</span><span>종료 코드 <span data-process-exit>{{exitLabel}}</span></span><span>PID {{pid}}</span><span><time datetime="{{startedDateTime}}" data-local-time>{{startedLabel}}</time> 시작</span></div><strong class="audit-process-command">{{command}}</strong><code class="audit-process-id">{{id}}</code></div>
           <a class="audit-text-link" href="{{href}}">프로세스 상세 →</a>
         </header>
         {{#logError}}<p class="audit-log-error" data-log-error role="alert">{{logError}}</p>{{/logError}}
+        {{#logNotice}}<p class="audit-message" data-log-notice>{{logNotice}}</p>{{/logNotice}}
+        {{#logWarning}}<p class="audit-message" data-log-warning>{{logWarning}}</p>{{/logWarning}}
         {{^output}}{{^logError}}<p class="audit-log-empty" data-log-empty>아직 기록된 로그가 없습니다.</p>{{/logError}}{{/output}}
         <pre class="log-output" data-audit-log data-cursor="{{cursor}}" tabindex="0" aria-label="프로세스 {{id}} 실행 로그">{{output}}</pre>
         {{#truncated}}<p class="audit-log-note" data-log-truncated>이후 로그가 더 있습니다. <a href="{{href}}">프로세스 상세에서 보기 →</a></p>{{/truncated}}

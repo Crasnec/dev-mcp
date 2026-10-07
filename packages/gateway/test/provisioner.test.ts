@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { randomUUID } from "node:crypto";
 
 const execute = promisify(execFile);
 const temporary: string[] = [];
@@ -519,3 +520,199 @@ it("applies personal workspace requests once, preserves stop across reconciliati
   expect(state.containers["dev-mcp-user-" + alice]).toBe("running");
   expect(state.containers["dev-mcp-workspace-" + alice]).toBe("exited");
 }, 30000);
+
+it("stops and starts both containers, recovers a missing development container and applies paired restarts once", async () => {
+  const f = await fixture([{ ...account(alice), authVersion: 1 }]);
+  const dir = path.dirname(f.usersFile);
+  const env = {
+    WORKSPACE_SSH_ENABLED: "true",
+    SSH_ENTRY_DATA_DIR: path.join(dir, "entry"),
+    WORKSPACE_AUTH_DIR: path.join(dir, "auth"),
+  };
+  const statusFile = path.join(dir, "status/status.json");
+  const control = async (action: string) => {
+    const request = {
+      revision: randomUUID(),
+      action,
+      actorId: bob,
+      requestedAt: Date.now(),
+    };
+    await writeFile(
+      path.join(dir, "runner-controls.json"),
+      JSON.stringify({ entries: { [alice]: request } }),
+    );
+    return request;
+  };
+  const mcp = "dev-mcp-user-" + alice,
+    development = "dev-mcp-workspace-" + alice;
+  await f.run(env);
+  await control("stop");
+  await f.run(env);
+  await f.run(env);
+  expect((await f.state()).containers).toEqual({
+    [mcp]: "exited",
+    [development]: "exited",
+  });
+  await control("start");
+  await f.run(env);
+  expect((await f.state()).containers).toEqual({
+    [mcp]: "running",
+    [development]: "running",
+  });
+  const state = await f.state();
+  delete state.containers[development];
+  delete state.metadata[development];
+  await writeFile(f.stateFile, JSON.stringify(state));
+  const request = await control("restart");
+  await f.run(env);
+  await f.run(env);
+  expect((await f.state()).containers).toEqual({
+    [mcp]: "running",
+    [development]: "running",
+  });
+  let status = JSON.parse(await readFile(statusFile, "utf8"));
+  expect(status.entries[alice]).toMatchObject({
+    revision: request.revision,
+    runtimePhase: "applied",
+  });
+  expect(status.workspaces[alice]).toMatchObject({
+    revision: request.revision,
+    phase: "applied",
+  });
+  const missingMcp = await f.state();
+  delete missingMcp.containers[mcp];
+  delete missingMcp.metadata[mcp];
+  await writeFile(f.stateFile, JSON.stringify(missingMcp));
+  const restart = await control("restart");
+  await f.run(env);
+  await f.run(env);
+  expect((await f.state()).containers).toEqual({
+    [mcp]: "running",
+    [development]: "running",
+  });
+  expect(
+    (await f.state()).calls.filter(
+      (args: string[]) => args[0] === "restart" && args.at(-1) === development,
+    ),
+  ).toHaveLength(1);
+  status = JSON.parse(await readFile(statusFile, "utf8"));
+  status.workspaces[alice].phase = "applying";
+  await writeFile(statusFile, JSON.stringify(status));
+  await expect(f.run(env)).rejects.toMatchObject({ code: 1 });
+  status = JSON.parse(await readFile(statusFile, "utf8"));
+  expect(status.entries[alice]).toMatchObject({
+    revision: restart.revision,
+    runtimePhase: "failed",
+  });
+  expect(
+    (await f.state()).calls.filter(
+      (args: string[]) => args[0] === "restart" && args.at(-1) === development,
+    ),
+  ).toHaveLength(1);
+}, 60000);
+
+it("treats stopping an environment with both containers absent as already stopped", async () => {
+  const f = await fixture([{ ...account(alice), authVersion: 1 }]);
+  const dir = path.dirname(f.usersFile);
+  await writeFile(
+    path.join(dir, "runner-controls.json"),
+    JSON.stringify({
+      entries: {
+        [alice]: {
+          revision: randomUUID(),
+          actorId: bob,
+          action: "stop",
+          requestedAt: Date.now(),
+        },
+      },
+    }),
+  );
+  await f.run({
+    WORKSPACE_SSH_ENABLED: "true",
+    SSH_ENTRY_DATA_DIR: path.join(dir, "entry"),
+    WORKSPACE_AUTH_DIR: path.join(dir, "auth"),
+  });
+  const status = JSON.parse(
+    await readFile(path.join(dir, "status/status.json"), "utf8"),
+  );
+  expect(status.entries[alice]).toMatchObject({
+    state: "missing",
+    runtimePhase: "applied",
+  });
+  expect(status.workspaces[alice]).toMatchObject({
+    state: "missing",
+    phase: "applied",
+  });
+  expect((await f.state()).containers).toEqual({});
+});
+
+it("keeps a newer personal stop, accepts a subsequent admin start and never replays superseded controls after a crash", async () => {
+  const f = await fixture([{ ...account(alice), authVersion: 1 }]);
+  const dir = path.dirname(f.usersFile);
+  const env = {
+    WORKSPACE_SSH_ENABLED: "true",
+    SSH_ENTRY_DATA_DIR: path.join(dir, "entry"),
+    WORKSPACE_AUTH_DIR: path.join(dir, "auth"),
+  };
+  await f.run(env);
+  const global = {
+    revision: randomUUID(),
+    actorId: bob,
+    action: "start",
+    requestedAt: 100,
+  };
+  const personal = {
+    revision: randomUUID(),
+    actorId: alice,
+    action: "stop",
+    requestedAt: 200,
+  };
+  await writeFile(
+    path.join(dir, "runner-controls.json"),
+    JSON.stringify({ entries: { [alice]: global } }),
+  );
+  await writeFile(
+    path.join(dir, "workspace-controls.json"),
+    JSON.stringify({ entries: { [alice]: personal } }),
+  );
+  await f.run(env);
+  await f.run(env);
+  expect((await f.state()).containers["dev-mcp-workspace-" + alice]).toBe(
+    "exited",
+  );
+  await writeFile(
+    path.join(dir, "runner-controls.json"),
+    JSON.stringify({
+      entries: {
+        [alice]: { ...global, revision: randomUUID(), requestedAt: 300 },
+      },
+    }),
+  );
+  await f.run(env);
+  await f.run(env);
+  expect((await f.state()).containers["dev-mcp-workspace-" + alice]).toBe(
+    "running",
+  );
+  const interrupted = {
+    ...global,
+    revision: randomUUID(),
+    action: "restart",
+    requestedAt: 400,
+  };
+  await writeFile(
+    path.join(dir, "runner-controls.json"),
+    JSON.stringify({ entries: { [alice]: interrupted } }),
+  );
+  const statusFile = path.join(dir, "status/status.json");
+  const status = JSON.parse(await readFile(statusFile, "utf8"));
+  status.entries[alice].revision = interrupted.revision;
+  status.entries[alice].phase = "applying";
+  await writeFile(statusFile, JSON.stringify(status));
+  await expect(f.run(env)).rejects.toMatchObject({ code: 1 });
+  expect((await f.state()).containers["dev-mcp-workspace-" + alice]).toBe(
+    "running",
+  );
+  expect(
+    JSON.parse(await readFile(statusFile, "utf8")).workspaces[alice],
+  ).toMatchObject({ revision: interrupted.revision, phase: "failed" });
+}, 60000);

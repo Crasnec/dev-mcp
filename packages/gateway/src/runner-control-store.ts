@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { JsonStore } from "./json-store.ts";
 import type { User } from "./user-store.ts";
 import { workspaceNamePattern } from "./installation-store.ts";
+import type { WorkspaceObservation } from "./workspace-control-store.ts";
 
 export interface RunnerLimits {
   network: boolean;
@@ -25,6 +26,8 @@ export interface RunnerObservation {
   revision?: string;
   phase?: "applying" | "applied" | "failed";
   message?: string;
+  runtimePhase?: "applying" | "applied" | "failed";
+  runtimeMessage?: string;
   state: string;
   memoryMiB?: number;
   cpus?: number;
@@ -53,15 +56,17 @@ export class RunnerControlStore {
   async read(id: string) {
     const control = (await this.store.read()).entries[id];
     let observation: RunnerObservation | undefined;
+    let development: WorkspaceObservation | undefined;
     try {
       const status = JSON.parse(
         await readFile(path.join(this.statusDir, "status.json"), "utf8"),
       );
       observation = status.entries?.[id];
+      development = status.workspaces?.[id];
     } catch {
       // Unavailable or malformed status never means an operation succeeded.
     }
-    return { control, observation };
+    return { control, observation, development };
   }
 
   async request(

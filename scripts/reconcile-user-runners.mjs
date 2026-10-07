@@ -17,6 +17,7 @@ import { runtimeContainer } from "./runtime-names.mjs";
 import {
   WorkspaceOperations,
   validWorkspaceControl,
+  workspaceLifecycleControl,
 } from "./workspace-operations.mjs";
 
 const execute = promisify(execFile);
@@ -157,11 +158,25 @@ if (registry) {
   }
 }
 
-async function reconcileWorkspace(user, request, status) {
+async function reconcileWorkspace(user, request, status, blocked = false) {
   let previous = status.workspaces[user.id] ?? {};
   try {
     if (request && !validWorkspaceControl(request)) {
       throw new Error("Invalid workspace request");
+    }
+    if (blocked) {
+      if (user.status !== "active") {
+        await workspaces.sync(user);
+      }
+      status.workspaces[user.id] = {
+        ...previous,
+        revision: request.revision,
+        phase: "failed",
+        message:
+          "MCP 컨테이너 작업에 실패해 개발 컨테이너 작업을 진행하지 않았습니다. 상태를 확인하고 다시 요청해 주세요.",
+        ...(await workspaces.observe(user)),
+      };
+      return false;
     }
     if (request && previous.revision !== request.revision) {
       previous = {
@@ -188,7 +203,9 @@ async function reconcileWorkspace(user, request, status) {
       previous.message =
         "관리 서비스가 작업 도중 재시작되었습니다. 상태를 확인하고 다시 요청해 주세요.";
     }
-    await workspaces.sync(user, { autoStart: request?.action !== "stop" });
+    if (request?.action !== "stop") {
+      await workspaces.sync(user);
+    }
     status.workspaces[user.id] = {
       ...previous,
       ...(await workspaces.observe(user)),
@@ -287,6 +304,13 @@ async function reconcile() {
           revision: request.revision,
           phase: "applying",
           message: "운영 요청을 적용하고 있습니다.",
+          ...(workspaces
+            ? {
+                runtimePhase: "applying",
+                runtimeMessage:
+                  "MCP와 개발 컨테이너 운영 요청을 처리하고 있습니다.",
+              }
+            : {}),
         };
         status.entries[user.id] = previous;
         await writeJson(statusFile, status);
@@ -383,15 +407,46 @@ async function reconcile() {
     }
     if (workspaces) {
       const latest = (await users()).find((entry) => entry.id === user.id);
-      if (
-        latest &&
-        !(await reconcileWorkspace(
-          latest,
-          workspaceDesired.entries?.[user.id],
-          status,
-        ))
-      ) {
-        ok = false;
+      if (latest) {
+        try {
+          const entry = status.entries[user.id];
+          const workspaceRequest = workspaceLifecycleControl(
+            latest,
+            request,
+            workspaceDesired.entries?.[user.id],
+          );
+          if (
+            !(await reconcileWorkspace(
+              latest,
+              workspaceRequest,
+              status,
+              entry.phase === "failed" &&
+                request?.action !== "stop" &&
+                workspaceRequest?.revision === request?.revision,
+            ))
+          )
+            ok = false;
+          // Keep each container's journal separate so a restart is never
+          // replayed after a crash, and report success only after both finish.
+          const development = status.workspaces[user.id];
+          entry.runtimePhase = entry.phase;
+          entry.runtimeMessage = entry.message;
+          if (request && workspaceRequest?.revision === request.revision) {
+            if (development.phase === "failed") {
+              entry.runtimePhase = "failed";
+              entry.runtimeMessage = development.message;
+            } else if (development.phase !== "applied") {
+              entry.runtimePhase = "applying";
+              entry.runtimeMessage =
+                "개발 컨테이너 운영 요청을 처리하고 있습니다.";
+            }
+          }
+        } catch {
+          ok = false;
+          status.entries[user.id].runtimePhase = "failed";
+          status.entries[user.id].runtimeMessage =
+            "개발 컨테이너 운영 요청을 확인하지 못했습니다.";
+        }
       }
     }
     await writeJson(statusFile, status);

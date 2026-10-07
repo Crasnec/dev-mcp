@@ -736,7 +736,7 @@ describe("multi-user accounts and administration", () => {
     expect(environment.payload).toContain(
       'action="/admin/runners/' + alice.id + '/operations"',
     );
-    expect(environment.payload).toContain("연결 대기");
+    expect(environment.payload).toContain("연결 확인 실패 · 상태 확인 중");
     const stored = await readFile(path.join(dataDir, "users.json"), "utf8");
     expect(stored).not.toContain(password);
     expect(stored).not.toContain(

@@ -101,7 +101,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     for (const server of servers) {
       server.close(() => {
         if (--open === 0) {
-          process.exit(0);
+          void audit.flush().finally(() => process.exit(0));
         }
       });
     }

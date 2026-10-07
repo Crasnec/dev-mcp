@@ -1,8 +1,8 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type {
+  McpServer,
   CallToolResult,
   ToolAnnotations,
-} from "@modelcontextprotocol/sdk/types.js";
+} from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 import type { ToolResult } from "./protocol.ts";
 import { fail } from "./protocol.ts";
@@ -82,6 +82,9 @@ export function createMcpServer(options: {
   ipc: IpcClient;
   audit: AuditLogger;
   resourceMetadataUrl: string;
+  requestStarted?: () => () => void;
+  protocolEra?: "legacy" | "modern";
+  failureRecorded?: () => void;
   apps?: {
     service: AppService;
     owner: User;
@@ -94,6 +97,9 @@ export function createMcpServer(options: {
     actor: options.actor,
     userId: options.principal.userId,
     clientId: options.clientId,
+    requestStarted: options.requestStarted,
+    protocolEra: options.protocolEra,
+    failureRecorded: options.failureRecorded,
     diagnoseTool: async (name, args) => {
       const schema = typeof name === "string" ? schemas.get(name) : undefined;
       if (!schema) {
@@ -210,13 +216,13 @@ export function createMcpServer(options: {
     }
     const inputSchema = { ...definition.inputSchema, reason: callReason };
     schemas.set(definition.name, z.object(inputSchema));
-    server.registerTool<typeof resultShape, typeof inputSchema>(
+    server.registerTool(
       definition.name,
       {
         title: definition.title,
         description: definition.description,
-        inputSchema,
-        outputSchema: resultShape,
+        inputSchema: z.object(inputSchema),
+        outputSchema: resultSchema,
         annotations: definition.annotations,
         _meta: {
           securitySchemes: [{ type: "oauth2", scopes: securityScopes }],
@@ -338,9 +344,9 @@ export function createMcpServer(options: {
 
   add({
     name: "command_run",
-    title: "Run shell command",
+    title: "Run command and wait for completion",
     description:
-      "Run a Bash command in a project. Perform the work directly; invoking or delegating to Codex, Claude or another AI agent, including through alternate launch paths, is forbidden. This can change files, contact external systems, or perform destructive operations. Set network_intent accurately. Output beyond 64 KiB is paginated.",
+      "Run a Bash command and wait for it to finish; returns exit status, output and a tracked process ID visible in the console. Use process_start to return immediately for servers or long-running work. Captures stdout/stderr; for output redirected to a file, set log_file to also capture that file. Perform the work directly; invoking or delegating to Codex, Claude or another AI agent, including through alternate launch paths, is forbidden. This can change files, contact external systems, or perform destructive operations. Set network_intent accurately. Output beyond 64 KiB is paginated through command_output.",
     inputSchema: {
       project_id: projectId,
       command: z
@@ -348,6 +354,11 @@ export function createMcpServer(options: {
         .min(1)
         .max(128 * 1024),
       cwd: relativePath.optional(),
+      log_file: relativePath
+        .describe(
+          "Optional log file relative to the project root, independent of cwd. Copies the file from its beginning and follows new writes into the execution log, alongside stdout/stderr. Use for shell redirections; omit when using tee to avoid duplicate output.",
+        )
+        .optional(),
       timeout_ms: z
         .number()
         .int()
@@ -385,7 +396,7 @@ export function createMcpServer(options: {
     name: "process_start",
     title: "Start background process",
     description:
-      "Start a Bash command as a tracked background process in the MCP container. Invoking or delegating to Codex, Claude or another AI agent, including through alternate launch paths, is forbidden. This can change files or contact external systems.",
+      "Start a tracked Bash command in the MCP container and return its process ID immediately, without waiting for completion. Use for servers or long-running work; command_run waits and returns exit status/output. Inspect state with process_list, read stdout/stderr with process_logs, and stop with process_stop. Set log_file to also capture output redirected to a file. Do not add shell backgrounding (&) or nohup; the server manages the process. Invoking or delegating to Codex, Claude or another AI agent, including through alternate launch paths, is forbidden. This can change files or contact external systems.",
     inputSchema: {
       project_id: projectId,
       command: z
@@ -393,6 +404,11 @@ export function createMcpServer(options: {
         .min(1)
         .max(128 * 1024),
       cwd: relativePath.optional(),
+      log_file: relativePath
+        .describe(
+          "Optional log file relative to the project root, independent of cwd. Copies the file from its beginning and follows new writes into the execution log, alongside stdout/stderr. Use for shell redirections; omit when using tee to avoid duplicate output.",
+        )
+        .optional(),
       network_intent: networkIntent,
     },
     scopes: (p) => [
@@ -406,7 +422,7 @@ export function createMcpServer(options: {
     name: "process_list",
     title: "List processes",
     description:
-      "List tracked background processes with their current state, optionally for one project.",
+      "List tracked executions from command_run and process_start with their current state and execution mode, optionally for one project.",
     inputSchema: { project_id: projectId.optional() },
     scopes: ["command:run"],
     annotations: readOnly,
@@ -415,7 +431,7 @@ export function createMcpServer(options: {
     name: "process_logs",
     title: "Read process logs",
     description:
-      "Read a page of combined stdout and stderr for a tracked background process.",
+      "Read a page of captured stdout/stderr and any selected log_file for an execution from command_run or process_start. Reuse the returned cursor to follow new output, including after an empty page.",
     inputSchema: {
       process_id: z.string().uuid(),
       cursor: z.string().optional(),
@@ -658,7 +674,7 @@ function auditResult(
     const name = data?.app?.name ?? data?.name;
     return typeof name === "string" ? { app: name } : {};
   }
-  if (tool !== "process_start" || !result.ok) {
+  if (!["process_start", "command_run"].includes(tool) || !result.ok) {
     return {};
   }
   const process = (

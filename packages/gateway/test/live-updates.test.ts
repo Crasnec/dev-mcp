@@ -279,6 +279,40 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
 describe("live process logs", () => {
+  it("updates and clears log-file warnings without appending them to captured output", async () => {
+    const h = harness();
+    const notice = "지정한 로그 파일 ‘<file>.log’의 내용을 표시합니다.";
+    const warning = "지정한 로그 파일이 아직 생성되지 않았습니다.";
+    const response = (logWarning?: string) => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        process: {
+          status: "running",
+          statusLabel: "실행 중",
+          exitLabel: "실행 중",
+        },
+        output: "",
+        cursor: "file-cursor",
+        more: false,
+        logNotice: notice,
+        logWarning,
+      }),
+    });
+    h.fetch.mockResolvedValueOnce(response(warning));
+    h.start();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(h.page.querySelector("[data-log-notice]")?.textContent).toBe(notice);
+    expect(h.page.querySelector("[data-log-warning]")?.textContent).toBe(
+      warning,
+    );
+    expect(h.log.textContent).not.toContain(warning);
+    h.fetch.mockResolvedValueOnce(response());
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(h.page.querySelector("[data-log-warning]")).toBeNull();
+    expect(h.log.textContent).not.toContain(notice);
+  });
+
   it("keeps an EOF cursor on bodyless idle responses and still receives terminal status changes", async () => {
     const h = harness();
     const json = vi.fn();
@@ -628,6 +662,7 @@ describe("JSON live snapshots", () => {
     const state = new Element("div", { liveRegion: "runner-state" });
     state.children = [
       new Element("dd", { liveField: "containerState" }),
+      new Element("dd", { liveField: "developmentState" }),
       new Element("time", { liveField: "observed" }),
       new Element("p", { liveField: "observationMissing" }),
     ];
@@ -635,12 +670,18 @@ describe("JSON live snapshots", () => {
     const input = new Element("input");
     input.textContent = "unsaved revision and limit";
     form.children = [input];
-    h.page.children = [h.feed, state, form];
+    const connection = new Element("div", { liveRegion: "runner-connection" });
+    connection.children = [new Element("span", { liveField: "connection" })];
+    h.page.children = [h.feed, state, connection, form];
     snapshot(
       h,
       "r1",
       {
         containerState: "실행 중",
+        developmentState: "중지됨",
+        ready: false,
+        connectionLabel: "중지됨",
+        connectionStatus: "pending",
         observedDateTime: "2026-10-01T01:00:00.000Z",
         observedLabel: "UTC",
         observationFresh: true,
@@ -650,6 +691,8 @@ describe("JSON live snapshots", () => {
     h.start();
     await vi.advanceTimersByTimeAsync(3000);
     expect(value(state, "containerState").textContent).toBe("실행 중");
+    expect(value(state, "developmentState").textContent).toBe("중지됨");
+    expect(value(connection, "connection").textContent).toBe("중지됨");
     expect(value(state, "observationMissing").hidden).toBe(true);
     expect(input.textContent).toBe("unsaved revision and limit");
     expect(form.replacements).toBe(0);

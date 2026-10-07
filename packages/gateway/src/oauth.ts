@@ -57,6 +57,7 @@ export function installOAuthRoutes(
   app.get("/.well-known/oauth-authorization-server", (_req, res) => {
     res.json({
       issuer: config.publicBaseUrl,
+      authorization_response_iss_parameter_supported: true,
       authorization_endpoint: authorizationEndpoint,
       token_endpoint: `${config.publicBaseUrl}/oauth/token`,
       registration_endpoint: `${config.publicBaseUrl}/oauth/register`,
@@ -361,6 +362,7 @@ export function installOAuthRoutes(
           clientId: consumed.clientId,
         });
         return redirectOAuth(res, consumed.redirectUri, {
+          iss: config.publicBaseUrl,
           error: "access_denied",
           error_description: "The resource owner denied the request",
           state: consumed.state,
@@ -378,6 +380,7 @@ export function installOAuthRoutes(
         scopes: consumed.scopes,
       });
       return redirectOAuth(res, consumed.redirectUri, {
+        iss: config.publicBaseUrl,
         code,
         state: consumed.state,
       });
@@ -619,6 +622,7 @@ function redirectOAuth(
   res: Response,
   redirectUri: string,
   params: {
+    iss: string;
     code?: string;
     error?: string;
     error_description?: string;

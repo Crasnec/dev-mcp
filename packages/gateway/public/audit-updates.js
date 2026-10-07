@@ -312,6 +312,23 @@
             for (const message of card.querySelectorAll("[data-log-error]")) {
               message.remove();
             }
+            for (const [attribute, value] of [
+              ["data-log-notice", result.logNotice],
+              ["data-log-warning", result.logWarning],
+            ]) {
+              let message = card.querySelector(`[${attribute}]`);
+              if (value) {
+                if (!message) {
+                  message = element("p", "audit-message", "", {
+                    [attribute]: "",
+                  });
+                  card.insertBefore(message, log);
+                }
+                message.textContent = value;
+              } else if (message) {
+                message.remove();
+              }
+            }
             if (result.output) {
               log.append(document.createTextNode(result.output));
             }
@@ -341,6 +358,9 @@
               badge.textContent = result.process.statusLabel;
               badge.className = "badge " + result.process.status;
             }
+            for (const node of card.querySelectorAll("[data-process-exit]")) {
+              node.textContent = result.process.exitLabel ?? "확인 불가";
+            }
           });
           status = result.process.status;
           // Logs can finish while an older metadata request is still in flight.
@@ -367,7 +387,15 @@
         "data-process-status": "",
       }),
       element("span", "", "PID " + process.pid),
+      element("span", "", process.modeLabel ?? "백그라운드"),
     );
+    const exit = element("span", "", "종료 코드 ");
+    exit.append(
+      element("span", "", process.exitLabel ?? "확인 불가", {
+        "data-process-exit": "",
+      }),
+    );
+    facts.append(exit);
     const started = element("span");
     started.append(
       localTime(process.startedLabel, process.startedDateTime),
@@ -485,6 +513,15 @@
         );
         row.loaded = true;
         row.metaSignature = signature(snapshot.meta);
+      }
+      const raw = row.content.querySelector(".audit-json");
+      if (
+        snapshot.record.aggregated === true &&
+        raw &&
+        raw.textContent !== snapshot.record.details &&
+        !protectedWithin(raw)
+      ) {
+        raw.textContent = snapshot.record.details;
       }
       const currentMeta = row.content.querySelector(
         "[data-audit-process-meta]",

@@ -41,6 +41,7 @@ async function fixture() {
   const admin = await adminAccount(users, dataDir);
   const owner = await pendingAccount(users, dataDir, "audit-owner");
   await users.update(admin.id, owner.id, { status: "active", role: "user" });
+  const audit = new AuditLogger(dataDir);
   const app = createApp(
     {
       port: 3000,
@@ -50,7 +51,7 @@ async function fixture() {
       runnerStatusDir: path.join(dataDir, "status"),
       google: { clientId: "test-client", clientSecret: "test-secret" },
     },
-    { users },
+    { users, audit },
   );
   const process = {
     id: "process-a",
@@ -82,7 +83,6 @@ async function fixture() {
     "__Host-dev-mcp-session=" + (await users.createSession(admin)).token;
   const get = (url: string, selectedCookie = cookie) =>
     inject(app, { method: "GET", url, headers: { cookie: selectedCookie } });
-  const audit = new AuditLogger(dataDir);
   const write = async (event: Record<string, unknown> = {}) => {
     await audit.write({
       at: "2026-10-01T10:00:00.000Z",
@@ -99,10 +99,85 @@ async function fixture() {
       .digest("base64url")
       .slice(0, 20);
   };
-  return { app, users, admin, owner, dataDir, process, state, ipc, get, write };
+  return {
+    app,
+    users,
+    admin,
+    owner,
+    dataDir,
+    process,
+    state,
+    ipc,
+    get,
+    write,
+    audit,
+  };
 }
 
 describe("inline audit details and live updates over HTTP", () => {
+  it("keeps a repeat summary's detail link stable while its count changes and after it is flushed", async () => {
+    const { get, audit, admin } = await fixture();
+    const event = {
+      event: "mcp_error",
+      userId: admin.id,
+      actor: admin.id,
+      errorCode: "MCP_SESSION_ID_REQUIRED",
+      stage: "session",
+    };
+    await audit.write(event);
+    await audit.write(event);
+    const initial = (await get("/admin/audit/live?event=mcp_error")).json();
+    const summary = Object.values(initial.changes).find(
+      (row: any) =>
+        row &&
+        typeof row === "object" &&
+        row.reason?.includes("동일 오류 추가"),
+    ) as { id: string; reason: string };
+    expect(summary.reason).toContain("1회");
+    const id = summary.id;
+    const detail = (await get(`/admin/audit/${id}/live`)).json();
+    await audit.write(event);
+    const updated = await get(
+      `/admin/audit/${id}/live?since=${detail.revision}`,
+    );
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json().changes.record).toMatchObject({
+      id,
+      reason: expect.stringContaining("2회"),
+      details: expect.stringContaining('"repeatCount": 2'),
+    });
+    await audit.flush();
+    expect((await get(`/admin/audit/${id}/detail`)).statusCode).toBe(200);
+  });
+  it("shows a command_run execution and redirected-file output in its own audit details", async () => {
+    const { get, write, state, process } = await fixture();
+    state.processes = success({
+      processes: [
+        {
+          ...process,
+          mode: "command",
+          status: "exited",
+          exitCode: 2,
+          logPath: "build.log",
+        },
+      ],
+    });
+    state.logs = success({
+      output: "file output <script>text</script>\n",
+      cursor: "saved-log",
+      logFile: "build.log",
+    });
+    const id = await write({ tool: "command_run", processId: process.id });
+    const detail = await get(`/admin/audit/${id}/detail`);
+    expect(detail.statusCode).toBe(200);
+    expect(detail.payload).toContain("완료까지 대기");
+    expect(detail.payload).toContain("data-process-exit>2</span>");
+    expect(detail.payload).toContain("지정한 로그 파일 ‘build.log’");
+    expect(logBlocks(detail.payload)).toEqual([
+      "file output &lt;script&gt;text&lt;/script&gt;\n",
+    ]);
+  });
+
   it("shows MCP message kind and session-header presence in failure details", async () => {
     const { get, write } = await fixture();
     const id = await write({

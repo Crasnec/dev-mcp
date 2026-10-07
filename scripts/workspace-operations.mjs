@@ -285,6 +285,7 @@ export class WorkspaceOperations {
       "dev-mcp.runtime=split",
       "--label",
       "dev-mcp.workspace-source=" + template.source,
+      ...(!start ? ["--label", "dev-mcp.keep-stopped=true"] : []),
       "--network",
       network,
       "--network-alias",
@@ -592,14 +593,14 @@ export class WorkspaceOperations {
       await this.internet(user);
       await this.docker("network", "connect", internet, name);
     }
-    const runner =
-      autoStart && info.State.Status === "created"
-        ? (await this.runners.owned(user)).info
-        : undefined;
-    if (
-      resume ||
-      (autoStart && info.State.Status === "created" && runner?.State.Running)
-    ) {
+    const recoverCreated =
+      autoStart &&
+      info.State.Status === "created" &&
+      info.Config.Labels?.["dev-mcp.keep-stopped"] !== "true";
+    const runner = recoverCreated
+      ? (await this.runners.owned(user)).info
+      : undefined;
+    if (resume || (recoverCreated && runner?.State.Running)) {
       await this.docker("start", name);
     }
   }

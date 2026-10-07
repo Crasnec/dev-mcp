@@ -97,7 +97,7 @@ it("chooses the newest admin or personal lifecycle request and validates ownersh
   ).toThrow("Invalid workspace request");
 });
 
-it("does not automatically start a created workspace while its MCP container is stopped", async () => {
+it("recovers incomplete creation only when MCP is running and preserves an intentional stop until a new start request", async () => {
   const f = await fixture();
   f.info.State = { Running: false, Status: "created" };
   vi.spyOn(f.operations, "template").mockResolvedValue({
@@ -116,6 +116,18 @@ it("does not automatically start a created workspace while its MCP container is 
     info: { ...f.info, State: { Running: true, Status: "running" } },
   });
   await f.operations.sync(user);
+  expect(f.docker).toHaveBeenCalledWith("start", f.name);
+  f.docker.mockClear();
+  f.info.Config.Labels["dev-mcp.keep-stopped"] = "true";
+  await f.operations.sync(user);
+  await f.operations.sync(user);
+  expect(f.docker).not.toHaveBeenCalledWith("start", f.name);
+  await f.operations.apply(user, {
+    action: "start",
+    revision: randomUUID(),
+    actorId: user.id,
+    requestedAt: Date.now(),
+  });
   expect(f.docker).toHaveBeenCalledWith("start", f.name);
 });
 it("stops VS Code writes before storage copying and preserves already stopped workspaces", async () => {

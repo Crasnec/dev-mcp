@@ -183,6 +183,7 @@ async function reconcileWorkspace(user, request, status, blocked = false) {
         ...previous,
         revision: request.revision,
         phase: "applying",
+        legacyRunnerOnly: false,
         message: "Workspace 운영 요청을 적용하고 있습니다.",
       };
       status.workspaces[user.id] = previous;
@@ -259,6 +260,14 @@ async function reconcile() {
   for (const user of accounts) {
     let previous = status.entries[user.id] ?? {};
     const request = desired.entries[user.id];
+    // Before paired lifecycle control, completed runner requests affected MCP
+    // only. Adopt their journal without replaying them on a development
+    // container that may have been deliberately stopped since then.
+    const legacyAppliedRunnerRequest =
+      !!request &&
+      previous.revision === request.revision &&
+      previous.phase === "applied" &&
+      previous.runtimePhase === undefined;
     try {
       if (request && !validControl(request)) {
         throw new Error("Invalid runner request");
@@ -416,6 +425,21 @@ async function reconcile() {
             workspaceDesired.entries?.[user.id],
           );
           if (
+            legacyAppliedRunnerRequest &&
+            workspaceRequest?.revision === request.revision &&
+            status.workspaces[user.id]?.revision !== request.revision
+          ) {
+            status.workspaces[user.id] = {
+              ...status.workspaces[user.id],
+              revision: request.revision,
+              phase: "applied",
+              legacyRunnerOnly: true,
+              message:
+                "기존 MCP 전용 운영 요청의 처리 기록을 이전했습니다. 개발 컨테이너 상태는 유지했습니다.",
+            };
+            await writeJson(statusFile, status);
+          }
+          if (
             !(await reconcileWorkspace(
               latest,
               workspaceRequest,
@@ -432,7 +456,9 @@ async function reconcile() {
           entry.runtimePhase = entry.phase;
           entry.runtimeMessage = entry.message;
           if (request && workspaceRequest?.revision === request.revision) {
-            if (development.phase === "failed") {
+            if (development.legacyRunnerOnly) {
+              entry.runtimeMessage = development.message;
+            } else if (development.phase === "failed") {
               entry.runtimePhase = "failed";
               entry.runtimeMessage = development.message;
             } else if (development.phase !== "applied") {

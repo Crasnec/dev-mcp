@@ -646,6 +646,84 @@ it("treats stopping an environment with both containers absent as already stoppe
   expect((await f.state()).containers).toEqual({});
 });
 
+it("adopts completed MCP-only controls on upgrade without restarting a stopped development container", async () => {
+  const f = await fixture([{ ...account(alice), authVersion: 1 }]);
+  const dir = path.dirname(f.usersFile);
+  const env = {
+    WORKSPACE_SSH_ENABLED: "true",
+    SSH_ENTRY_DATA_DIR: path.join(dir, "entry"),
+    WORKSPACE_AUTH_DIR: path.join(dir, "auth"),
+  };
+  await f.run(env);
+  const mcp = "dev-mcp-user-" + alice;
+  const development = "dev-mcp-workspace-" + alice;
+  const request = {
+    revision: randomUUID(),
+    action: "restart",
+    actorId: bob,
+    requestedAt: 100,
+  };
+  const controlsFile = path.join(dir, "runner-controls.json");
+  const statusFile = path.join(dir, "status/status.json");
+  await writeFile(
+    controlsFile,
+    JSON.stringify({ entries: { [alice]: request } }),
+  );
+  const previous = JSON.parse(await readFile(statusFile, "utf8"));
+  previous.entries[alice] = {
+    ...previous.entries[alice],
+    revision: request.revision,
+    phase: "applied",
+  };
+  delete previous.entries[alice].runtimePhase;
+  await writeFile(statusFile, JSON.stringify(previous));
+  const state = await f.state();
+  state.containers[development] = "exited";
+  state.calls = [];
+  await writeFile(f.stateFile, JSON.stringify(state));
+  await f.run(env);
+  await f.run(env);
+  const adopted = await f.state();
+  expect(adopted.containers).toEqual({
+    [mcp]: "running",
+    [development]: "exited",
+  });
+  expect(
+    adopted.calls.filter((args: string[]) => args[0] === "restart"),
+  ).toEqual([]);
+  expect(
+    JSON.parse(await readFile(statusFile, "utf8")).workspaces[alice],
+  ).toMatchObject({
+    revision: request.revision,
+    phase: "applied",
+    legacyRunnerOnly: true,
+  });
+  const next = { ...request, revision: randomUUID(), requestedAt: 200 };
+  await writeFile(controlsFile, JSON.stringify({ entries: { [alice]: next } }));
+  await f.run(env);
+  await f.run(env);
+  const applied = await f.state();
+  expect(applied.containers).toEqual({
+    [mcp]: "running",
+    [development]: "running",
+  });
+  expect(
+    applied.calls.filter((args: string[]) => args[0] === "restart"),
+  ).toEqual([["restart", mcp]]);
+  expect(
+    applied.calls.filter(
+      (args: string[]) => args[0] === "start" && args.at(-1) === development,
+    ),
+  ).toHaveLength(1);
+  expect(
+    JSON.parse(await readFile(statusFile, "utf8")).workspaces[alice],
+  ).toMatchObject({
+    revision: next.revision,
+    phase: "applied",
+    legacyRunnerOnly: false,
+  });
+}, 30000);
+
 it("keeps a newer personal stop, accepts a subsequent admin start and never replays superseded controls after a crash", async () => {
   const f = await fixture([{ ...account(alice), authVersion: 1 }]);
   const dir = path.dirname(f.usersFile);
